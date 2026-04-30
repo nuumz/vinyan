@@ -130,6 +130,16 @@ export interface VinyanBusEvents {
     capabilitiesPromoted?: number;
     agentProposalsCreated?: number;
   };
+  // Phase C2: knowledge-index rebuild status emitted at the end of run().
+  'sleep_cycle:knowledge_index_rebuilt': {
+    cycleId: string;
+    modules: number;
+    path: string;
+  };
+  'sleep_cycle:knowledge_index_failed': {
+    cycleId: string;
+    reason: string;
+  };
 
   // Self-Model (Phase 1C.1)
   'selfmodel:predict': { prediction: SelfModelPrediction };
@@ -282,6 +292,19 @@ export interface VinyanBusEvents {
 
   // Human approval gate (A6: zero-trust for high-risk production tasks)
   'task:approval_required': { taskId: string; riskScore: number; reason: string };
+  /**
+   * Fired whenever an A6 task approval transitions out of the pending map —
+   * explicit human resolve via API, programmatic resolve, or auto-rejection
+   * by the timeout timer. Carries the final decision and the source so
+   * cross-tab UIs can drop their cached approval card the moment the gate
+   * clears, without polling. Persistence is intentionally skipped (the
+   * `task:complete` / `task:escalate` row already records the outcome).
+   */
+  'task:approval_resolved': {
+    taskId: string;
+    decision: 'approved' | 'rejected';
+    source: 'human' | 'timeout' | 'shutdown';
+  };
 
   // Agentic SDLC — Spec Refinement phase (between Perceive and Predict)
   'spec:drafted': {
@@ -683,6 +706,145 @@ export interface VinyanBusEvents {
     tool?: string;
     partialJson?: string;
   };
+  /**
+   * Retry-attempt heartbeat — emitted by an LLM provider before sleeping
+   * for backoff between retryable failures (429, 5xx, connect/idle/wall
+   * timeouts, transient fetch errors). Carries the upcoming `delayMs` so
+   * dashboards can render an ETA card and the delegate watchdog can treat
+   * the sleep as live activity rather than a hang.
+   *
+   * `taskId` is resolved from the request's explicit trace metadata, then
+   * the ambient `runWithLLMTrace` context, then the explicit task id the
+   * orchestrator passed in. When none of those are set the provider
+   * suppresses the emit (no orphan event with an empty correlation id).
+   *
+   * Observational only (A3): governance never branches on retry events.
+   */
+  'llm:retry_attempt': {
+    taskId: string;
+    providerId: string;
+    /** 0-indexed attempt that just failed; the upcoming sleep precedes attempt N+1. */
+    attempt: number;
+    /** Backoff delay in ms before the next attempt fires. */
+    delayMs: number;
+    /** Short label — error message, status string, or timeout kind. */
+    reason: string;
+    /** HTTP status code when the retry was triggered by a status response. */
+    status?: number;
+  };
+  /**
+   * In-flight heartbeat — emitted at a fixed cadence (default 30s) while
+   * an LLM provider call is actually awaiting the network response /
+   * stream. Closes the gap that retry-attempt + stream_delta cannot
+   * cover: a single non-streaming `provider.generate()` call that takes
+   * 90–180s (long-form author / large reasoning) emits NO other event
+   * during the wait, which used to look identical to a hang and tripped
+   * the delegate watchdog at 120s (incident: author step3 idle timeout
+   * after 121s, agent=author).
+   *
+   * `taskId` is resolved exactly like `llm:retry_attempt`. Suppressed
+   * when the trace context cannot bind a taskId — no orphan rows.
+   *
+   * Internal heartbeat: NOT in the SSE / event-manifest delivery list.
+   * UIs that need a "thinking" indicator should listen to
+   * `agent:thinking` / `llm:stream_delta` instead — this event is
+   * scoped to watchdog liveness only and would be too chatty for chat
+   * UIs that already render token streaming directly.
+   *
+   * Observational only (A3).
+   */
+  'llm:request_alive': {
+    taskId: string;
+    providerId: string;
+    /** 0-indexed attempt this heartbeat belongs to (resets per retry). */
+    attempt: number;
+    /** Total elapsed ms since the current attempt started. */
+    durationMs: number;
+  };
+  /**
+   * Outbound provider quota / rate-limit governance — surfaced when an LLM
+   * provider returns 429 RESOURCE_EXHAUSTED (Google AI Studio quota), 429
+   * rate_limited, or any other failure that carries a `retryAfterMs`. The
+   * `taskId` is resolved exactly like `llm:retry_attempt`. Observational
+   * only (A3) — governance branches consume the normalized error directly.
+   *
+   * Carries the canonical normalized fields (kind/status/retryAfterMs/
+   * quotaMetric/quotaId) so a UI can render a "rate-limited until 12:34"
+   * pill without re-parsing provider error bodies.
+   */
+  'llm:provider_quota_exhausted': {
+    taskId: string;
+    providerId: string;
+    tier?: string;
+    model?: string;
+    errorKind: 'quota_exhausted' | 'rate_limited';
+    status?: number;
+    retryAfterMs?: number;
+    quotaMetric?: string;
+    quotaId?: string;
+    message: string;
+  };
+  /** Cooldown bucket opened in the health store. Drives the dashboard "cooled-down" pill. */
+  'llm:provider_cooldown_started': {
+    taskId?: string;
+    providerId: string;
+    tier?: string;
+    model?: string;
+    errorKind: import('../orchestrator/llm/provider-errors.ts').LLMProviderErrorKind;
+    cooldownUntil: number;
+    retryAfterMs?: number;
+    quotaMetric?: string;
+    quotaId?: string;
+    failureCount: number;
+    message: string;
+  };
+  /** Selection skipped a provider because its bucket was still in cooldown. */
+  'llm:provider_cooldown_skipped': {
+    taskId?: string;
+    providerId: string;
+    tier?: string;
+    model?: string;
+    cooldownUntil: number;
+    rationale: string;
+  };
+  /** Selection picked an alternate provider because the preferred one was unavailable. */
+  'llm:provider_fallback_selected': {
+    taskId?: string;
+    fromProviderId: string;
+    fromTier?: string;
+    toProviderId: string;
+    toTier?: string;
+    rationale: string;
+  };
+  /** No provider available for this tier / capability — task degrades or fails honestly. */
+  'llm:provider_unavailable': {
+    taskId?: string;
+    requestedTier?: string;
+    rationale: string;
+    nextRetryHintMs?: number;
+  };
+  /** A previously cooled-down provider successfully completed a request. */
+  'llm:provider_recovered': {
+    providerId: string;
+    tier?: string;
+    model?: string;
+    cooldownDurationMs: number;
+  };
+  /**
+   * Internal — emitted by `ProviderHealthStore.emit` so non-bus subscribers
+   * (status endpoint cache, metrics) can listen without hooking the public
+   * lifecycle events. NOT in the SSE/event-manifest delivery list.
+   */
+  'llm:provider_health_changed': {
+    type: 'cooldown_started' | 'cooldown_extended' | 'recovered' | 'unavailable';
+    providerId: string;
+    tier?: string;
+    model?: string;
+    cooldownUntil: number;
+    failureCount: number;
+    kind: import('../orchestrator/llm/provider-errors.ts').LLMProviderErrorKind;
+    taskId?: string;
+  };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };
   // EO #1+#4: DAG execution observability
@@ -1052,6 +1214,41 @@ export interface VinyanBusEvents {
   };
 
   /**
+   * Hybrid skill redesign — emitted when a Claude-Code-style simple skill
+   * accumulates enough outcome evidence to graduate into the heavy
+   * SKILL.md schema. Producer: `runSimpleSkillPromoter` invoked from the
+   * sleep cycle. Listeners can show "skill X is now in the audited stack"
+   * notifications.
+   */
+  'skill:graduated_from_simple': {
+    cycleId: string;
+    promoted: Array<{
+      name: string;
+      /** Heavy artifact-store id (`<agent>/<name>` per-agent, `<name>` shared). */
+      heavySkillId: string;
+      /** Agent the simple skill was bound to, null when shared-scope. */
+      agentId: string | null;
+      trials: number;
+      successRate: number;
+    }>;
+  };
+
+  /**
+   * Hybrid skill redesign — emitted by the worker-pool every time a simple
+   * skill body is inlined into a task's prompt. Factory subscribes to track
+   * per-task invocation sets so simple-skill outcomes can be recorded at
+   * task completion (separate from heavy-stack `skill:viewed`).
+   */
+  'skill:simple_invoked': {
+    taskId: string;
+    skillName: string;
+    /** Where the skill was loaded from. */
+    scope: 'user' | 'project' | 'user-agent' | 'project-agent';
+    /** Agent the skill is bound to, when scope is `*-agent`. */
+    agentId?: string;
+  };
+
+  /**
    * Phase-13: emitted by the workflow-executor's `delegate-sub-agent` path
    * when A1 Epistemic Separation forced the sub-task onto the canonical
    * Verifier persona instead of inheriting the parent's agentId. Producer:
@@ -1112,6 +1309,37 @@ export interface VinyanBusEvents {
     status: 'completed' | 'failed' | 'skipped';
     outputPreview: string;
     tokensUsed: number;
+  };
+
+  /**
+   * Synthesizer LLM ignored the STITCHER rule and compressed/paraphrased
+   * step outputs into a tight register. Observability event for the
+   * compression safety net in `buildResult` — the executor discards the
+   * synthesizer's output and falls back to a deterministic concat to
+   * preserve voice diversity. Fired only when the workflow has
+   * substantial output (>1500 bytes total) and the LLM compressed below
+   * 25%, indicating paraphrase not legitimate consolidation.
+   */
+  'workflow:synthesizer_compression_detected': {
+    taskId: string;
+    stepOutputBytes: number;
+    synthesizedBytes: number;
+    compressionRatio: number;
+  };
+
+  /**
+   * Planner-emitted plan failed validation: it referenced an agent id not
+   * in the live registry (hallucinated) OR assigned the same agentId to
+   * multiple `delegate-sub-agent` steps (duplicate, would produce false
+   * diversity). The offending `agentId` was dropped from each step before
+   * dispatch; the affected delegates run with default routing and their
+   * UI rows render with `agent?` instead of misattributing to a persona
+   * that didn't actually answer.
+   */
+  'workflow:planner_validation_warning': {
+    goal: string;
+    hallucinatedAgentIds: Array<{ stepId: string; agentId: string }>;
+    duplicateAgentIds: Array<{ stepId: string; agentId: string }>;
   };
 
   /**
@@ -1197,6 +1425,25 @@ export interface VinyanBusEvents {
   // Wave 2: Replan Engine observability
   'replan:accepted': { taskId: string; iteration: number; planSignature: string };
   'replan:rejected': { taskId: string; iteration: number; reason: string };
+
+  /**
+   * ProcessStateReconciler observability — fires once per reconcile call
+   * (task or session) AFTER the durable history catches up with what
+   * SSE may have dropped. Internal only: NOT in `event-manifest.ts`,
+   * NOT forwarded over SSE, NOT persisted. Operators read it via metrics
+   * / logs / a future dashboard panel to track "how often does SSE lose
+   * events?" — that's the question the reconciler exists to answer.
+   *
+   * `truncated: true` indicates the page-cap or fetch-timeout safety net
+   * fired; the host should treat the cycle as incomplete and may retry.
+   */
+  'reconciler:replayed': {
+    scope: 'task' | 'session';
+    scopeId: string;
+    appliedCount: number;
+    durationMs: number;
+    truncated: boolean;
+  };
 
   // Wave 5: Reactive micro-learning — failure cluster signal
   'failure:cluster-detected': { taskSignature: string; failureCount: number; taskIds: string[] };
@@ -1288,8 +1535,17 @@ export interface VinyanBusEvents {
   /**
    * Phase E: fires once per task after the plan has been finalized (research
    * injection applied) and BEFORE any step executes. UIs use this to render a
-   * human-readable TODO checklist and — when `workflow.requireUserApproval`
-   * is on — display an approval prompt.
+   * human-readable TODO checklist and — when `awaitingApproval=true` —
+   * display an approval prompt whose copy and timeout behaviour depend on
+   * `approvalMode`:
+   *   - 'agent-discretion': review window; on timeout Vinyan auto-decides
+   *     via `evaluateAutoApproval` (read-only → approve; mutating → reject).
+   *     `autoDecisionAllowed` is true, `timeoutMs` is the review window.
+   *   - 'human-required':   only a human may decide. Timeout MUST NOT
+   *     auto-approve. `autoDecisionAllowed` is false; UI must not show
+   *     auto-approval copy.
+   * Older listeners that ignore the new fields keep working — the legacy
+   * `awaitingApproval` boolean is preserved.
    */
   'workflow:plan_ready': {
     taskId: string;
@@ -1297,24 +1553,176 @@ export interface VinyanBusEvents {
     steps: Array<{ id: string; description: string; strategy: string; dependencies: string[] }>;
     /** True when the orchestrator is waiting for the user to approve before executing. */
     awaitingApproval: boolean;
+    /**
+     * Approval mode for this plan. Optional for back-compat; treat absence
+     * as 'agent-discretion' when `awaitingApproval=true`.
+     */
+    approvalMode?: 'agent-discretion' | 'human-required';
+    /**
+     * Approval window the backend will honor before timing out the gate.
+     * UI uses this for the countdown bar — do not hardcode a default.
+     */
+    timeoutMs?: number;
+    /**
+     * Whether Vinyan may auto-decide on timeout. False for 'human-required'.
+     * UI gates auto-approval copy on this flag.
+     */
+    autoDecisionAllowed?: boolean;
   };
-  /** User (via TUI / HTTP / WS) approved a plan that was awaiting approval. */
-  'workflow:plan_approved': { taskId: string; sessionId?: string };
-  /** User rejected a plan or the approval timer expired. */
-  'workflow:plan_rejected': { taskId: string; sessionId?: string; reason?: string };
-  'workflow:step_start': { stepId: string; strategy: string; description: string };
+  /**
+   * User (via TUI / HTTP / WS) approved a plan that was awaiting approval —
+   * OR Vinyan auto-approved on timeout via `evaluateAutoApproval` (rule-based
+   * discretion over the plan; A3-compliant). Dashboards distinguish the two
+   * via the optional `auto: true` flag and the verdict `rationale`.
+   */
+  'workflow:plan_approved': {
+    taskId: string;
+    sessionId?: string;
+    /** True when Vinyan auto-approved on approval-timeout. Absent / false otherwise. */
+    auto?: boolean;
+    /** Verdict rationale from `evaluateAutoApproval` when `auto === true`. */
+    rationale?: string;
+  };
+  /**
+   * User rejected a plan, OR Vinyan rule-based auto-rejected the plan on
+   * approval-timeout (the plan contained `full-pipeline` or destructive
+   * `direct-tool` steps that need a human reviewer on the line).
+   */
+  'workflow:plan_rejected': {
+    taskId: string;
+    sessionId?: string;
+    reason?: string;
+    /** True when Vinyan auto-rejected on approval-timeout. Absent / false otherwise. */
+    auto?: boolean;
+    /** Verdict rationale from `evaluateAutoApproval` when `auto === true`. */
+    rationale?: string;
+  };
+  /**
+   * Per-step workflow progress. `taskId` (and `sessionId` when known)
+   * MUST be present so durable recording via TaskEventStore and the
+   * session-scoped SSE membership filter can attribute the event to the
+   * right turn — without it, a multi-task session sees freezes when
+   * step events drop or interleave.
+   */
+  'workflow:step_start': {
+    taskId: string;
+    sessionId?: string;
+    stepId: string;
+    strategy: string;
+    description: string;
+  };
   'workflow:step_complete': {
+    taskId: string;
+    sessionId?: string;
     stepId: string;
     status: 'completed' | 'failed' | 'skipped';
     strategy: string;
     durationMs: number;
     tokensConsumed: number;
   };
-  'workflow:step_fallback': { stepId: string; primaryStrategy: string; fallbackStrategy: string };
+  'workflow:step_fallback': {
+    taskId: string;
+    sessionId?: string;
+    stepId: string;
+    primaryStrategy: string;
+    fallbackStrategy: string;
+  };
   'workflow:research_injected': { goal: string; reason: string };
   'workflow:complete': { goal: string; status: string; stepsCompleted: number; totalSteps: number };
   'workflow:knowledge_query': { stepId: string; query: string };
-  'workflow:human_input_needed': { stepId: string; question: string };
+  /**
+   * Workflow executor hit a `human-input` step and is paused waiting for
+   * the user's answer. Carries `taskId` so UIs can correlate the question
+   * to the live streaming turn (without it the frontend cannot tell which
+   * turn's bubble should render the input prompt). The matching response
+   * event is `workflow:human_input_provided` with the same `taskId` +
+   * `stepId`.
+   */
+  'workflow:human_input_needed': { taskId: string; sessionId?: string; stepId: string; question: string };
+  /**
+   * User answered an in-plan `human-input` step. Resolves the executor's
+   * paused `human-input` dispatch — `value` becomes the step's `output` and
+   * downstream dependents continue. Emitted by the API endpoint the chat
+   * UI's input card POSTs to.
+   */
+  'workflow:human_input_provided': {
+    taskId: string;
+    stepId: string;
+    value: string;
+    sessionId?: string;
+  };
+  /**
+   * Runtime gate fired AFTER the execution loop completes when at least one
+   * step failed AND its cascade caused at least one dependent step to skip.
+   * Distinguishes "true partial failure" (user's plan can no longer deliver
+   * what they asked for) from "isolated leaf failure" (a side step failed,
+   * main work intact). Without this gate the executor silently shipped the
+   * partial aggregation as if everything was fine — see image-4 reproduction
+   * in docs/design/multi-agent-hardening-roadmap.md (incident 2026-04-29).
+   *
+   * Sub-tasks (`input.parentTaskId` set) bypass this gate — the parent's
+   * gate covers the user's decision surface. Matching response event is
+   * `workflow:partial_failure_decision_provided` with the same `taskId`.
+   */
+  'workflow:partial_failure_decision_needed': {
+    taskId: string;
+    sessionId?: string;
+    /** Steps the executor attempted that returned status='failed'. */
+    failedStepIds: string[];
+    /** Steps the cascade-skipped because their dep failed. */
+    skippedStepIds: string[];
+    /** Steps that completed normally — for "we have N answers" UI copy. */
+    completedStepIds: string[];
+    /** Short human-readable summary used as the card title. */
+    summary: string;
+    /** Truncated preview of the aggregation that would ship if user picks 'continue'. */
+    partialPreview?: string;
+    /** Wait window before executor auto-aborts. */
+    timeoutMs: number;
+  };
+  /**
+   * User decided whether to ship the partial result. Resolves the executor's
+   * paused gate. `auto: true` indicates the executor self-emitted on timeout
+   * (no user input arrived within `timeoutMs`); the executor's own listener
+   * ignores those self-emits to avoid re-settling its own promise.
+   */
+  /**
+   * Stage Manifest — emitted right after the workflow planner finalizes a
+   * plan and BEFORE any step executes (and BEFORE the approval gate). Powers
+   * the chat UI's process-replay surface so reload / SSE recovery can
+   * reconstruct what Vinyan decided to do, what plan it built, what todo
+   * checklist exists, and which sub-agent owns each delegated subtask —
+   * without inferring shape client-side. A3-compliant: classification is
+   * rule-based on planner output, no LLM post-processing.
+   */
+  'workflow:decision_recorded': import('../orchestrator/workflow/stage-manifest.ts').WorkflowDecisionRecordedEvent;
+  'workflow:todo_created': import('../orchestrator/workflow/stage-manifest.ts').WorkflowTodoCreatedEvent;
+  'workflow:todo_updated': import('../orchestrator/workflow/stage-manifest.ts').WorkflowTodoUpdatedEvent;
+  'workflow:subtasks_planned': import('../orchestrator/workflow/stage-manifest.ts').WorkflowSubtasksPlannedEvent;
+  'workflow:subtask_updated': import('../orchestrator/workflow/stage-manifest.ts').WorkflowSubtaskUpdatedEvent;
+  /**
+   * COMPETITION-mode synthesizer's structured verdict. Emitted ONLY after
+   * the synthesis output's fenced JSON block parses against
+   * {@link import('../orchestrator/workflow/stage-manifest.ts').WinnerVerdict}
+   * AND `winnerAgentId` (when non-null) is in the participating delegate
+   * set. Absence of this event ⇒ no winner declared (legacy turn,
+   * non-competition, parse failed, or hallucinated id) — UI must NEVER
+   * infer winners from agent order or speed.
+   *
+   * `winnerAgentId === null` is a deliberate "no clear winner / tie"
+   * verdict and is distinct from "event never emitted".
+   */
+  'workflow:winner_determined': import('../orchestrator/workflow/stage-manifest.ts').WorkflowWinnerDeterminedEvent;
+
+  'workflow:partial_failure_decision_provided': {
+    taskId: string;
+    decision: 'continue' | 'abort';
+    sessionId?: string;
+    /** Optional free-text user note. */
+    rationale?: string;
+    /** True when executor auto-aborted on timeout. */
+    auto?: boolean;
+  };
   // Agent Context Layer: emitted during sleep cycle when agent identities are refined
   'agent:evolved': {
     cycleId: string;
@@ -1384,6 +1792,33 @@ export interface VinyanBusEvents {
   'gateway:inbound': {
     envelope: import('../gateway/types.ts').GatewayInboundEnvelopeMinimal;
   };
+
+  // ── External Coding CLI (Claude Code, GitHub Copilot, ...) ──────────
+  // Provider-neutral events emitted by the ExternalCodingCliController.
+  // Adversarial robustness corollary of A6+A8+A9: every event carries
+  // taskId, codingCliSessionId, and providerId so replay can reconstruct
+  // process state without trusting raw CLI output.
+  'coding-cli:session_created': import('../orchestrator/external-coding-cli/types.ts').CodingCliSessionCreatedEvent;
+  'coding-cli:session_started': import('../orchestrator/external-coding-cli/types.ts').CodingCliSessionStartedEvent;
+  'coding-cli:state_changed': import('../orchestrator/external-coding-cli/types.ts').CodingCliStateChangedEvent;
+  'coding-cli:message_sent': import('../orchestrator/external-coding-cli/types.ts').CodingCliMessageSentEvent;
+  'coding-cli:output_delta': import('../orchestrator/external-coding-cli/types.ts').CodingCliOutputDeltaEvent;
+  'coding-cli:tool_started': import('../orchestrator/external-coding-cli/types.ts').CodingCliToolStartedEvent;
+  'coding-cli:tool_completed': import('../orchestrator/external-coding-cli/types.ts').CodingCliToolCompletedEvent;
+  'coding-cli:file_changed': import('../orchestrator/external-coding-cli/types.ts').CodingCliFileChangedEvent;
+  'coding-cli:command_requested': import('../orchestrator/external-coding-cli/types.ts').CodingCliCommandRequestedEvent;
+  'coding-cli:command_completed': import('../orchestrator/external-coding-cli/types.ts').CodingCliCommandCompletedEvent;
+  'coding-cli:approval_required': import('../orchestrator/external-coding-cli/types.ts').CodingCliApprovalRequiredEvent;
+  'coding-cli:approval_resolved': import('../orchestrator/external-coding-cli/types.ts').CodingCliApprovalResolvedEvent;
+  'coding-cli:decision_recorded': import('../orchestrator/external-coding-cli/types.ts').CodingCliDecisionRecordedEvent;
+  'coding-cli:checkpoint': import('../orchestrator/external-coding-cli/types.ts').CodingCliCheckpointEvent;
+  'coding-cli:result_reported': import('../orchestrator/external-coding-cli/types.ts').CodingCliResultReportedEvent;
+  'coding-cli:verification_started': import('../orchestrator/external-coding-cli/types.ts').CodingCliVerificationStartedEvent;
+  'coding-cli:verification_completed': import('../orchestrator/external-coding-cli/types.ts').CodingCliVerificationCompletedEvent;
+  'coding-cli:completed': import('../orchestrator/external-coding-cli/types.ts').CodingCliCompletedEvent;
+  'coding-cli:failed': import('../orchestrator/external-coding-cli/types.ts').CodingCliFailedEvent;
+  'coding-cli:stalled': import('../orchestrator/external-coding-cli/types.ts').CodingCliStalledEvent;
+  'coding-cli:cancelled': import('../orchestrator/external-coding-cli/types.ts').CodingCliCancelledEvent;
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

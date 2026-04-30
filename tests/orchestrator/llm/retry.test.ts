@@ -68,6 +68,146 @@ describe('retryWithBackoff', () => {
     expect(attempts).toBe(2);
   });
 
+  test('onAttempt fires before each backoff sleep with attempt + delay + reason', async () => {
+    const events: Array<{ attempt: number; delayMs: number; reason: string; status?: number }> = [];
+    let attempts = 0;
+    const result = await retryWithBackoff(
+      async () => {
+        attempts++;
+        if (attempts < 3) {
+          const err = new Error('rate limited') as Error & { status: number };
+          err.status = 429;
+          throw err;
+        }
+        return 'ok';
+      },
+      {
+        ...baseConfig,
+        maxRetries: 3,
+        timeoutMs: 1_000,
+        onAttempt: (info) => events.push(info),
+      },
+    );
+    expect(result).toBe('ok');
+    expect(attempts).toBe(3);
+    // Two failed attempts → two onAttempt calls before the final success.
+    expect(events).toHaveLength(2);
+    expect(events[0]?.attempt).toBe(0);
+    expect(events[1]?.attempt).toBe(1);
+    expect(events[0]?.delayMs).toBeGreaterThan(0);
+    expect(events[0]?.reason).toMatch(/rate limited/);
+    expect(events[0]?.status).toBe(429);
+  });
+
+  test('onAttempt is NOT called for non-retryable failures (terminal throw)', async () => {
+    const events: unknown[] = [];
+    await expect(
+      retryWithBackoff(
+        async () => {
+          const err = new Error('bad request') as Error & { status: number };
+          err.status = 400;
+          throw err;
+        },
+        {
+          ...baseConfig,
+          maxRetries: 3,
+          timeoutMs: 1_000,
+          onAttempt: (info) => events.push(info),
+        },
+      ),
+    ).rejects.toThrow(/bad request/);
+    expect(events).toHaveLength(0);
+  });
+
+  test('onHeartbeat fires periodically while a slow request is in flight', async () => {
+    const beats: Array<{ attempt: number; durationMs: number }> = [];
+    // Slow fn that resolves after ~250ms — at 50ms heartbeat cadence we
+    // expect 4-5 beats. Pin ≥ 3 to absorb scheduler jitter.
+    const result = await retryWithBackoff(
+      async () => {
+        await sleep(250);
+        return 'ok';
+      },
+      {
+        ...baseConfig,
+        timeoutMs: 1_000,
+        heartbeatIntervalMs: 50,
+        onHeartbeat: (info) => beats.push(info),
+      },
+    );
+    expect(result).toBe('ok');
+    expect(beats.length).toBeGreaterThanOrEqual(3);
+    expect(beats[0]?.attempt).toBe(0);
+    expect(beats[0]?.durationMs).toBeGreaterThan(0);
+    // durationMs increases monotonically across beats.
+    for (let i = 1; i < beats.length; i++) {
+      expect(beats[i]!.durationMs).toBeGreaterThanOrEqual(beats[i - 1]!.durationMs);
+    }
+  });
+
+  test('onHeartbeat stops when the request resolves (no leaked timer)', async () => {
+    const beats: number[] = [];
+    await retryWithBackoff(
+      async () => {
+        await sleep(30);
+        return 'fast';
+      },
+      {
+        ...baseConfig,
+        timeoutMs: 1_000,
+        heartbeatIntervalMs: 10,
+        onHeartbeat: () => beats.push(Date.now()),
+      },
+    );
+    const beatsAtResolution = beats.length;
+    // Wait beyond several intervals — if the timer leaked we'd see more beats.
+    await sleep(80);
+    expect(beats.length).toBe(beatsAtResolution);
+  });
+
+  test('onHeartbeat errors are swallowed (buggy hook does not crash)', async () => {
+    const result = await retryWithBackoff(
+      async () => {
+        await sleep(40);
+        return 'ok';
+      },
+      {
+        ...baseConfig,
+        timeoutMs: 1_000,
+        heartbeatIntervalMs: 10,
+        onHeartbeat: () => {
+          throw new Error('hb broken');
+        },
+      },
+    );
+    expect(result).toBe('ok');
+  });
+
+  test('onAttempt errors are swallowed (buggy hook does not break retry)', async () => {
+    let attempts = 0;
+    const result = await retryWithBackoff(
+      async () => {
+        attempts++;
+        if (attempts < 2) {
+          const err = new Error('throttle') as Error & { status: number };
+          err.status = 429;
+          throw err;
+        }
+        return 'ok';
+      },
+      {
+        ...baseConfig,
+        maxRetries: 2,
+        timeoutMs: 1_000,
+        onAttempt: () => {
+          throw new Error('hook is broken');
+        },
+      },
+    );
+    expect(result).toBe('ok');
+    expect(attempts).toBe(2);
+  });
+
   test('does not retry on non-retryable status', async () => {
     let attempts = 0;
     await expect(
@@ -256,5 +396,50 @@ describe('retryStreamWithBackoff', () => {
     const gap = starts[1]! - starts[0]!;
     expect(gap).toBeGreaterThanOrEqual(40);
     expect(gap).toBeLessThan(500);
+  });
+
+  test('onHeartbeat fires periodically in stream retry too', async () => {
+    const beats: number[] = [];
+    const result = await retryStreamWithBackoff(
+      async (_signal, hooks) => {
+        hooks.firstByte();
+        await sleep(220);
+        return 'ok';
+      },
+      {
+        ...baseStreamConfig,
+        heartbeatIntervalMs: 50,
+        onHeartbeat: () => beats.push(Date.now()),
+      },
+    );
+    expect(result).toBe('ok');
+    expect(beats.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('onAttempt fires for stream retry with delay + reason', async () => {
+    const events: Array<{ attempt: number; delayMs: number; reason: string }> = [];
+    let attempts = 0;
+    const result = await retryStreamWithBackoff(
+      async (_signal, hooks) => {
+        attempts++;
+        hooks.firstByte();
+        if (attempts < 2) {
+          const err = new Error('throttle') as Error & { status: number };
+          err.status = 429;
+          throw err;
+        }
+        return 'ok';
+      },
+      {
+        ...baseStreamConfig,
+        maxRetries: 2,
+        onAttempt: (info) => events.push(info),
+      },
+    );
+    expect(result).toBe('ok');
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attempt).toBe(0);
+    expect(events[0]?.delayMs).toBeGreaterThan(0);
+    expect(events[0]?.reason).toMatch(/throttle/);
   });
 });

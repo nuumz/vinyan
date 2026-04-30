@@ -226,6 +226,30 @@ export class MetricsCollector {
         this.inc('grounding.checked');
         this.inc(`grounding.action.${action}`);
       }),
+      // Outbound LLM provider governance counters. The collector is the
+      // single source of truth for "how often did Vinyan hit a quota wall
+      // this hour" — querying the bus listener for these is cheaper than
+      // scanning the durable event log.
+      bus.on('llm:provider_quota_exhausted', ({ providerId, errorKind, model }) => {
+        this.inc('llm.provider.quota_exhausted');
+        this.inc(`llm.provider.kind.${errorKind}`);
+        this.inc(`llm.provider.id.${providerId}`);
+        if (model) this.inc(`llm.provider.model.${model}`);
+      }),
+      bus.on('llm:provider_cooldown_started', ({ providerId, errorKind }) => {
+        this.inc('llm.provider.cooldown_started');
+        this.inc(`llm.provider.cooldown.kind.${errorKind}`);
+        this.inc(`llm.provider.cooldown.id.${providerId}`);
+      }),
+      bus.on('llm:provider_fallback_selected', ({ fromProviderId, toProviderId }) => {
+        this.inc('llm.provider.fallback_selected');
+        this.inc(`llm.provider.fallback.${fromProviderId}->${toProviderId}`);
+      }),
+      bus.on('llm:provider_unavailable', () => this.inc('llm.provider.unavailable')),
+      bus.on('llm:provider_recovered', ({ providerId }) => {
+        this.inc('llm.provider.recovered');
+        this.inc(`llm.provider.recovered.${providerId}`);
+      }),
       // Phase 5: Observability, API, and GAP-H events (G3)
       bus.on('observability:alert', () => this.inc('observability.alert')),
       bus.on('memory:eviction_warning', () => this.inc('memory.eviction')),

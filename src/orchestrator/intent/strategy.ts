@@ -221,13 +221,34 @@ export function composeDeterministicCandidate(
   input: TaskInput,
   understanding: SemanticTaskUnderstanding,
 ): IntentResolution & { deterministicCandidate: IntentDeterministicCandidate } {
+  // Recursion guard root flag. Sub-tasks (anything dispatched via
+  // delegate-sub-agent) carry `parentTaskId` from the workflow executor.
+  // Both forced-agentic-workflow pre-rules below and the STU mapper's
+  // `general-reasoning + execute + none → agentic-workflow` line further
+  // down are TOP-LEVEL-only contracts — re-entering them inside a sub-task
+  // recurses into another workflow plan, which:
+  //   1. Compounds budget fractions per level (session 4e62ebe6 hit
+  //      budgetMs=21 with reason "Wall-clock budget exhausted before next
+  //      attempt could start").
+  //   2. Re-injects the conversational shortcircuit's escape-protocol
+  //      stanza into the sub-agent's persona prompt, which the LLM then
+  //      paraphrases ("the task is too big to handle inline, use a
+  //      agentic-workflow path") and degenerates into a token loop —
+  //      observed as the "topic-topic-topic-…" tail in the author-step
+  //      stream on session-with-Step-2-of-4 reports.
+  // The guard collapses every nested-workflow path back to a single LLM
+  // call. The conversational-result-builder additionally drops the escape
+  // protocol when `parentTaskId` is set, so the sub-agent sees its persona
+  // soul + peer roster only and answers the step directly.
+  const isSubTask = !!input.parentTaskId;
+
   // Highest-priority pre-rule: multi-agent delegation pattern overrides STU
   // classification entirely. See MULTI_AGENT_THAI/MULTI_AGENT_ENGLISH doc for
   // rationale (session 44c83a53 incident — coordinator at L0 hallucinated
   // delegation because `delegate_task` requires L2+). Forcing
   // `agentic-workflow` here gives coordinator the delegate_task capability so
-  // the request is fulfilled instead of mocked in prose.
-  if (matchesMultiAgentDelegation(input.goal)) {
+  // the request is fulfilled instead of mocked in prose. Top-level only.
+  if (!isSubTask && matchesMultiAgentDelegation(input.goal)) {
     return {
       strategy: 'agentic-workflow',
       refinedGoal: input.goal,
@@ -251,7 +272,10 @@ export function composeDeterministicCandidate(
   // Confidence is set above DETERMINISTIC_SKIP_THRESHOLD so the resolver
   // bypasses the LLM advisory tier when the pattern matches — saves a
   // round-trip and prevents the LLM from second-guessing a structural fact.
-  if (matchesCreativeDeliverable(input.goal)) {
+  // Top-level only — the parent workflow already decided this is creative
+  // work; nested sub-task descriptions like "draft chapter 2 prose" must
+  // not re-plan as their own workflow.
+  if (!isSubTask && matchesCreativeDeliverable(input.goal)) {
     return {
       strategy: 'agentic-workflow',
       refinedGoal: input.goal,
@@ -340,19 +364,43 @@ export function composeDeterministicCandidate(
     };
   }
 
+  // Sub-task safety net: collapse any agentic-workflow that fell out of the
+  // STU mapper (general-reasoning + execute + none → agentic-workflow per
+  // `fallbackStrategy`) back to conversational. A delegated sub-task is
+  // already inside a workflow; running another planner inside leads to
+  // exponential budget shrinkage and the prompt-confusion token loop
+  // documented on `isSubTask` above. The conversational path is the right
+  // single-LLM-call fallback — the persona produces the step's deliverable
+  // directly, the executor takes its answer back as the step output.
+  let finalStrategy: ExecutionStrategy = ruleStrategy.strategy;
+  let finalConfidence = ruleStrategy.confidence;
+  let finalSource: IntentDeterministicCandidate['source'] = 'mapUnderstandingToStrategy';
+  let extraReasoning = '';
+  if (isSubTask && finalStrategy === 'agentic-workflow') {
+    finalStrategy = 'conversational';
+    // Demoted strategy is a recursion-safety choice, not an organic STU
+    // signal — keep confidence in the heuristic band (0.7) so the LLM
+    // advisory tier is still allowed to second-guess if it has stronger
+    // evidence the sub-step truly needs a sub-workflow (it almost never
+    // does — caller is the workflow planner itself).
+    finalConfidence = 0.7;
+    finalSource = 'sub-task-recursion-guard';
+    extraReasoning = ' (sub-task recursion guard demoted agentic-workflow → conversational)';
+  }
+
   // Skeleton from the rule-mapper alone. No directToolCall or workflowPrompt
   // yet — the LLM layer fills those in when invoked.
   return {
-    strategy: ruleStrategy.strategy,
+    strategy: finalStrategy,
     refinedGoal: input.goal,
-    confidence: ruleStrategy.confidence,
-    reasoning: `Deterministic: STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} → ${ruleStrategy.strategy}${ruleStrategy.ambiguous ? ' (ambiguous)' : ''}.`,
+    confidence: finalConfidence,
+    reasoning: `Deterministic: STU ${understanding.taskDomain}/${understanding.taskIntent}/${understanding.toolRequirement} → ${finalStrategy}${ruleStrategy.ambiguous ? ' (ambiguous)' : ''}${extraReasoning}.`,
     reasoningSource: 'deterministic',
     type: ruleStrategy.ambiguous ? 'uncertain' : 'known',
     deterministicCandidate: {
-      strategy: ruleStrategy.strategy,
-      confidence: ruleStrategy.confidence,
-      source: 'mapUnderstandingToStrategy',
+      strategy: finalStrategy,
+      confidence: finalConfidence,
+      source: finalSource,
       ambiguous: ruleStrategy.ambiguous,
     },
   };

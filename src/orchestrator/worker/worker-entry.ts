@@ -121,6 +121,16 @@ async function processTask(
     // through IPC. When present, the `agent-skill-cards` section renders
     // identically to the in-process worker path.
     input.loadedSkillCards,
+    // Hybrid-skill: Claude-Code-style simple skill descriptions (eager,
+    // every loaded skill the agent can see) and matched bodies (lazy,
+    // only the ones the orchestrator's matcher selected for THIS goal).
+    // Pre-resolved in-process by `WorkerPool.buildWorkerInput` and shipped
+    // via WorkerInput. Without these the subprocess prompt would render
+    // neither [AVAILABLE SKILLS] nor [ACTIVE SKILLS] — the in-process
+    // worker would surface them and the L2/L3 subprocess would silently
+    // skip them, breaking dispatch-path parity.
+    input.simpleSkills,
+    input.simpleSkillBodies,
   );
 
   const startTime = performance.now();

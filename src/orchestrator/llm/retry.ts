@@ -19,6 +19,51 @@
  * classification so the call sites stay consistent.
  */
 
+/**
+ * Heartbeat emitted before each backoff sleep — lets callers surface the
+ * retry as live activity (delegate watchdog, dashboards, telemetry) rather
+ * than letting silent backoff look like a hang.
+ *
+ * Fires AFTER the failed attempt resolved and BEFORE `setTimeout(delayMs)`,
+ * so subscribers know the next attempt is scheduled and roughly when. Not
+ * called on the terminal failure (when `attempt === maxRetries` or the
+ * error is non-retryable) — that path just throws.
+ */
+export interface RetryAttemptInfo {
+  /** 0-indexed attempt that just failed; the upcoming sleep precedes attempt `attempt + 1`. */
+  attempt: number;
+  /** Backoff delay in ms before the next attempt fires. */
+  delayMs: number;
+  /** Short label — error message, status string, or timeout kind. */
+  reason: string;
+  /** HTTP status code when the retry was triggered by a status response. */
+  status?: number;
+}
+
+export type OnRetryAttempt = (info: RetryAttemptInfo) => void;
+
+/**
+ * In-flight heartbeat — fired at a fixed cadence WHILE the user-supplied
+ * `fn` is awaiting (network round-trip, SDK call, stream open). Lets
+ * callers emit liveness pings (e.g. `llm:request_alive`) so external
+ * watchdogs do not interpret a long single LLM call as a hang. Cleared
+ * automatically on attempt resolution (success OR error).
+ *
+ * Distinct from `OnRetryAttempt` (which fires once per BETWEEN-attempt
+ * backoff sleep): heartbeat fires N times DURING each attempt.
+ */
+export interface RetryHeartbeatInfo {
+  /** 0-indexed attempt currently in flight. */
+  attempt: number;
+  /** Elapsed ms since this attempt started. */
+  durationMs: number;
+}
+
+export type OnRetryHeartbeat = (info: RetryHeartbeatInfo) => void;
+
+/** Default heartbeat cadence — well below the 180s delegate idle floor (see workflow-executor.ts). */
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+
 export interface RetryConfig {
   /** Maximum retry attempts (default: 3). */
   maxRetries: number;
@@ -32,6 +77,22 @@ export interface RetryConfig {
   parseRetryAfter?: (error: unknown) => number | undefined;
   /** Additional check: is this error retryable beyond status codes? */
   isRetryableError?: (error: Error) => boolean;
+  /**
+   * Called immediately before the backoff sleep on each retryable failure.
+   * Use to emit liveness signals (e.g. `llm:retry_attempt`) so external
+   * watchdogs do not interpret the silent sleep as a stall. Must not throw —
+   * the retry helper logs and continues so a buggy hook cannot break retry.
+   */
+  onAttempt?: OnRetryAttempt;
+  /**
+   * Called periodically (every `heartbeatIntervalMs`) while the in-flight
+   * attempt is awaiting. Use to emit liveness signals (e.g.
+   * `llm:request_alive`) so external watchdogs do not flag a long
+   * single LLM call as a hang. Must not throw — errors are swallowed.
+   */
+  onHeartbeat?: OnRetryHeartbeat;
+  /** Heartbeat cadence (ms). Defaults to 30_000. Disabled when `onHeartbeat` is omitted. */
+  heartbeatIntervalMs?: number;
 }
 
 /**
@@ -65,6 +126,12 @@ export interface StreamRetryConfig {
    * abort reason propagates as the thrown error (no synthetic timeout wrap).
    */
   externalSignal?: AbortSignal;
+  /** See `RetryConfig.onAttempt`. */
+  onAttempt?: OnRetryAttempt;
+  /** See `RetryConfig.onHeartbeat`. */
+  onHeartbeat?: OnRetryHeartbeat;
+  /** Heartbeat cadence (ms). Defaults to 30_000. Disabled when `onHeartbeat` is omitted. */
+  heartbeatIntervalMs?: number;
 }
 
 /**
@@ -114,12 +181,32 @@ export async function retryWithBackoff<T>(fn: (signal: AbortSignal) => Promise<T
       timedOut = true;
       controller.abort();
     }, timeoutMs);
+    // In-flight heartbeat for long single LLM calls (e.g. author writing
+    // a 150s prose response). Without this, the watchdog watching the
+    // bus sees zero events between dispatch and completion and idles
+    // out at 120s. The interval is capped well below that floor so a
+    // real hang is still caught at HARD_CEILING_MS.
+    const heartbeatStart = Date.now();
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    if (config.onHeartbeat) {
+      const intervalMs = config.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+      heartbeatTimer = setInterval(() => {
+        try {
+          config.onHeartbeat?.({ attempt, durationMs: Date.now() - heartbeatStart });
+        } catch (err) {
+          console.warn('[retry] onHeartbeat threw; ignoring', err);
+        }
+      }, intervalMs);
+      (heartbeatTimer as { unref?: () => void }).unref?.();
+    }
     try {
       const result = await fn(controller.signal);
       clearTimeout(timer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       return result;
     } catch (error) {
       clearTimeout(timer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
 
       // `timedOut` is the only reliable discriminator: checking
       // `controller.signal.aborted` after an unrelated error would always
@@ -138,6 +225,21 @@ export async function retryWithBackoff<T>(fn: (signal: AbortSignal) => Promise<T
         if (isStatusRetryable || isTimeout || isRetryable(lastError)) {
           const retryAfterMs = config.parseRetryAfter?.(error);
           const delay = retryAfterMs ?? baseDelayMs * 2 ** attempt;
+          // Heartbeat for the upcoming sleep so external watchdogs (e.g.
+          // delegate-sub-agent watchdog) do not flag the backoff as a
+          // hang. A buggy hook must not break the retry, so we swallow.
+          if (config.onAttempt) {
+            try {
+              config.onAttempt({
+                attempt,
+                delayMs: delay,
+                reason: lastError.message,
+                ...(typeof status === 'number' ? { status } : {}),
+              });
+            } catch (hookErr) {
+              console.warn('[retry] onAttempt threw; ignoring', hookErr);
+            }
+          }
           await new Promise((r) => setTimeout(r, delay));
           continue;
         }
@@ -299,13 +401,35 @@ export async function retryStreamWithBackoff<T>(fn: StreamRetryFn<T>, config: St
     }
 
     const machine = createTimeoutMachine(config);
+    // In-flight heartbeat — same purpose as in `retryWithBackoff`. The
+    // streaming path already calls `hooks.activity()` per chunk, but
+    // those hooks are LOCAL to the retry timeout machine and do NOT
+    // reach the bus. The watchdog sits on the bus, so we still need
+    // an explicit emit. For pure-streaming providers chunks fire often
+    // enough that the heartbeat is redundant; for hybrid providers
+    // that hold a long pre-stream pause it is the only liveness ping.
+    const heartbeatStart = Date.now();
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    if (config.onHeartbeat) {
+      const intervalMs = config.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+      heartbeatTimer = setInterval(() => {
+        try {
+          config.onHeartbeat?.({ attempt, durationMs: Date.now() - heartbeatStart });
+        } catch (err) {
+          console.warn('[retry] onHeartbeat threw; ignoring', err);
+        }
+      }, intervalMs);
+      (heartbeatTimer as { unref?: () => void }).unref?.();
+    }
 
     try {
       const result = await fn(machine.signal, machine.hooks);
       machine.cleanup();
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       return result;
     } catch (error) {
       machine.cleanup();
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
 
       // External cancel takes precedence — propagate without retry.
       if (externalSignal?.aborted) {
@@ -318,6 +442,19 @@ export async function retryStreamWithBackoff<T>(fn: StreamRetryFn<T>, config: St
       if (attempt < maxRetries && isStreamRetryable(error, wrapped, timedOutByUs, config, isRetryable)) {
         const retryAfterMs = config.parseRetryAfter?.(error);
         const delay = retryAfterMs ?? baseDelayMs * 2 ** attempt;
+        if (config.onAttempt) {
+          const status = (error as { status?: number })?.status;
+          try {
+            config.onAttempt({
+              attempt,
+              delayMs: delay,
+              reason: wrapped.message,
+              ...(typeof status === 'number' ? { status } : {}),
+            });
+          } catch (hookErr) {
+            console.warn('[retry] onAttempt threw; ignoring', hookErr);
+          }
+        }
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }

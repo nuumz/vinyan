@@ -101,6 +101,7 @@ Respond with a single JSON object matching this exact structure:
 - Set "approved" to false if ANY critical aspect fails (logic_correctness or requirement_coverage).
 - Set "approved" to true only if the proposal is safe to commit.
 - Be concise in explanations — focus on actionable feedback.
+- Anti-sycophancy: do NOT be agreeable for the sake of agreement. When a [HISTORICAL EVIDENCE] block lists prior failures, surface the strongest counter-evidence FIRST and require an explicit defense of why this attempt is different — otherwise reject.
 - Respond ONLY with the JSON object, no markdown fences or other text.`;
 }
 
@@ -137,14 +138,20 @@ function buildCriticUserPrompt(
   // iteration, prime the critic to scrutinize self-graded A's more harshly.
   // Underconfidence is logged as observability but does NOT relax the bar —
   // the critic should never be told "the worker is too humble, be lenient".
-  if (
-    context?.priorPredictionError &&
-    context.priorPredictionError.direction === 'overconfident'
-  ) {
+  if (context?.priorPredictionError && context.priorPredictionError.direction === 'overconfident') {
     const { selfGrade, deterministicGrade, magnitude } = context.priorPredictionError;
     sections.push(
       `[CALIBRATION WARNING]\nOn the previous iteration, the worker self-graded ${selfGrade} but the deterministic evaluator awarded ${deterministicGrade} (${magnitude} overconfidence). Treat the worker's current self-assessment as suspect: require concrete evidence (passing oracles, satisfied acceptance criteria) before accepting any self-claim of Grade A.`,
     );
+  }
+
+  // C1: historical adversary — render aggregated prior failures + base-rate
+  // outcome counts so the reviewer can pressure-test against past attempts.
+  // Only emitted when the orchestrator opts in by populating the context
+  // (off-by-default — does not change behavior for existing callers).
+  const historicalSection = renderHistoricalEvidence(context);
+  if (historicalSection) {
+    sections.push(historicalSection);
   }
 
   const mutationSummary = proposal.mutations.map((m) => `--- ${m.file} ---\n${m.content}`).join('\n\n');
@@ -159,6 +166,57 @@ Target: ${perception.taskTarget.file} — ${perception.taskTarget.description}
 Blast radius: ${perception.dependencyCone.transitiveBlastRadius} files`);
 
   return sections.join('\n\n');
+}
+
+// ---------------------------------------------------------------------------
+// C1: historical-evidence renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Cap per-section size to keep the critic prompt bounded. The critic budget
+ * is 2048 output tokens (response) + free-form input — but blowing the input
+ * with adversarial history would push out the proposed mutations, so we cap.
+ */
+const HISTORICAL_FAILED_APPROACHES_CAP = 5;
+const HISTORICAL_APPROACH_LABEL_CAP = 120;
+
+function renderHistoricalEvidence(context: CriticContext | undefined): string | null {
+  if (!context) return null;
+  const failures = context.priorFailedApproaches ?? [];
+  const summary = context.priorTraceSummary;
+  if (failures.length === 0 && !summary) return null;
+
+  const lines: string[] = ['[HISTORICAL EVIDENCE — pressure-test against past attempts]'];
+
+  if (failures.length > 0) {
+    const top = [...failures].sort((a, b) => b.occurrences - a.occurrences).slice(0, HISTORICAL_FAILED_APPROACHES_CAP);
+    lines.push('Recent failed approaches for this task signature (highest occurrence first):');
+    for (const f of top) {
+      const label = truncate(f.approach, HISTORICAL_APPROACH_LABEL_CAP);
+      const noun = f.occurrences === 1 ? 'time' : 'times';
+      lines.push(`  - "${label}" → failed at "${f.failureOracle}" (${f.occurrences} ${noun})`);
+    }
+  }
+
+  if (summary && summary.totalAttempts > 0) {
+    const escalation =
+      typeof summary.mostCommonEscalation === 'number' ? `, modal escalation L${summary.mostCommonEscalation}` : '';
+    lines.push(
+      `Base rate: ${summary.successCount}/${summary.totalAttempts} succeeded` +
+        ` (${summary.failureCount} failed${escalation}).`,
+    );
+  }
+
+  lines.push(
+    'If this proposal repeats any approach above, you MUST flag it explicitly and require evidence of why this attempt is different — otherwise reject.',
+  );
+
+  return lines.join('\n');
+}
+
+function truncate(s: string, cap: number): string {
+  if (s.length <= cap) return s;
+  return `${s.slice(0, cap - 1)}…`;
 }
 
 // ---------------------------------------------------------------------------

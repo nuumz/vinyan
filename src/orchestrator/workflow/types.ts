@@ -14,7 +14,8 @@ export type WorkflowStepStrategy =
   | 'knowledge-query'
   | 'llm-reasoning'
   | 'delegate-sub-agent'
-  | 'human-input';
+  | 'human-input'
+  | 'external-coding-cli';
 
 export interface WorkflowStep {
   id: string;
@@ -89,6 +90,7 @@ export const WorkflowStepSchema = z.object({
     'llm-reasoning',
     'delegate-sub-agent',
     'human-input',
+    'external-coding-cli',
   ]),
   dependencies: z.array(z.string()).default([]),
   inputs: z.record(z.string(), z.string()).default({}),
@@ -111,6 +113,7 @@ export const WorkflowStepSchema = z.object({
       'llm-reasoning',
       'delegate-sub-agent',
       'human-input',
+      'external-coding-cli',
     ])
     .optional(),
 });

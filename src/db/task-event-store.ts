@@ -49,11 +49,74 @@ export interface ListOptions {
   limit?: number;
 }
 
+/**
+ * Cursor for session-scoped pagination. `seq` is per-task, so events from
+ * different tasks within one session must be ordered by `(ts, id)` instead.
+ * `id` breaks ties when multiple events share `ts` (1ms granularity).
+ *
+ * Wire format is the opaque string `<ts>:<id>` returned in `nextCursor`;
+ * clients pass it back as `since`. The store treats `since` as a strict
+ * lower bound — i.e. only events strictly newer than the cursor are
+ * returned, so polling never re-emits a row.
+ */
+export interface SessionListOptions {
+  /** Opaque cursor token returned by a previous call (`<ts>:<id>`). */
+  since?: string;
+  /** Hard cap on returned rows (default 1000, max 5000). */
+  limit?: number;
+}
+
+export interface SessionEventPage {
+  events: PersistedTaskEvent[];
+  /** Opaque cursor — pass back as `since` to fetch the next page. */
+  nextCursor?: string;
+}
+
+/**
+ * Multi-task query for the "process replay with descendants" path. Lets the
+ * task event-history endpoint return a parent's events merged with all
+ * sub-agent events spawned by it, so the chat UI can populate per-agent
+ * expandable rows without an N+1 fetch dance.
+ *
+ * Pagination contract matches {@link SessionListOptions} (`<ts>:<id>` strict-
+ * greater) since per-task `seq` is not meaningful across taskIds.
+ *
+ * `rootSessionId` is an optional defense-in-depth filter — when provided,
+ * only events whose `session_id` matches the root task's session are
+ * returned, even if the resolver accidentally pulled in a stale subTaskId.
+ */
+export interface TreeListOptions {
+  /** Tasks to include — resolver caps this at TREE_TASKID_CAP. */
+  taskIds: string[];
+  /** When set, restrict to this session_id (defense-in-depth). */
+  rootSessionId?: string;
+  /** Opaque cursor token (`<ts>:<id>`). */
+  since?: string;
+  /** Hard cap on returned rows (default 1000, max 5000). */
+  limit?: number;
+}
+
+export interface TreeEventPage {
+  events: PersistedTaskEvent[];
+  /** Opaque cursor — pass back as `since` to fetch the next page. */
+  nextCursor?: string;
+}
+
+/**
+ * Defensive cap on the number of taskIds resolved into a single tree query.
+ * Prevents a runaway delegation graph (or accidental cycle detected late)
+ * from producing a multi-thousand-placeholder IN-list. The handler reports
+ * `truncated: true` when it has to stop discovery early.
+ */
+export const TREE_TASKID_CAP = 64;
+
 export class TaskEventStore {
   private db: Database;
   private insertStmt;
   private listStmt;
   private listSinceStmt;
+  private listSessionStmt;
+  private listSessionSinceStmt;
   /** Per-task monotonic seq counter, hydrated lazily from MAX(seq). */
   private seqByTask = new Map<string, number>();
 
@@ -75,6 +138,26 @@ export class TaskEventStore {
          FROM task_events
         WHERE task_id = $task_id AND seq >= $since
         ORDER BY seq ASC
+        LIMIT $limit`,
+    );
+    // Session-scoped ordering: rely on `(session_id, ts)` index +
+    // tie-break by `id` so the cursor is stable when multiple events
+    // share `ts`. `id` is `<taskId>-<seq>` so ordering by `id` lexically
+    // is monotonic-per-task; across tasks the tie-break is arbitrary but
+    // *deterministic*, which is what cursor pagination needs.
+    this.listSessionStmt = db.prepare(
+      `SELECT id, task_id, session_id, seq, event_type, payload_json, ts
+         FROM task_events
+        WHERE session_id = $session_id
+        ORDER BY ts ASC, id ASC
+        LIMIT $limit`,
+    );
+    this.listSessionSinceStmt = db.prepare(
+      `SELECT id, task_id, session_id, seq, event_type, payload_json, ts
+         FROM task_events
+        WHERE session_id = $session_id
+          AND (ts > $since_ts OR (ts = $since_ts AND id > $since_id))
+        ORDER BY ts ASC, id ASC
         LIMIT $limit`,
     );
   }
@@ -142,10 +225,166 @@ export class TaskEventStore {
     return rows.map(rowToEvent);
   }
 
+  /**
+   * Return events for a session ordered by `(ts, id)` across every task in
+   * the session. Powers `GET /api/v1/sessions/:id/event-history` — used by
+   * the client-side reconciler to recover process state after SSE drops or
+   * a reconnect, without having to know every active taskId in advance.
+   *
+   * Cursor format is opaque (`<ts>:<id>`). Clients should treat it as a
+   * pass-through token; pass back the `nextCursor` from the previous
+   * response as `since` for incremental polling.
+   */
+  listForSession(sessionId: string, opts: SessionListOptions = {}): SessionEventPage {
+    const limit = Math.max(1, Math.min(opts.limit ?? 1000, 5000));
+    let rows: TaskEventRow[];
+    if (opts.since) {
+      const parsed = parseSessionCursor(opts.since);
+      if (!parsed) {
+        // Invalid cursor — treat as "from beginning" rather than error,
+        // so a client that lost cursor state can still recover.
+        rows = this.listSessionStmt.all({ $session_id: sessionId, $limit: limit }) as TaskEventRow[];
+      } else {
+        rows = this.listSessionSinceStmt.all({
+          $session_id: sessionId,
+          $since_ts: parsed.ts,
+          $since_id: parsed.id,
+          $limit: limit,
+        }) as TaskEventRow[];
+      }
+    } else {
+      rows = this.listSessionStmt.all({ $session_id: sessionId, $limit: limit }) as TaskEventRow[];
+    }
+    const events = rows.map(rowToEvent);
+    const last = events[events.length - 1];
+    return {
+      events,
+      nextCursor: last ? `${last.ts}:${last.id}` : undefined,
+    };
+  }
+
+  /**
+   * Return the immediate sub-task IDs dispatched by `taskId`, in dispatch
+   * order. Reads from this task's persisted `workflow:delegate_dispatched`
+   * events — the workflow executor records `subTaskId` in those payloads,
+   * so this is the authoritative tree edge index without any new column.
+   *
+   * Used by the tree resolver in {@link handleTaskEventHistory} when the
+   * client asks for descendant events. Duplicates are removed.
+   */
+  listChildTaskIds(taskId: string): string[] {
+    const rows = this.db
+      .query<{ payload_json: string }, [string]>(
+        `SELECT payload_json FROM task_events
+          WHERE task_id = ? AND event_type = 'workflow:delegate_dispatched'
+          ORDER BY seq ASC`,
+      )
+      .all(taskId);
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.payload_json) as { subTaskId?: unknown };
+        if (typeof parsed.subTaskId === 'string' && parsed.subTaskId.length > 0 && !seen.has(parsed.subTaskId)) {
+          seen.add(parsed.subTaskId);
+          out.push(parsed.subTaskId);
+        }
+      } catch {
+        // A corrupt payload row is skipped — the tree query stays correct
+        // for the rest of the dispatch records, and the recorder never
+        // produces malformed JSON in normal operation.
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Return the `session_id` for a task, derived from any persisted event.
+   * Used as the root for the defense-in-depth session filter on tree
+   * queries. Returns `undefined` when no events exist (or the row's
+   * session_id was null) — the caller treats that as "no guard".
+   */
+  lookupSessionId(taskId: string): string | undefined {
+    const row = this.db
+      .query<{ session_id: string | null }, [string]>(
+        `SELECT session_id FROM task_events
+          WHERE task_id = ? AND session_id IS NOT NULL
+          ORDER BY seq ASC LIMIT 1`,
+      )
+      .get(taskId);
+    return row?.session_id ?? undefined;
+  }
+
+  /**
+   * Return events across multiple taskIds (the resolved descendant tree),
+   * ordered by `(ts, id)` and paginated via the same opaque cursor format
+   * as {@link listForSession}.
+   *
+   * Bun's prepared-statement cache is keyed on SQL text, so a varying
+   * IN-list size means we rebuild the query each call. The IN-list is
+   * already capped at {@link TREE_TASKID_CAP}, so the per-call parse cost
+   * is bounded and the request fanout is small.
+   */
+  listForTaskTree(_rootTaskId: string, opts: TreeListOptions): TreeEventPage {
+    const limit = Math.max(1, Math.min(opts.limit ?? 1000, 5000));
+    if (opts.taskIds.length === 0) {
+      return { events: [], nextCursor: undefined };
+    }
+    const ids = opts.taskIds.slice(0, TREE_TASKID_CAP);
+    const placeholders = ids.map(() => '?').join(', ');
+    const sessionGuard = opts.rootSessionId ? ' AND session_id = ?' : '';
+
+    const cursor = opts.since ? parseSessionCursor(opts.since) : undefined;
+    let sql: string;
+    let params: (string | number)[];
+    if (cursor) {
+      sql = `SELECT id, task_id, session_id, seq, event_type, payload_json, ts
+               FROM task_events
+              WHERE task_id IN (${placeholders})${sessionGuard}
+                AND (ts > ? OR (ts = ? AND id > ?))
+              ORDER BY ts ASC, id ASC
+              LIMIT ?`;
+      params = [
+        ...ids,
+        ...(opts.rootSessionId ? [opts.rootSessionId] : []),
+        cursor.ts,
+        cursor.ts,
+        cursor.id,
+        limit,
+      ];
+    } else {
+      sql = `SELECT id, task_id, session_id, seq, event_type, payload_json, ts
+               FROM task_events
+              WHERE task_id IN (${placeholders})${sessionGuard}
+              ORDER BY ts ASC, id ASC
+              LIMIT ?`;
+      params = [...ids, ...(opts.rootSessionId ? [opts.rootSessionId] : []), limit];
+    }
+    const rows = this.db.query<TaskEventRow, (string | number)[]>(sql).all(...params);
+    const events = rows.map(rowToEvent);
+    const last = events[events.length - 1];
+    // Match `listForSession`'s cursor contract — emit a cursor whenever
+    // there are rows; the empty-page response signals end-of-stream.
+    return {
+      events,
+      nextCursor: last ? `${last.ts}:${last.id}` : undefined,
+    };
+  }
+
   /** Drop in-memory seq cache entries for a task — used by tests. */
   forgetTask(taskId: string): void {
     this.seqByTask.delete(taskId);
   }
+}
+
+function parseSessionCursor(token: string): { ts: number; id: string } | undefined {
+  const idx = token.indexOf(':');
+  if (idx <= 0 || idx === token.length - 1) return undefined;
+  const tsStr = token.slice(0, idx);
+  const id = token.slice(idx + 1);
+  const ts = Number.parseInt(tsStr, 10);
+  if (!Number.isFinite(ts) || ts < 0) return undefined;
+  return { ts, id };
 }
 
 function rowToEvent(row: TaskEventRow): PersistedTaskEvent {

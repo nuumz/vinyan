@@ -363,6 +363,15 @@ export class WorkerPoolImpl implements WorkerPool {
   private soulStore?: import('../agent-context/soul-store.ts').SoulStore;
   private agentRegistry?: import('../agents/registry.ts').AgentRegistry;
   private skillAcquirer?: import('../agents/skill-acquirer.ts').SkillAcquirer;
+  /**
+   * Hybrid skill redesign — Claude-Code-style simple-skill registry.
+   * When set, every dispatch gathers the loaded skills + matches the goal
+   * against descriptions to inject relevant bodies into the system prompt.
+   * Independent of `agentRegistry`/`skillAcquirer` so simple-mode works even
+   * when the heavy stack is disabled.
+   */
+  private simpleSkillRegistry?: import('../../skills/simple/registry.ts').SimpleSkillRegistry;
+  private simpleMatcherOpts?: { threshold?: number; topK?: number };
   private streamingEnabled: boolean;
   private runtimeStateManager?: import('../ecosystem/runtime-state.ts').RuntimeStateManager;
   /** W3 P3: opt-in backend-abstraction delegation (MVP: L0 only). */
@@ -457,6 +466,111 @@ export class WorkerPoolImpl implements WorkerPool {
    */
   setSkillAcquirer(acquirer: import('../agents/skill-acquirer.ts').SkillAcquirer): void {
     this.skillAcquirer = acquirer;
+  }
+
+  /**
+   * Hybrid skill redesign — register the Claude-Code-style simple-skill
+   * registry. The dispatch path then enumerates loaded skills and inlines
+   * descriptions in the system prompt; matched bodies inject for the
+   * specific task. Independent of agent/skill-acquirer wiring.
+   */
+  setSimpleSkillRegistry(
+    registry: import('../../skills/simple/registry.ts').SimpleSkillRegistry,
+    opts?: { threshold?: number; topK?: number },
+  ): void {
+    this.simpleSkillRegistry = registry;
+    if (opts) this.simpleMatcherOpts = opts;
+  }
+
+  /**
+   * Hybrid skill redesign — resolve the simple-layer surface for a task.
+   *
+   * Priority:
+   *   1. If the caller already shipped `simpleSkills`/`simpleSkillBodies` via
+   *      `workerInput` (subprocess path or test fixture), trust them.
+   *   2. Otherwise pull a snapshot from the registered `simpleSkillRegistry`
+   *      and run the matcher against the goal text.
+   *   3. No registry → both fields stay undefined; sections render nothing.
+   *
+   * Best-effort: any error in the matcher degrades to "no bodies inlined"
+   * (the description list still surfaces if available).
+   *
+   * Side effect: when bodies are inlined, emits `skill:simple_invoked` per
+   * body so the factory's outcome telemetry can record per-task usage. The
+   * `taskId` argument is used as the bus payload key — pass empty string
+   * to skip emission (subprocess buildWorkerInput path; the in-process
+   * dispatch supplies the real task id).
+   */
+  private resolveSimpleSkillsForTask(
+    goal: string,
+    taskId: string,
+    agentId: string | undefined,
+    skillsFromInput?: import('../../skills/simple/loader.ts').SimpleSkill[],
+    bodiesFromInput?: import('../../skills/simple/loader.ts').SimpleSkill[],
+  ): {
+    simpleSkills?: readonly import('../../skills/simple/loader.ts').SimpleSkill[];
+    simpleSkillBodies?: readonly import('../../skills/simple/loader.ts').SimpleSkill[];
+  } {
+    if (skillsFromInput && skillsFromInput.length > 0) {
+      const ret: {
+        simpleSkills: readonly import('../../skills/simple/loader.ts').SimpleSkill[];
+        simpleSkillBodies?: readonly import('../../skills/simple/loader.ts').SimpleSkill[];
+      } = { simpleSkills: skillsFromInput };
+      if (bodiesFromInput && bodiesFromInput.length > 0) {
+        ret.simpleSkillBodies = bodiesFromInput;
+        this.emitSimpleInvocations(taskId, bodiesFromInput);
+      }
+      return ret;
+    }
+    if (!this.simpleSkillRegistry) return {};
+    // Per-agent visibility: each persona sees only shared skills + their own
+    // per-agent skills. Agent X's per-agent skills stay invisible to Y.
+    const snapshot = this.simpleSkillRegistry.getForAgent(agentId);
+    if (snapshot.length === 0) return {};
+    let matchedBodies: readonly import('../../skills/simple/loader.ts').SimpleSkill[] = [];
+    try {
+      // Lazy require to avoid pulling matcher into call paths that don't have
+      // a registry. The test surface uses the explicit `skillsFromInput`
+      // branch above so this path is only hit at production dispatch.
+      const matcherModule = require('../../skills/simple/matcher.ts') as typeof import('../../skills/simple/matcher.ts');
+      const explicit = matcherModule.detectExplicitInvocation(goal, snapshot);
+      if (explicit) {
+        matchedBodies = [explicit];
+      } else {
+        const matches = matcherModule.matchSkillsForTask(goal, snapshot, this.simpleMatcherOpts);
+        matchedBodies = matches.map((m) => m.skill);
+      }
+    } catch (err) {
+      console.warn(`[skill:simple-match] matcher failed: ${(err as Error).message}`);
+    }
+    const result: {
+      simpleSkills: readonly import('../../skills/simple/loader.ts').SimpleSkill[];
+      simpleSkillBodies?: readonly import('../../skills/simple/loader.ts').SimpleSkill[];
+    } = { simpleSkills: snapshot };
+    if (matchedBodies.length > 0) {
+      result.simpleSkillBodies = matchedBodies;
+      this.emitSimpleInvocations(taskId, matchedBodies);
+    }
+    return result;
+  }
+
+  private emitSimpleInvocations(
+    taskId: string,
+    bodies: readonly import('../../skills/simple/loader.ts').SimpleSkill[],
+  ): void {
+    if (!this.bus || !taskId) return;
+    for (const skill of bodies) {
+      try {
+        this.bus.emit('skill:simple_invoked', {
+          taskId,
+          skillName: skill.name,
+          scope: skill.scope,
+          ...(skill.agentId ? { agentId: skill.agentId } : {}),
+        });
+      } catch {
+        /* observational */
+      }
+    }
   }
 
   /**
@@ -749,6 +863,18 @@ export class WorkerPoolImpl implements WorkerPool {
       }
     }
 
+    // Hybrid skill redesign — resolve simple skills + matched bodies once
+    // here so the subprocess worker doesn't need its own registry. We emit
+    // invocations from this path so the dispatcher's bus subscriber records
+    // outcomes against the matched names regardless of dispatch mode. The
+    // agentId argument enforces per-persona visibility — agent X never sees
+    // agent Y's per-agent skills.
+    const { simpleSkills, simpleSkillBodies } = this.resolveSimpleSkillsForTask(
+      input.goal,
+      input.id,
+      input.agentId,
+    );
+
     return {
       taskId: input.id,
       goal: input.goal,
@@ -780,6 +906,13 @@ export class WorkerPoolImpl implements WorkerPool {
       // Phase-5B: skill cards forwarded so subprocess prompts render the
       // `agent-skill-cards` section identically to the in-process path.
       ...(loadedSkillCards && loadedSkillCards.length > 0 ? { loadedSkillCards } : {}),
+      // Hybrid skill redesign: simple-layer payload — descriptions for the
+      // session-cached `simple-skill-descriptions` block, bodies for
+      // the per-task `simple-skill-bodies` block.
+      ...(simpleSkills && simpleSkills.length > 0 ? { simpleSkills: [...simpleSkills] } : {}),
+      ...(simpleSkillBodies && simpleSkillBodies.length > 0
+        ? { simpleSkillBodies: [...simpleSkillBodies] }
+        : {}),
     };
   }
 
@@ -851,6 +984,18 @@ export class WorkerPoolImpl implements WorkerPool {
       }
     }
 
+    // Hybrid skill redesign — resolve simple-layer skills + matched bodies
+    // for this task. Subprocess path passes them through `workerInput`; the
+    // in-process path may have a fresh registry snapshot to use directly.
+    // Per-agent visibility honoured via the agentId arg.
+    const { simpleSkills, simpleSkillBodies } = this.resolveSimpleSkillsForTask(
+      workerInput.goal,
+      workerInput.taskId,
+      workerInput.agentId,
+      workerInput.simpleSkills,
+      workerInput.simpleSkillBodies,
+    );
+
     const { systemPrompt, userPrompt, tiers } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
@@ -867,6 +1012,8 @@ export class WorkerPoolImpl implements WorkerPool {
       agentProfile, // Multi-agent: specialist persona (developer, author, ...)
       peerAgents, // Multi-agent: consultable peer agents roster
       loadedSkillCards, // Phase-2: SKILL.md cards with hash-stamped envelope
+      simpleSkills, // Hybrid: Claude-Code-style descriptions (eager)
+      simpleSkillBodies, // Hybrid: bodies for matched skills (lazy)
     );
 
     const startTime = performance.now();

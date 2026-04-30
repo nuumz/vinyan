@@ -7,12 +7,20 @@
  * Source of truth: spec/tdd.md §17.1, https://openrouter.ai/docs
  */
 
+import type { VinyanBus } from '../../core/bus.ts';
 import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ToolCall } from '../types.ts';
 import { PromptTooLargeError } from '../types.ts';
-import { clampOpenRouterId, type LLMTraceMetadata, resolveLLMTrace } from './llm-trace-context.ts';
+import { clampOpenRouterId, getCurrentLLMTrace, type LLMTraceMetadata, resolveLLMTrace } from './llm-trace-context.ts';
+import { classifyProviderError, LLMProviderError } from './provider-errors.ts';
 import type { OpenAIMessage } from './provider-format.ts';
 import { normalizeMessages } from './provider-format.ts';
-import { DEFAULT_RETRYABLE_STATUSES, retryStreamWithBackoff, retryWithBackoff } from './retry.ts';
+import {
+  DEFAULT_RETRYABLE_STATUSES,
+  type OnRetryAttempt,
+  type OnRetryHeartbeat,
+  retryStreamWithBackoff,
+  retryWithBackoff,
+} from './retry.ts';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -59,6 +67,13 @@ export interface OpenRouterProviderConfig {
   model?: string;
   timeoutMs?: number;
   streamTimeouts?: Partial<StreamTimeouts>;
+  /**
+   * Optional bus reference. When supplied, the provider emits
+   * `llm:retry_attempt` per backoff sleep so downstream watchdogs
+   * (delegate-sub-agent watchdog, dashboards) can treat retries as
+   * live activity rather than a hang. Omit for tests / standalone use.
+   */
+  bus?: VinyanBus;
 }
 
 export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMProvider | null {
@@ -72,13 +87,56 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
     ...DEFAULT_STREAM_TIMEOUTS[config.tier],
     ...config.streamTimeouts,
   };
+  const providerId = `openrouter/${config.tier}/${model}`;
+
+  // Build a per-call onAttempt that emits `llm:retry_attempt` with the
+  // sub-task id resolved from the request's explicit trace metadata or
+  // (failing that) the ambient `runWithLLMTrace` context. When neither
+  // is set we suppress — emitting an event with no correlation id would
+  // create orphan rows in observability stores. `bus` may be undefined
+  // (test / standalone construction); the closure short-circuits.
+  const buildOnAttempt = (request: LLMRequest): OnRetryAttempt | undefined => {
+    const bus = config.bus;
+    if (!bus) return undefined;
+    return (info) => {
+      const taskId = request.trace?.traceId ?? getCurrentLLMTrace()?.traceId;
+      if (!taskId) return;
+      bus.emit('llm:retry_attempt', {
+        taskId,
+        providerId,
+        attempt: info.attempt,
+        delayMs: info.delayMs,
+        reason: info.reason,
+        ...(info.status !== undefined ? { status: info.status } : {}),
+      });
+    };
+  };
+  // In-flight heartbeat — emits `llm:request_alive` every 30s while the
+  // request is awaiting. Closes the watchdog gap for long single LLM
+  // calls (long-form author, large reasoning) that emit no other event.
+  const buildOnHeartbeat = (request: LLMRequest): OnRetryHeartbeat | undefined => {
+    const bus = config.bus;
+    if (!bus) return undefined;
+    return (info) => {
+      const taskId = request.trace?.traceId ?? getCurrentLLMTrace()?.traceId;
+      if (!taskId) return;
+      bus.emit('llm:request_alive', {
+        taskId,
+        providerId,
+        attempt: info.attempt,
+        durationMs: info.durationMs,
+      });
+    };
+  };
 
   return {
-    id: `openrouter/${config.tier}/${model}`,
+    id: providerId,
     tier: config.tier,
 
     async generate(request: LLMRequest): Promise<LLMResponse> {
       const requestTimeoutMs = request.timeoutMs ?? timeoutMs;
+      const onAttempt = buildOnAttempt(request);
+      const onHeartbeat = buildOnHeartbeat(request);
       const body: Record<string, unknown> = {
         model,
         max_tokens: request.maxTokens,
@@ -174,13 +232,17 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
               const estimate = Math.ceil(estimateText.length / 4);
               throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
             }
-            // Attach status for retry logic
-            const err = new Error(`OpenRouter API error ${response.status}: ${errorText}`);
-            (err as any).status = response.status;
-            // Attach retry-after header for backoff
-            const retryAfter = response.headers.get('retry-after');
-            if (retryAfter) (err as any).retryAfterHeader = retryAfter;
-            throw err;
+            const normalized = classifyProviderError({
+              kind: 'http',
+              providerId,
+              tier: config.tier,
+              providerName: 'OpenRouter',
+              model,
+              status: response.status,
+              bodyText: errorText,
+              retryAfterHeader: response.headers.get('retry-after'),
+            });
+            throw new LLMProviderError(normalized);
           }
 
           const data = (await response.json()) as OpenRouterResponse;
@@ -226,16 +288,23 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
           retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
           timeoutMs: requestTimeoutMs,
           parseRetryAfter: (error: unknown) => {
-            const header = (error as any)?.retryAfterHeader;
+            if (error instanceof LLMProviderError && error.normalized.retryAfterMs !== undefined) {
+              return error.normalized.retryAfterMs;
+            }
+            const header = (error as { retryAfterHeader?: string })?.retryAfterHeader;
             if (!header) return undefined;
             const parsed = parseInt(header, 10);
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
+          ...(onAttempt ? { onAttempt } : {}),
+          ...(onHeartbeat ? { onHeartbeat } : {}),
         },
       );
     },
 
     async generateStream(request: LLMRequest, onDelta: OnTextDelta): Promise<LLMResponse> {
+      const onAttempt = buildOnAttempt(request);
+      const onHeartbeat = buildOnHeartbeat(request);
       const effectiveStreamTimeouts = request.timeoutMs
         ? {
             connectTimeoutMs: Math.max(streamTimeouts.connectTimeoutMs, request.timeoutMs),
@@ -314,11 +383,17 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
               const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
               throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
             }
-            const err = new Error(`OpenRouter stream error ${response.status}: ${errorText}`);
-            (err as { status?: number }).status = response.status;
-            const retryAfter = response.headers.get('retry-after');
-            if (retryAfter) (err as { retryAfterHeader?: string }).retryAfterHeader = retryAfter;
-            throw err;
+            const normalized = classifyProviderError({
+              kind: 'http',
+              providerId,
+              tier: config.tier,
+              providerName: 'OpenRouter',
+              model,
+              status: response.status,
+              bodyText: errorText,
+              retryAfterHeader: response.headers.get('retry-after'),
+            });
+            throw new LLMProviderError(normalized);
           }
 
           const reader = response.body.getReader();
@@ -415,11 +490,16 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
           retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
           ...effectiveStreamTimeouts,
           parseRetryAfter: (error: unknown) => {
+            if (error instanceof LLMProviderError && error.normalized.retryAfterMs !== undefined) {
+              return error.normalized.retryAfterMs;
+            }
             const header = (error as { retryAfterHeader?: string })?.retryAfterHeader;
             if (!header) return undefined;
             const parsed = parseInt(header, 10);
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
           },
+          ...(onAttempt ? { onAttempt } : {}),
+          ...(onHeartbeat ? { onHeartbeat } : {}),
         },
       );
     },
@@ -430,10 +510,15 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
 export function registerOpenRouterProviders(
   registry: { register(provider: LLMProvider): void },
   apiKey?: string,
+  options: { bus?: VinyanBus } = {},
 ): number {
   let count = 0;
   for (const tier of ['fast', 'balanced', 'powerful', 'tool-uses'] as const) {
-    const provider = createOpenRouterProvider({ tier, apiKey });
+    const provider = createOpenRouterProvider({
+      tier,
+      apiKey,
+      ...(options.bus ? { bus: options.bus } : {}),
+    });
     if (provider) {
       registry.register(provider);
       count++;

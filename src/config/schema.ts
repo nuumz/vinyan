@@ -178,6 +178,21 @@ const AgentMemoryConfigSchema = z.object({
 
 export type AgentMemoryConfig = z.infer<typeof AgentMemoryConfigSchema>;
 
+// ─── C1: Critic — historical-adversary mode ─────────────────────────
+
+const CriticConfigSchema = z.object({
+  /**
+   * C1: when true, the critic call site hydrates `CriticContext` with
+   * `priorFailedApproaches` + `priorTraceSummary` from `agentMemory` so
+   * the reviewer can pressure-test the proposal against past attempts.
+   * Off by default. No-op when `agentMemory` is unwired or the task has
+   * no signature. See `docs/design/knowledge-loop-rfc.md` §5.
+   */
+  historical_adversary_enabled: z.boolean().default(false),
+});
+
+export type CriticConfig = z.infer<typeof CriticConfigSchema>;
+
 // ─── Wave 2: Replan Engine ───────────────────────────────────────────
 
 const ReplanConfigSchema = z.object({
@@ -247,7 +262,11 @@ const DegradationConfigSchema = z.object({
   /** Operator visibility surface for `/api/v1/health/degradation`. Default ON (additive). */
   enabled: z.boolean().default(true),
   /** Auto-clear stale entries after this many milliseconds. 0 disables eviction. */
-  entry_ttl_ms: z.number().int().min(0).default(5 * 60 * 1000),
+  entry_ttl_ms: z
+    .number()
+    .int()
+    .min(0)
+    .default(5 * 60 * 1000),
 });
 
 export type DegradationConfig = z.infer<typeof DegradationConfigSchema>;
@@ -310,6 +329,8 @@ const OrchestratorConfigSchema = z.object({
   degradation: DegradationConfigSchema.default(() => defaults(DegradationConfigSchema)),
   /** A10 / T6: goal-and-time grounding policy + thresholds. Extended actions opt-in. */
   goalGrounding: GoalGroundingConfigSchema.default(() => defaults(GoalGroundingConfigSchema)),
+  /** C1: critic feature flags (historical-adversary mode, etc). Default OFF. */
+  critic: CriticConfigSchema.default(() => defaults(CriticConfigSchema)),
   /**
    * W3 P3: opt-in delegation of L0 dispatch through the new WorkerBackend
    * abstraction (src/runtime). Default OFF so the 1996-test baseline is
@@ -433,7 +454,17 @@ export const AgentSpecSchema = z.object({
    * with config that pre-dates the redesign.
    */
   role: z
-    .enum(['coordinator', 'developer', 'architect', 'author', 'reviewer', 'assistant', 'researcher', 'mentor', 'concierge'])
+    .enum([
+      'coordinator',
+      'developer',
+      'architect',
+      'author',
+      'reviewer',
+      'assistant',
+      'researcher',
+      'mentor',
+      'concierge',
+    ])
     .optional(),
   /** True if this is a built-in agent (shipped with Vinyan). */
   builtin: z.boolean().optional(),
@@ -839,12 +870,33 @@ export const VinyanConfigSchema = z.object({
     .object({
       /**
        * Whether the orchestrator should emit `workflow:plan_ready` and wait
-       * for user approval before running. 'auto' = true for long-form
-       * creative goals (length ≥ 60), false otherwise.
+       * for user approval before running. The classifier
+       * (`classifyApprovalRequirement`) refines this into one of:
+       *   - 'none'             → dispatch immediately
+       *   - 'agent-discretion' → review window; auto-decide on timeout
+       *   - 'human-required'   → only a human may decide; no auto-approve
+       * 'auto' = require an `agent-discretion` review window for long-form
+       * goals (length ≥ 60), 'none' for short / clear goals. Plans with
+       * human-only steps (clarify / choose / decide / `human-input`) ALWAYS
+       * upgrade to 'human-required' regardless of this setting.
        */
       requireUserApproval: z.union([z.boolean(), z.literal('auto')]).default('auto'),
-      /** Auto-abort if the user does not respond within this window. */
-      approvalTimeoutMs: z.number().positive().default(600_000),
+      /**
+       * Review window for the approval gate. Applies to BOTH modes but with
+       * different timeout behaviour:
+       *   - 'agent-discretion': on timeout, Vinyan auto-decides via
+       *     `evaluateAutoApproval` (read-only → approve; mutating → reject).
+       *   - 'human-required':   on timeout, the executor surfaces an honest
+       *     "human decision required" failure. Vinyan NEVER auto-approves
+       *     a human-required plan.
+       * Default 3 minutes — long enough for an attentive user to review the
+       * plan card, short enough that an absent user does not block the
+       * worker indefinitely. Verdicts are surfaced via
+       * `workflow:plan_approved` / `workflow:plan_rejected` with
+       * `auto: true` so dashboards can distinguish a human approval from
+       * Vinyan's deferred judgement (or an honest human-required timeout).
+       */
+      approvalTimeoutMs: z.number().positive().default(180_000),
     })
     .optional(),
   /**
@@ -919,6 +971,65 @@ export const VinyanConfigSchema = z.object({
    */
   skills: z
     .object({
+      /**
+       * Hybrid skill redesign — controls which skill layer drives runtime
+       * dispatch.
+       *
+       *   - `'simple'` (default) — Claude-Code-style file-watcher layer. Drop
+       *     `~/.vinyan/skills/<name>/SKILL.md` (frontmatter `name` + `description`
+       *     + body) and it works on the next session. No tier ladder, no
+       *     auction matching, no learning loop.
+       *   - `'epistemic'` — heavy-schema layer (Phases 1-15.5: ACL composition,
+       *     content-hashed SKILL.md, Wilson LB tier graduation, autonomous
+       *     skill creator, hub fetch). Power users who want A1-A9 enforcement.
+       *   - `'both'` — simple as the day-1 surface; epistemic as the audited
+       *     stack; bridge auto-graduates simple skills with sufficient outcome
+       *     evidence into the heavy schema.
+       *
+       * `'simple'` ships as the default because the heavy schema's authoring
+       * cost (Zod validation, tier declaration, capability vectors, content
+       * hash) was the dominant reason hand-authored skills never reached
+       * users in practice — see the persona/skill redesign retrospective.
+       */
+      mode: z.enum(['simple', 'epistemic', 'both']).default('simple'),
+      /**
+       * Simple-layer sub-config. Controls Claude-Code-style file watcher,
+       * description matching, and lazy body injection.
+       */
+      simple: z
+        .object({
+          /** Master switch for the simple layer. Defaults true. */
+          enabled: z.boolean().default(true),
+          /**
+           * Override `~/.vinyan/skills/` (user-global) location. Mainly for
+           * tests; users almost never set this.
+           */
+          user_dir: z.string().optional(),
+          /**
+           * Override the project-scoped skills dir
+           * (`<workspace>/.vinyan/skills/`). Mainly for tests.
+           */
+          project_dir: z.string().optional(),
+          /**
+           * Watcher debounce window in ms. Default 200ms — avoids storms
+           * from atomic-rename editors.
+           */
+          watcher_debounce_ms: z.number().int().positive().default(200),
+          /**
+           * Minimum description ↔ task similarity required to inline a
+           * skill body. Default 0.15 (Jaccard). Lower = more skills inlined
+           * but more noise; higher = stricter relevance.
+           */
+          match_threshold: z.number().min(0).max(1).default(0.15),
+          /** Max number of skill bodies inlined per task. Default 3. */
+          match_top_k: z.number().int().min(1).default(3),
+        })
+        .default({
+          enabled: true,
+          watcher_debounce_ms: 200,
+          match_threshold: 0.15,
+          match_top_k: 3,
+        }),
       discovery: z
         .object({
           /**

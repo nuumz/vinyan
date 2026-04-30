@@ -256,6 +256,13 @@ export interface OrchestratorDeps {
   goalLoop?: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number };
   // Wave 3: Agent-Facing Memory API ("second brain") — read-only queries over all stores.
   agentMemory?: AgentMemoryAPI;
+  /**
+   * C1: when true (config flag `orchestrator.critic.historical_adversary_enabled`),
+   * the critic call site hydrates `CriticContext` with prior failures and
+   * trace base-rate via `maybeAttachHistoricalAdversary`. Default off.
+   * No-op when `agentMemory` is undefined or the task has no signature.
+   */
+  criticHistoricalAdversaryEnabled?: boolean;
   /** Wave 5b/Capability-First Phase 4: runtime skill hints in worker execution context. */
   skillHintsConfig?: import('./skill-hints.ts').SkillHintsConfig;
   /** A10 / T6: goal-and-time grounding policy (thresholds + extended actions). */
@@ -351,6 +358,29 @@ export interface OrchestratorDeps {
    * behavior. Graceful degradation; never hard-fails on missing stage 2.
    */
   llmComprehensionEngine?: import('./comprehension/types.ts').ComprehensionEngine;
+  /**
+   * Hybrid skill registry — Claude-Code-style SKILL.md files loaded from
+   * the four scopes (`~/.vinyan/skills`, `<ws>/.vinyan/skills`, `<ws>/.vinyan/agents/<id>/skills`,
+   * `~/.vinyan/agents/<id>/skills`). Wired by the factory so the conversational
+   * short-circuit can resolve `/skill-name` invocations and inline matched
+   * bodies into its hand-built system prompt — matching the in-process and
+   * subprocess full-pipeline paths.
+   */
+  simpleSkillRegistry?: import('../skills/simple/registry.ts').SimpleSkillRegistry;
+  /** Matcher tuning for the conversational path. Mirrors `WorkerPool.simpleMatcherOpts`. */
+  simpleSkillMatcherOpts?: import('../skills/simple/matcher.ts').MatchOptions;
+  /**
+   * External Coding CLI workflow strategy — wraps the
+   * `ExternalCodingCliController` with verification and capability matrix
+   * routing. When set AND `intentResolution.externalCodingCli` is populated
+   * by the deterministic pre-classifier, the agentic-workflow branch
+   * dispatches directly through this strategy instead of letting the LLM
+   * workflow planner re-route. When unset, the dispatch surfaces an honest
+   * unsupported-capability outcome rather than falling back to shell_exec
+   * (which is what triggered "dangerous metacharacter" rejections for NL
+   * "ask Claude Code CLI" prompts before this layer was wired).
+   */
+  codingCliStrategy?: import('./external-coding-cli/external-coding-cli-workflow-strategy.ts').CodingCliWorkflowStrategy;
 }
 
 const MAX_ROUTING_LEVEL: RoutingLevel = 3;
@@ -1486,7 +1516,6 @@ function resolveKnowledgeProviderOrder(
 // Strategy short-circuit helpers
 // ---------------------------------------------------------------------------
 
-
 async function executeDirectTool(
   input: TaskInput,
   intent: IntentResolution,
@@ -1988,9 +2017,14 @@ async function executeTaskCore(
     // The full-pipeline emit later refines this with the real routing data
     // (the reducer treats `task:start` as upsert — see `task:start` case
     // in vinyan-ui/src/hooks/use-streaming-turn.ts).
+    // model=null is the schema's "no engine resolved yet" signal (see
+    // RoutingDecision.model in types.ts). Earlier code used the string
+    // sentinel 'pending', which leaked into the UI's StatsRow as a literal
+    // engine label for strategies that never re-emit task:start with the
+    // real engine (e.g. multi-agent parent turns have no single engine).
     const preliminaryRouting: RoutingDecision = {
       level: 0,
-      model: 'pending',
+      model: null,
       budgetTokens: input.budget.maxTokens,
       latencyBudgetMs: input.budget.maxDurationMs,
     };
@@ -2184,6 +2218,133 @@ async function executeTaskCore(
         // Fall through to pipeline if direct tool execution failed
       }
       if (intentResolution.strategy === 'agentic-workflow') {
+        // External Coding CLI fast-path — when the deterministic intent
+        // classifier flagged this turn as a delegation request to Claude
+        // Code / GitHub Copilot CLI, dispatch directly through the
+        // workflow strategy. Skips the LLM workflow planner entirely so we
+        // do NOT round-trip the original NL prompt (which may contain
+        // backticked paths) through any code path that would hand it to
+        // shell_exec.
+        if (intentResolution.externalCodingCli) {
+          const cliReq = intentResolution.externalCodingCli;
+          if (!deps.codingCliStrategy) {
+            // Honest unsupported-capability — A9 resilient degradation. The
+            // user asked for an external CLI, the binding is not configured.
+            // Surface the reason instead of falling back to shell_exec.
+            const reason = `External Coding CLI not configured (provider=${cliReq.providerId}). Set \`codingCli.enabled=true\` in vinyan.json and ensure the CLI binary is on PATH.`;
+            const trace: ExecutionTrace = {
+              id: `trace-${input.id}-coding-cli-unsupported`,
+              taskId: input.id,
+              workerId: 'external-coding-cli',
+              timestamp: Date.now(),
+              routingLevel: 2,
+              approach: 'external-coding-cli',
+              oracleVerdicts: {},
+              modelUsed: 'none',
+              tokensConsumed: 0,
+              durationMs: 0,
+              outcome: 'failure',
+              affectedFiles: input.targetFiles ?? [],
+              governanceProvenance: buildShortCircuitProvenance({
+                input,
+                decisionId: 'external-coding-cli-unsupported',
+                attributedTo: 'intentResolver',
+                wasGeneratedBy: 'executeTaskCore.externalCodingCli',
+                reason,
+                evidence: [
+                  {
+                    kind: 'routing-factor',
+                    source: 'intent-strategy',
+                    summary: `provider=${cliReq.providerId}; mode=${cliReq.mode}; reason=${cliReq.reason}`,
+                  },
+                ],
+              }),
+            };
+            await deps.traceCollector.record(trace);
+            const result: TaskResult = {
+              id: input.id,
+              status: 'failed',
+              mutations: [],
+              trace,
+              answer: reason,
+            };
+            deps.bus?.emit('task:complete', { result });
+            return result;
+          }
+          const cliStartedAt = Date.now();
+          const subTaskId = `${input.id}-coding-cli`;
+          const outcome = await deps.codingCliStrategy.run({
+            taskId: subTaskId,
+            rootGoal: cliReq.taskText || input.goal,
+            cwd: cliReq.cwd ?? deps.workspace ?? process.cwd(),
+            sessionId: input.sessionId,
+            providerId:
+              cliReq.providerId === 'claude-code' || cliReq.providerId === 'github-copilot'
+                ? cliReq.providerId
+                : undefined,
+            mode: cliReq.mode === 'headless' || cliReq.mode === 'interactive' ? cliReq.mode : 'auto',
+            allowedScope: cliReq.targetPaths ?? [],
+            correlationId: input.id,
+          });
+          const cliDurationMs = Date.now() - cliStartedAt;
+          const traceOutcome: ExecutionTrace['outcome'] =
+            outcome.status === 'completed' ? 'success' : 'failure';
+          const trace: ExecutionTrace = {
+            id: `trace-${input.id}-coding-cli`,
+            taskId: input.id,
+            workerId: 'external-coding-cli',
+            timestamp: cliStartedAt,
+            routingLevel: 2,
+            approach: 'external-coding-cli',
+            oracleVerdicts: {},
+            modelUsed: outcome.providerId ?? 'unknown',
+            tokensConsumed: 0,
+            durationMs: cliDurationMs,
+            outcome: traceOutcome,
+            affectedFiles: outcome.claim?.changedFiles ?? input.targetFiles ?? [],
+            governanceProvenance: buildShortCircuitProvenance({
+              input,
+              decisionId: 'external-coding-cli-dispatch',
+              attributedTo: 'intentResolver',
+              wasGeneratedBy: 'executeTaskCore.externalCodingCli',
+              reason: outcome.reason,
+              evidence: [
+                {
+                  kind: 'routing-factor',
+                  source: 'intent-strategy',
+                  summary: `provider=${outcome.providerId ?? 'unknown'}; status=${outcome.status}; verified=${outcome.verification?.passed ?? false}`,
+                },
+              ],
+            }),
+          };
+          await deps.traceCollector.record(trace);
+          const answerLines: string[] = [
+            `External Coding CLI: ${outcome.providerId ?? '(unknown)'} (${outcome.status})`,
+            `Reason: ${outcome.reason}`,
+          ];
+          if (outcome.claim) {
+            if (outcome.claim.summary) answerLines.push(`Summary: ${outcome.claim.summary}`);
+            if (outcome.claim.changedFiles.length > 0) {
+              answerLines.push(`Changed files:\n  - ${outcome.claim.changedFiles.join('\n  - ')}`);
+            }
+          }
+          if (outcome.verification) {
+            answerLines.push(
+              `Verification: passed=${outcome.verification.passed}` +
+                (outcome.verification.predictionError ? ' (A7 prediction error: CLI claimed pass)' : ''),
+            );
+          }
+          const result: TaskResult = {
+            id: input.id,
+            status: outcome.status === 'completed' ? 'completed' : 'failed',
+            mutations: [],
+            trace,
+            answer: answerLines.join('\n'),
+          };
+          deps.bus?.emit('task:complete', { result });
+          return result;
+        }
+
         // Phase D+E gate: fresh long-form creative tasks surface structured
         // clarification questions (genre/audience/tone/length/platform) before
         // dispatching the workflow. Skipped once the session has any prior
@@ -2229,6 +2390,12 @@ async function executeTaskCore(
             intentWorkflowPrompt: intentResolution.workflowPrompt,
             workflowConfig: deps.workflowConfig,
             sessionTurns,
+            // Plumb the External Coding CLI strategy so workflow plans that
+            // explicitly emit `strategy: 'external-coding-cli'` for a step
+            // can dispatch through the same controller. Without this, that
+            // step branch returns the "external-coding-cli strategy not
+            // wired" failure even when the controller exists upstream.
+            codingCliStrategy: deps.codingCliStrategy,
           });
           // Map workflow status → ExecutionTrace.outcome. The DB schema's
           // CHECK constraint on outcome only permits 'success' | 'failure' |
@@ -2236,15 +2403,24 @@ async function executeTaskCore(
           // INSERT OR IGNORE in trace_store and the workflow trace never
           // persists, leaving the assistant message in chat to fall back to
           // the early-phase comprehension trace and mislabel its chips
-          // ("Conversational" instead of "Workflow"). Treat partial as
-          // success because a usable synthesized answer was produced; the
-          // per-step failures are already exposed via stepResults +
-          // workflow:delegate_completed bus events.
+          // ("Conversational" instead of "Workflow"). Map partial:
+          //   - some delegates succeeded → 'success' (usable synthesis)
+          //   - ALL delegates failed → 'failure' (the user explicitly asked
+          //     for agent diversity and we got none — the deterministic
+          //     "no-fabrication" report is shown but it's not a green
+          //     outcome). Session 4e62ebe6 surfaced this: 3/3 delegates
+          //     timed out, plan was 0/4 with three red ✗, but the trace
+          //     chip read "success" because partial got remapped blindly.
+          const delegateResults = workflowResult.stepResults.filter((r) => r.strategyUsed === 'delegate-sub-agent');
+          const allDelegatesFailedAtTrace =
+            delegateResults.length > 0 && delegateResults.every((r) => r.status === 'failed' || r.status === 'skipped');
           const traceOutcome: ExecutionTrace['outcome'] =
             workflowResult.status === 'completed'
               ? 'success'
               : workflowResult.status === 'partial'
-                ? 'success'
+                ? allDelegatesFailedAtTrace
+                  ? 'failure'
+                  : 'success'
                 : 'failure';
           const trace: ExecutionTrace = {
             id: `trace-${input.id}-workflow`,
@@ -3209,13 +3385,22 @@ async function executeTaskCore(
               // worker self-grade vs deterministic verdict so the critic
               // gets a calibration warning when the worker was overconfident.
               const priorPredictionError = workingMemory.getLastPredictionError();
-              const criticContext = {
+              const baseCriticContext = {
                 riskScore: routing.riskScore,
                 routingLevel: routing.level,
                 ...(priorGrade ? { priorAccountabilityGrade: priorGrade } : {}),
                 ...(priorBlockers.length > 0 ? { priorBlockerCategories: priorBlockers } : {}),
                 ...(priorPredictionError ? { priorPredictionError } : {}),
               };
+              // C1: optionally hydrate with historical-adversary data so the
+              // reviewer can pressure-test against prior failures + base-rate.
+              // No-op when the flag is off, agentMemory is unwired, or the
+              // task has no taskTypeSignature.
+              const { maybeAttachHistoricalAdversary } = await import('./critic/historical-adversary.ts');
+              const criticContext = await maybeAttachHistoricalAdversary(baseCriticContext, deps, {
+                taskSignature: understanding?.taskTypeSignature as string | undefined,
+                fileTarget: input.targetFiles?.[0],
+              });
               const criticResult = await deps.criticEngine.review(
                 proposal,
                 input,
@@ -3706,8 +3891,6 @@ async function executeTaskCore(
     }
   }
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Helpers

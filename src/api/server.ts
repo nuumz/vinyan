@@ -13,13 +13,14 @@ import { z } from 'zod/v4';
 import type { A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { A2ABridge } from '../a2a/bridge.ts';
 import type { VinyanBus } from '../core/bus.ts';
-import type { RuleStore } from '../db/rule-store.ts';
-import type { TraceStore } from '../db/trace-store.ts';
 import { buildDecisionReplay } from '../db/governance-query.ts';
+import type { RuleStore } from '../db/rule-store.ts';
+import { TREE_TASKID_CAP } from '../db/task-event-store.ts';
+import type { TraceStore } from '../db/trace-store.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
+import type { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import type { MetricsCollector } from '../observability/metrics.ts';
 import { getSystemMetrics } from '../observability/metrics.ts';
-import type { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import { renderPrometheus } from '../observability/prometheus.ts';
 import type { RunOracleOptions } from '../oracle/runner.ts';
 import { engineIdFromWorker, workerIdForEngine } from '../orchestrator/llm/engine-worker-binding.ts';
@@ -27,6 +28,7 @@ import type { EngineProfile, EngineStats, ExecutionTrace, TaskInput, TaskResult 
 import { isValidProfileName } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
+import { handleCodingCliRoute } from './coding-cli-routes.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
 import type { Session, SessionManager } from './session-manager.ts';
 import { createSessionSSEStream, createSSEStream } from './sse.ts';
@@ -55,6 +57,14 @@ export interface APIServerDeps {
    * just because no task has run yet. Wired in `cli/serve.ts`.
    */
   engineRegistry?: import('../orchestrator/llm/llm-reasoning-engine.ts').ReasoningEngineRegistry;
+  /**
+   * LLM provider registry — used by ad-hoc one-shot endpoints that need a
+   * direct generation (e.g. the human-input suggestion endpoint that
+   * proposes 3 candidate answers when the user says "I can't think of
+   * anything"). NOT used for full task execution — that goes through the
+   * orchestrator via `executeTask`.
+   */
+  llmRegistry?: import('../orchestrator/llm/provider-registry.ts').LLMProviderRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   /** A9 / T4 — operator visibility surface for `/api/v1/health/degradation`. */
@@ -76,10 +86,29 @@ export interface APIServerDeps {
   };
   /** Approval gate for high-risk task approval (A6). */
   approvalGate?: import('../orchestrator/approval-gate.ts').ApprovalGate;
+  /** External Coding CLI controller — drives Claude Code / GitHub Copilot. */
+  codingCliController?: import('../orchestrator/external-coding-cli/index.ts').ExternalCodingCliController;
+  /** Persistence for external coding CLI sessions/events/approvals/decisions. */
+  codingCliStore?: import('../db/coding-cli-store.ts').CodingCliStore;
   /** AgentProfileStore — workspace-level Vinyan Agent identity (singleton). */
   agentProfileStore?: import('../db/agent-profile-store.ts').AgentProfileStore;
   /** Skill store for agent-profile summarize(). */
   skillStore?: import('../db/skill-store.ts').SkillStore;
+  /** Simple skill registry — Claude-Code-compatible SKILL.md catalog (read side). */
+  simpleSkillRegistry?: import('../skills/simple/registry.ts').SimpleSkillRegistry;
+  /** Heavy artifact store — epistemic SKILL.md surface. */
+  skillArtifactStore?: import('../skills/artifact-store.ts').SkillArtifactStore;
+  /**
+   * Filesystem overrides for `POST/PUT/DELETE /api/v1/skills` writes. Mirrors
+   * `LoadSimpleSkillsOptions` so test fixtures can write to tmp dirs without
+   * spilling onto the real `~/.vinyan/`.
+   */
+  simpleSkillFsOverrides?: {
+    userSkillsDir?: string;
+    projectSkillsDir?: string;
+    userAgentsDir?: string;
+    projectAgentsDir?: string;
+  };
   /** Pattern store for agent-profile summarize(). */
   patternStore?: import('../db/pattern-store.ts').PatternStore;
   /** AgentContextStore — per-agent episodic memory for /agents/:id detail. */
@@ -303,6 +332,19 @@ export class VinyanAPIServer {
       return jsonResponse({ message: 'Dashboard moved to vinyan-ui. Run: cd vinyan-ui && bun run dev' }, 301);
     }
 
+    // ── External Coding CLI (Claude Code / GitHub Copilot) ──────────────
+    if (path.startsWith('/api/v1/coding-cli')) {
+      const controller = this.deps.codingCliController;
+      if (!controller) {
+        return jsonResponse({ error: 'coding-cli controller not configured' }, 503);
+      }
+      const handled = await handleCodingCliRoute(method, path, req, {
+        controller,
+        store: this.deps.codingCliStore,
+      });
+      if (handled) return handled;
+    }
+
     // ── Auth bootstrap (localhost only — lets the UI auto-fetch the token) ──
     if (method === 'GET' && path === '/api/v1/auth/bootstrap') {
       return jsonResponse({ token: this.auth.getToken() });
@@ -434,6 +476,16 @@ export class VinyanAPIServer {
       return this.handleCompactSession(sessionId);
     }
 
+    // Session-scoped persisted event log — used by the reconciler to
+    // recover process state across SSE drops / reconnects without needing
+    // to enumerate every active taskId. Mirrors the per-task variant
+    // (`/tasks/:id/event-history`) but orders rows by `(ts, id)` across
+    // every task that ran under the session.
+    if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/event-history$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleSessionEventHistory(sessionId, req);
+    }
+
     // Agent Conversation: conversational message endpoints.
     if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/messages$/)) {
       const sessionId = path.split('/')[4]!;
@@ -468,6 +520,30 @@ export class VinyanAPIServer {
     if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/reject$/)) {
       const sessionId = path.split('/')[4]!;
       return this.handleWorkflowReject(sessionId, req);
+    }
+    // User answers an in-plan `human-input` step (workflow paused on
+    // `workflow:human_input_needed`). Resolves the executor's wait by
+    // emitting `workflow:human_input_provided` with the user's value.
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/human-input$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleWorkflowHumanInput(sessionId, req);
+    }
+    // Ask the LLM to propose N candidate answers for the human-input
+    // question — surfaced as chips on the inline answer card so the user
+    // doesn't have to start from scratch when they're unsure.
+    if (
+      method === 'POST' &&
+      path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/human-input\/suggest$/)
+    ) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleWorkflowHumanInputSuggest(sessionId, req);
+    }
+    // User decides whether to ship a partial result (workflow paused on
+    // `workflow:partial_failure_decision_needed`). Emits the matching
+    // `_provided` event so the executor's awaiter can resolve.
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/partial-decision$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleWorkflowPartialDecision(sessionId, req);
     }
 
     // ── Read-only queries ─────────────────────────────────
@@ -512,8 +588,38 @@ export class VinyanAPIServer {
       return this.handleGetAgent(agentId);
     }
 
+    // Operator-facing AgentContext actions. Read-only export is safe; reset
+    // mutates learning state and is audit-logged at the handler.
+    if (method === 'GET' && path.match(/^\/api\/v1\/agents\/[^/]+\/context\/export$/)) {
+      const agentId = decodeURIComponent(path.split('/')[4]!);
+      return this.handleExportAgentContext(agentId);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/agents\/[^/]+\/proficiencies\/reset$/)) {
+      const agentId = decodeURIComponent(path.split('/')[4]!);
+      return this.handleResetProficiency(agentId, req);
+    }
+
     if (method === 'GET' && path === '/api/v1/skills') {
       return this.handleListSkills(req);
+    }
+
+    // Unified Skill Library detail / CRUD. Detail by id, then create/update/
+    // delete simple skills (heavy + cached return 405). Order matters — the
+    // catch-all `:id` route must come AFTER the bare `/skills` listing above.
+    if (method === 'POST' && path === '/api/v1/skills') {
+      return this.handleCreateSkill(req);
+    }
+    if (method === 'GET' && path.startsWith('/api/v1/skills/')) {
+      const id = decodeURIComponent(path.slice('/api/v1/skills/'.length));
+      return this.handleGetSkill(id);
+    }
+    if (method === 'PUT' && path.startsWith('/api/v1/skills/')) {
+      const id = decodeURIComponent(path.slice('/api/v1/skills/'.length));
+      return this.handleUpdateSkill(id, req);
+    }
+    if (method === 'DELETE' && path.startsWith('/api/v1/skills/')) {
+      const id = decodeURIComponent(path.slice('/api/v1/skills/'.length));
+      return this.handleDeleteSkill(id);
     }
 
     if (method === 'GET' && path === '/api/v1/patterns') {
@@ -595,6 +701,10 @@ export class VinyanAPIServer {
 
     if (method === 'GET' && path === '/api/v1/providers') {
       return this.handleListProviders();
+    }
+
+    if (method === 'GET' && path === '/api/v1/providers/health') {
+      return this.handleProviderHealth();
     }
 
     if (method === 'GET' && path === '/api/v1/federation') {
@@ -1069,10 +1179,7 @@ export class VinyanAPIServer {
     const allowedSources = new Set(['ui', 'api', 'all']);
     const sourceFilter = allowedSources.has(sourceParam) ? sourceParam : 'ui';
     const allSessions = this.deps.sessionManager?.listSessions({ state, search, limit, offset }) ?? [];
-    const sessions =
-      sourceFilter === 'all'
-        ? allSessions
-        : allSessions.filter((s) => s.source === sourceFilter);
+    const sessions = sourceFilter === 'all' ? allSessions : allSessions.filter((s) => s.source === sourceFilter);
     return jsonResponse({ sessions });
   }
 
@@ -1179,9 +1286,7 @@ export class VinyanAPIServer {
     const TIMEOUT_RETRY_BUDGET = { maxTokens: 50_000, maxDurationMs: 240_000, maxRetries: 3 } as const;
     const budget: TaskInput['budget'] =
       body.budget ??
-      (body.maxDurationMs
-        ? { ...TIMEOUT_RETRY_BUDGET, maxDurationMs: body.maxDurationMs }
-        : TIMEOUT_RETRY_BUDGET);
+      (body.maxDurationMs ? { ...TIMEOUT_RETRY_BUDGET, maxDurationMs: body.maxDurationMs } : TIMEOUT_RETRY_BUDGET);
 
     const newId = crypto.randomUUID();
     const goal = body.goal ?? parent.input.goal;
@@ -1255,8 +1360,8 @@ export class VinyanAPIServer {
   }
 
   private handleListApprovals(): Response {
-    const ids = this.deps.approvalGate?.getPendingIds() ?? [];
-    return jsonResponse({ pending: ids });
+    const pending = this.deps.approvalGate?.getPending() ?? [];
+    return jsonResponse({ pending });
   }
 
   // ── Phase D: structured clarification response ────────────
@@ -1331,6 +1436,141 @@ export class VinyanAPIServer {
     }
   }
 
+  private async handleWorkflowHumanInput(sessionId: string, req: Request): Promise<Response> {
+    if (!this.deps.bus) {
+      return jsonResponse({ error: 'Bus not configured' }, 501);
+    }
+    try {
+      const body = (await req.json()) as { taskId?: string; stepId?: string; value?: string };
+      if (!body.taskId || !body.stepId) {
+        return jsonResponse({ error: 'taskId and stepId are required' }, 400);
+      }
+      if (typeof body.value !== 'string') {
+        return jsonResponse({ error: 'value (string) is required' }, 400);
+      }
+      this.deps.bus.emit('workflow:human_input_provided', {
+        taskId: body.taskId,
+        stepId: body.stepId,
+        value: body.value,
+        sessionId,
+      });
+      return jsonResponse({
+        taskId: body.taskId,
+        stepId: body.stepId,
+        sessionId,
+        status: 'recorded',
+      });
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+  }
+
+  /**
+   * Generate `count` candidate answers for a workflow `human-input` step's
+   * question. Used by the inline answer card's "Suggest answers" button —
+   * the user requested this when they hit a question they couldn't answer
+   * off the cuff (e.g. "Ask the user for the topic the agents should
+   * compete on").
+   *
+   * Implementation:
+   *   1. select 'fast' tier provider — short structured generation, low
+   *      latency matters more than depth here
+   *   2. ask for JSON `{"suggestions": [string, …]}` with a strict count
+   *   3. salvage with a regex/line-based fallback if the model emits prose
+   *      around the JSON — never throw an opaque parse error at the user
+   *   4. cap suggestions at 4 and individual length at 240 chars
+   *
+   * NEVER falls back to a hardcoded list — if the LLM is unavailable we
+   * return 503 so the UI can keep showing the "type your own answer" path
+   * instead of presenting fake-looking placeholder options.
+   */
+  private async handleWorkflowHumanInputSuggest(
+    sessionId: string,
+    req: Request,
+  ): Promise<Response> {
+    const llm = this.deps.llmRegistry?.selectByTier('fast') ?? this.deps.llmRegistry?.selectByTier('balanced');
+    if (!llm) {
+      return jsonResponse({ error: 'No LLM provider configured for suggestions' }, 503);
+    }
+    let body: { taskId?: string; stepId?: string; question?: string; count?: number };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+    if (!body.taskId || !body.stepId || !body.question) {
+      return jsonResponse({ error: 'taskId, stepId, and question are required' }, 400);
+    }
+    const count = Math.max(2, Math.min(4, typeof body.count === 'number' ? body.count : 3));
+    const trimmedQ = body.question.trim();
+    if (trimmedQ.length === 0) {
+      return jsonResponse({ error: 'question must be non-empty' }, 400);
+    }
+
+    const systemPrompt =
+      'You are helping a user who is stuck on a question they need to answer to continue ' +
+      'a multi-agent workflow. Propose concise candidate answers they might pick. Each answer ' +
+      'must be self-contained and could be sent verbatim as their reply. Avoid meta-text ' +
+      `("you could say…") — write the answer itself. Reply ONLY with valid JSON of the shape ` +
+      `{"suggestions":["…","…"]} containing exactly ${count} items, each ≤ 240 characters.`;
+    const userPrompt = `QUESTION: ${trimmedQ}\n\nReturn ${count} candidate answers as JSON.`;
+
+    let raw: string;
+    try {
+      const resp = await llm.generate({
+        systemPrompt,
+        userPrompt,
+        maxTokens: 600,
+        temperature: 0.7,
+        timeoutMs: 15_000,
+      });
+      raw = resp.content ?? '';
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'LLM generation failed';
+      return jsonResponse({ error: message }, 502);
+    }
+
+    const suggestions = parseSuggestionList(raw, count);
+    if (suggestions.length === 0) {
+      return jsonResponse({ error: 'LLM did not return usable suggestions' }, 502);
+    }
+    return jsonResponse({
+      taskId: body.taskId,
+      stepId: body.stepId,
+      sessionId,
+      suggestions,
+    });
+  }
+
+  private async handleWorkflowPartialDecision(sessionId: string, req: Request): Promise<Response> {
+    if (!this.deps.bus) {
+      return jsonResponse({ error: 'Bus not configured' }, 501);
+    }
+    try {
+      const body = (await req.json()) as { taskId?: string; decision?: string; rationale?: string };
+      if (!body.taskId) {
+        return jsonResponse({ error: 'taskId is required' }, 400);
+      }
+      if (body.decision !== 'continue' && body.decision !== 'abort') {
+        return jsonResponse({ error: "decision must be 'continue' or 'abort'" }, 400);
+      }
+      this.deps.bus.emit('workflow:partial_failure_decision_provided', {
+        taskId: body.taskId,
+        decision: body.decision,
+        sessionId,
+        ...(typeof body.rationale === 'string' ? { rationale: body.rationale } : {}),
+      });
+      return jsonResponse({
+        taskId: body.taskId,
+        sessionId,
+        decision: body.decision,
+        status: 'recorded',
+      });
+    } catch {
+      return jsonResponse({ error: 'Invalid request body' }, 400);
+    }
+  }
+
   // ── Agent / Skill / Pattern Handlers (read-only) ────────
 
   private handleListAgents(): Response {
@@ -1398,16 +1638,261 @@ export class VinyanAPIServer {
     });
   }
 
-  private handleListSkills(req: Request): Response {
-    const store = this.deps.skillStore;
-    if (!store) return jsonResponse({ skills: [] });
+  /**
+   * Export the full AgentContext as JSON — backup / migrate / audit. The
+   * payload mirrors `findById()` exactly; downstream tooling treats it as
+   * the canonical operator-facing snapshot. 404 when the context store is
+   * not wired or the agent has no recorded context.
+   */
+  private handleExportAgentContext(id: string): Response {
+    const store = this.deps.agentContextStore;
+    if (!store) return jsonResponse({ error: 'agent context store not configured' }, 503);
+    const ctx = store.findById(id);
+    if (!ctx) return jsonResponse({ error: `agent '${id}' has no recorded context` }, 404);
+    return jsonResponse({ agentId: id, context: ctx, exportedAt: Date.now() });
+  }
 
-    const statusParam = new URL(req.url).searchParams.get('status');
-    const skills = statusParam
-      ? store.findByStatus(statusParam as 'active' | 'probation' | 'demoted')
-      : [...store.findByStatus('active'), ...store.findByStatus('probation'), ...store.findByStatus('demoted')];
+  /**
+   * Operator-driven reset of a single proficiency entry by `signature`.
+   *
+   * Conservative scope:
+   *   - Removes ONE entry from `agent_contexts.skills.proficiencies`.
+   *   - Does NOT touch episodes (immutable history), preferred approaches,
+   *     anti-patterns, or pending insights.
+   *   - The agent re-learns the proficiency on its next task with this
+   *     fingerprint — A7 prediction-error learning continues to write.
+   *
+   * Idempotent: returns `removed: false` when the signature was already
+   * absent. Audit-logged to console with timestamp + reason; future work
+   * promotes this to a bus event + manifest entry for durable audit.
+   */
+  private async handleResetProficiency(id: string, req: Request): Promise<Response> {
+    const store = this.deps.agentContextStore;
+    if (!store) return jsonResponse({ error: 'agent context store not configured' }, 503);
 
-    return jsonResponse({ skills });
+    let body: { signature?: unknown; reason?: unknown };
+    try {
+      body = (await req.json()) as { signature?: unknown; reason?: unknown };
+    } catch {
+      return jsonResponse({ error: 'invalid JSON body' }, 400);
+    }
+    if (typeof body.signature !== 'string' || body.signature.trim().length === 0) {
+      return jsonResponse({ error: "body.signature must be a non-empty string" }, 400);
+    }
+    const signature = body.signature.trim();
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+
+    const ctx = store.findById(id);
+    if (!ctx) return jsonResponse({ error: `agent '${id}' has no recorded context` }, 404);
+
+    const existing = ctx.skills.proficiencies[signature];
+    if (!existing) {
+      // Idempotent — nothing to do, do not write.
+      return jsonResponse({ ok: true, removed: false, signature });
+    }
+
+    const newProficiencies = { ...ctx.skills.proficiencies };
+    delete newProficiencies[signature];
+    const updated = {
+      ...ctx,
+      skills: { ...ctx.skills, proficiencies: newProficiencies },
+      lastUpdated: Date.now(),
+    };
+    store.upsert(updated);
+
+    // Audit — keep it loud at the console so operators reviewing logs see it.
+    // Future: promote to bus event + manifest entry so it shows up in /events
+    // and can be replayed deterministically.
+    console.log(
+      `[operator-action] proficiency_reset agent=${id} signature='${signature}' previous=${JSON.stringify(
+        existing,
+      )} reason='${reason}'`,
+    );
+
+    return jsonResponse({ ok: true, removed: true, signature, remaining: Object.keys(newProficiencies).length });
+  }
+
+  /**
+   * Unified Skill Library listing. Combines simple SKILL.md (registry),
+   * heavy SKILL.md (artifact store), and cached approaches. Query params:
+   *   - kind=simple|heavy|cached  filter to one bucket.
+   *   - agentId=<slug>            visible-to-agent filter.
+   *   - status=<...>              legacy cached_skills shape (back-compat).
+   */
+  private async handleListSkills(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const kindParam = url.searchParams.get('kind');
+    const agentIdParam = url.searchParams.get('agentId');
+    const statusParam = url.searchParams.get('status');
+
+    if (statusParam && this.deps.skillStore) {
+      const cached = this.deps.skillStore.findByStatus(
+        statusParam as 'active' | 'probation' | 'demoted',
+      );
+      return jsonResponse({ skills: cached });
+    }
+
+    const { SkillCatalogService } = await import('./skill-catalog-service.ts');
+    const service = new SkillCatalogService({
+      simpleSkillRegistry: this.deps.simpleSkillRegistry,
+      artifactStore: this.deps.skillArtifactStore,
+      skillStore: this.deps.skillStore,
+    });
+    const filters: { kind?: 'simple' | 'heavy' | 'cached'; agentId?: string } = {};
+    if (kindParam === 'simple' || kindParam === 'heavy' || kindParam === 'cached') {
+      filters.kind = kindParam;
+    }
+    if (agentIdParam) filters.agentId = agentIdParam;
+    const items = await service.list(filters);
+    return jsonResponse({ items, skills: items });
+  }
+
+  private async handleGetSkill(id: string): Promise<Response> {
+    const { SkillCatalogService } = await import('./skill-catalog-service.ts');
+    const service = new SkillCatalogService({
+      simpleSkillRegistry: this.deps.simpleSkillRegistry,
+      artifactStore: this.deps.skillArtifactStore,
+      skillStore: this.deps.skillStore,
+    });
+    const detail = await service.get(id);
+    if (!detail) return jsonResponse({ error: `skill '${id}' not found` }, 404);
+    return jsonResponse(detail);
+  }
+
+  private async handleCreateSkill(req: Request): Promise<Response> {
+    if (!this.deps.workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: 'invalid JSON body' }, 400);
+    }
+    const parsed = parseSimpleSkillWriteBody(body);
+    if (!parsed.ok) return jsonResponse({ error: parsed.error }, 400);
+    try {
+      const { writeSimpleSkill } = await import('../skills/simple/writer.ts');
+      const fs = this.deps.simpleSkillFsOverrides ?? {};
+      const result = await writeSimpleSkill(parsed.value, {
+        workspace: this.deps.workspace,
+        ...(fs.userSkillsDir !== undefined ? { userSkillsDir: fs.userSkillsDir } : {}),
+        ...(fs.projectSkillsDir !== undefined ? { projectSkillsDir: fs.projectSkillsDir } : {}),
+        ...(fs.userAgentsDir !== undefined ? { userAgentsDir: fs.userAgentsDir } : {}),
+        ...(fs.projectAgentsDir !== undefined ? { projectAgentsDir: fs.projectAgentsDir } : {}),
+      });
+      // Refresh the registry synchronously so the next GET reflects the
+      // freshly-written skill — without this the watcher's debounce window
+      // races the response and the UI can show stale data right after a
+      // create.
+      this.deps.simpleSkillRegistry?.refresh();
+      const { simpleSkillCatalogId } = await import('./skill-catalog-service.ts');
+      return jsonResponse(
+        {
+          id: simpleSkillCatalogId({
+            name: parsed.value.name,
+            description: parsed.value.description,
+            body: parsed.value.body,
+            scope: parsed.value.scope,
+            ...(parsed.value.agentId ? { agentId: parsed.value.agentId } : {}),
+            path: result.path,
+          }),
+          path: result.path,
+        },
+        201,
+      );
+    } catch (err) {
+      const msg = (err as Error).message;
+      const code = msg.startsWith('Invalid') || msg.startsWith('Path') ? 400 : 500;
+      return jsonResponse({ error: msg }, code);
+    }
+  }
+
+  private async handleUpdateSkill(id: string, req: Request): Promise<Response> {
+    const { parseCatalogId } = await import('./skill-catalog-service.ts');
+    const parsedId = parseCatalogId(id);
+    if (!parsedId) return jsonResponse({ error: `invalid skill id '${id}'` }, 400);
+    if (parsedId.kind !== 'simple') {
+      return jsonResponse(
+        { error: `editing ${parsedId.kind} skills is not supported via this endpoint` },
+        405,
+      );
+    }
+    if (!this.deps.workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
+
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: 'invalid JSON body' }, 400);
+    }
+    const parsed = parseSimpleSkillWriteBody(body, true);
+    if (!parsed.ok) return jsonResponse({ error: parsed.error }, 400);
+
+    const existing = parseSimpleIdPayload(parsedId.payload);
+    if (!existing) return jsonResponse({ error: `invalid simple skill id '${id}'` }, 400);
+    if (parsed.value.name !== existing.name) {
+      return jsonResponse(
+        { error: 'body.name must match the URL id (rename = create + delete)' },
+        400,
+      );
+    }
+    if (parsed.value.scope !== existing.scope) {
+      return jsonResponse({ error: 'body.scope must match the URL id' }, 400);
+    }
+    if ((parsed.value.agentId ?? null) !== (existing.agentId ?? null)) {
+      return jsonResponse({ error: 'body.agentId must match the URL id' }, 400);
+    }
+
+    try {
+      const { writeSimpleSkill } = await import('../skills/simple/writer.ts');
+      const fs = this.deps.simpleSkillFsOverrides ?? {};
+      await writeSimpleSkill(parsed.value, {
+        workspace: this.deps.workspace,
+        ...(fs.userSkillsDir !== undefined ? { userSkillsDir: fs.userSkillsDir } : {}),
+        ...(fs.projectSkillsDir !== undefined ? { projectSkillsDir: fs.projectSkillsDir } : {}),
+        ...(fs.userAgentsDir !== undefined ? { userAgentsDir: fs.userAgentsDir } : {}),
+        ...(fs.projectAgentsDir !== undefined ? { projectAgentsDir: fs.projectAgentsDir } : {}),
+      });
+      this.deps.simpleSkillRegistry?.refresh();
+      return jsonResponse({ id });
+    } catch (err) {
+      const msg = (err as Error).message;
+      const code = msg.startsWith('Invalid') || msg.startsWith('Path') ? 400 : 500;
+      return jsonResponse({ error: msg }, code);
+    }
+  }
+
+  private async handleDeleteSkill(id: string): Promise<Response> {
+    const { parseCatalogId } = await import('./skill-catalog-service.ts');
+    const parsedId = parseCatalogId(id);
+    if (!parsedId) return jsonResponse({ error: `invalid skill id '${id}'` }, 400);
+    if (parsedId.kind !== 'simple') {
+      return jsonResponse(
+        { error: `deleting ${parsedId.kind} skills is not supported via this endpoint` },
+        405,
+      );
+    }
+    if (!this.deps.workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
+
+    const existing = parseSimpleIdPayload(parsedId.payload);
+    if (!existing) return jsonResponse({ error: `invalid simple skill id '${id}'` }, 400);
+
+    try {
+      const { deleteSimpleSkill } = await import('../skills/simple/writer.ts');
+      const fs = this.deps.simpleSkillFsOverrides ?? {};
+      await deleteSimpleSkill(existing, {
+        workspace: this.deps.workspace,
+        ...(fs.userSkillsDir !== undefined ? { userSkillsDir: fs.userSkillsDir } : {}),
+        ...(fs.projectSkillsDir !== undefined ? { projectSkillsDir: fs.projectSkillsDir } : {}),
+        ...(fs.userAgentsDir !== undefined ? { userAgentsDir: fs.userAgentsDir } : {}),
+        ...(fs.projectAgentsDir !== undefined ? { projectAgentsDir: fs.projectAgentsDir } : {}),
+      });
+      this.deps.simpleSkillRegistry?.refresh();
+      return new Response(null, { status: 204 });
+    } catch (err) {
+      const msg = (err as Error).message;
+      const code = msg.startsWith('Invalid') || msg.startsWith('Path') ? 400 : 500;
+      return jsonResponse({ error: msg }, code);
+    }
   }
 
   private handleListPatterns(req: Request): Response {
@@ -1542,6 +2027,42 @@ export class VinyanAPIServer {
     if (!store) return jsonResponse({ enabled: false, providers: [] });
     const providers = store.getAllProviders();
     return jsonResponse({ enabled: true, providers });
+  }
+
+  /**
+   * Outbound provider quota / cooldown state. Surfaces the same shape the UI
+   * needs to render a "rate-limited until 12:34" pill: which providers are
+   * cooled down right now, until when, and why. Empty list ⇒ all healthy.
+   */
+  private handleProviderHealth(): Response {
+    const registry = this.deps.llmRegistry;
+    const healthStore = registry?.getHealthStore();
+    if (!healthStore) {
+      return jsonResponse({ enabled: false, records: [], providers: [] });
+    }
+    const now = Date.now();
+    const records = healthStore.listHealth().map((r) => ({
+      providerId: r.providerId,
+      tier: r.tier ?? null,
+      model: r.model ?? null,
+      providerName: r.providerName ?? null,
+      quotaMetric: r.quotaMetric ?? null,
+      quotaId: r.quotaId ?? null,
+      cooldownUntil: r.cooldownUntil,
+      retryAfterMs: Math.max(0, r.cooldownUntil - now),
+      openedAt: r.openedAt,
+      failureCount: r.failureCount,
+      lastKind: r.lastKind,
+      lastErrorMessage: r.lastErrorMessage,
+      sourceTaskId: r.sourceTaskId ?? null,
+      cooled: r.cooldownUntil > now,
+    }));
+    const providers = (registry?.listProviders() ?? []).map((p) => ({
+      id: p.id,
+      tier: p.tier,
+      available: healthStore.isAvailable({ id: p.id }, now),
+    }));
+    return jsonResponse({ enabled: true, records, providers });
   }
 
   private handleFederation(): Response {
@@ -1797,11 +2318,16 @@ export class VinyanAPIServer {
     const url = new URL(req.url);
     const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '50', 10) || 50, 500);
     const outcome = url.searchParams.get('outcome');
-    const taskType = url.searchParams.get('taskType');
+    // `taskSignature` is the canonical name — filters on `task_type_signature`
+    // (e.g. `review::typescript::small`). The legacy `taskType` param maps
+    // to the same column for back-compat with older clients/dashboards.
+    // Used by the agent-drawer "View all traces" deep-link from a
+    // proficiency row.
+    const taskSignature = url.searchParams.get('taskSignature') ?? url.searchParams.get('taskType');
 
     let traces: ExecutionTrace[];
-    if (taskType) {
-      traces = store.findByTaskType(taskType, limit);
+    if (taskSignature) {
+      traces = store.findByTaskType(taskSignature, limit);
     } else if (outcome) {
       traces = store.findByOutcome(outcome, limit);
     } else {
@@ -1856,7 +2382,6 @@ export class VinyanAPIServer {
     if (!trace) return jsonResponse({ error: 'decision not found', decisionId }, 404);
     return jsonResponse(buildDecisionReplay(decisionId, trace));
   }
-
 
   private async handleListMemory(): Promise<Response> {
     const workspace = this.deps.workspace;
@@ -2174,6 +2699,20 @@ export class VinyanAPIServer {
    * event shape that was streamed live via `/events` SSE, just replayed from
    * `task_events` storage. Supports `?since=<seq>` for incremental fetch.
    *
+   * `?includeDescendants=true` widens the response to include events from
+   * every sub-agent dispatched by this task (and recursively up to
+   * `?maxDepth=N`, default 3, capped 1-5). Sub-agent tool calls live under
+   * the child's `taskId`, so without this flag the parent's history shows
+   * only `workflow:delegate_*` summaries — the chat UI's "Multi-agent
+   * complete" card uses the descendants path to populate per-agent
+   * expandable rows.
+   *
+   * Default response shape: `{ taskId, events, lastSeq }` (per-task seq
+   * cursor). Descendants response shape: `{ taskId, rootTaskId, taskIds,
+   * events, nextCursor, truncated }` — `(ts, id)` cursor matching the
+   * session endpoint's contract, since per-task seq is meaningless across
+   * the tree.
+   *
    * Returns 404 when no recorder is wired (no DB) — clients fall back to
    * showing only the trace summary in that case.
    */
@@ -2183,17 +2722,106 @@ export class VinyanAPIServer {
       return jsonResponse({ error: 'Event history disabled (no DB)' }, 404);
     }
     const url = new URL(req.url);
-    const sinceParam = url.searchParams.get('since');
+    const includeDescendants = url.searchParams.get('includeDescendants') === 'true';
     const limitParam = url.searchParams.get('limit');
-    const since = sinceParam !== null ? Math.max(0, parseInt(sinceParam, 10) || 0) : undefined;
     const limit = limitParam !== null ? Math.max(1, Math.min(5000, parseInt(limitParam, 10) || 0)) : undefined;
-    const events = store.listForTask(taskId, { since, limit });
-    const last = events.length > 0 ? events[events.length - 1] : undefined;
+
+    if (!includeDescendants) {
+      const sinceParam = url.searchParams.get('since');
+      const since = sinceParam !== null ? Math.max(0, parseInt(sinceParam, 10) || 0) : undefined;
+      const events = store.listForTask(taskId, { since, limit });
+      const last = events.length > 0 ? events[events.length - 1] : undefined;
+      return jsonResponse({
+        taskId,
+        events,
+        // Convenience cursor for incremental polling.
+        lastSeq: last ? last.seq : (since ?? 0),
+      });
+    }
+
+    const maxDepthParam = url.searchParams.get('maxDepth');
+    const maxDepth =
+      maxDepthParam !== null ? Math.max(1, Math.min(5, parseInt(maxDepthParam, 10) || 3)) : 3;
+    const { taskIds, truncated } = this.resolveTaskTree(store, taskId, maxDepth);
+    const rootSession = store.lookupSessionId(taskId);
+    const sinceCursor = url.searchParams.get('since') ?? undefined;
+    const page = store.listForTaskTree(taskId, {
+      taskIds,
+      rootSessionId: rootSession,
+      since: sinceCursor,
+      limit,
+    });
     return jsonResponse({
       taskId,
-      events,
-      // Convenience cursor for incremental polling.
-      lastSeq: last ? last.seq : (since ?? 0),
+      rootTaskId: taskId,
+      taskIds,
+      events: page.events,
+      nextCursor: page.nextCursor,
+      truncated,
+    });
+  }
+
+  /**
+   * BFS the delegation graph rooted at `rootTaskId` to depth `maxDepth`,
+   * stopping early when the discovered set hits {@link TREE_TASKID_CAP}.
+   * The visited set doubles as cycle protection — a child whose own
+   * `workflow:delegate_dispatched` payload echoes an ancestor is never
+   * re-enqueued.
+   */
+  private resolveTaskTree(
+    store: NonNullable<APIServerDeps['taskEventStore']>,
+    rootTaskId: string,
+    maxDepth: number,
+  ): { taskIds: string[]; truncated: boolean } {
+    const visited = new Set<string>([rootTaskId]);
+    let frontier: string[] = [rootTaskId];
+    let truncated = false;
+    for (let depth = 0; depth < maxDepth && frontier.length > 0 && !truncated; depth++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const child of store.listChildTaskIds(id)) {
+          if (visited.has(child)) continue;
+          if (visited.size >= TREE_TASKID_CAP) {
+            truncated = true;
+            break;
+          }
+          visited.add(child);
+          next.push(child);
+        }
+        if (truncated) break;
+      }
+      frontier = next;
+    }
+    return { taskIds: [...visited], truncated };
+  }
+
+  /**
+   * GET /api/v1/sessions/:sessionId/event-history?since=<cursor>&limit=<n>
+   *
+   * Replay every persisted UI-visible event for a session, ordered across
+   * tasks by `(ts, id)`. Used by the client-side reconciler when SSE
+   * reconnects, when the tab returns to the foreground, and after a
+   * critical user action (approve / reject / human-input) to make sure
+   * the UI hasn't missed a state transition.
+   *
+   * Cursor is opaque (`<ts>:<id>`); clients should treat the returned
+   * `nextCursor` as a token and not parse it. Returns 404 when no DB is
+   * configured (matches the per-task endpoint).
+   */
+  private handleSessionEventHistory(sessionId: string, req: Request): Response {
+    const store = this.deps.taskEventStore;
+    if (!store) {
+      return jsonResponse({ error: 'Event history disabled (no DB)' }, 404);
+    }
+    const url = new URL(req.url);
+    const since = url.searchParams.get('since') ?? undefined;
+    const limitParam = url.searchParams.get('limit');
+    const limit = limitParam !== null ? Math.max(1, Math.min(5000, parseInt(limitParam, 10) || 0)) : undefined;
+    const page = store.listForSession(sessionId, { since: since ?? undefined, limit });
+    return jsonResponse({
+      sessionId,
+      events: page.events,
+      nextCursor: page.nextCursor,
     });
   }
 
@@ -2275,10 +2903,7 @@ export class VinyanAPIServer {
     const result = this.deps.sessionManager.archive(sessionId);
     if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
     if (result.reason === 'invalid_state') {
-      return jsonResponse(
-        { error: 'Session cannot be archived in its current state', session: result.session },
-        409,
-      );
+      return jsonResponse({ error: 'Session cannot be archived in its current state', session: result.session }, 409);
     }
     this.deps.bus.emit('session:archived', { sessionId });
     return jsonResponse({ session: result.session });
@@ -2288,10 +2913,7 @@ export class VinyanAPIServer {
     const result = this.deps.sessionManager.unarchive(sessionId);
     if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
     if (result.reason === 'invalid_state') {
-      return jsonResponse(
-        { error: 'Session is not archived', session: result.session },
-        409,
-      );
+      return jsonResponse({ error: 'Session is not archived', session: result.session }, 409);
     }
     this.deps.bus.emit('session:unarchived', { sessionId });
     return jsonResponse({ session: result.session });
@@ -2301,10 +2923,7 @@ export class VinyanAPIServer {
     const result = this.deps.sessionManager.softDelete(sessionId);
     if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
     if (result.reason === 'invalid_state') {
-      return jsonResponse(
-        { error: 'Session is already in trash', session: result.session },
-        409,
-      );
+      return jsonResponse({ error: 'Session is already in trash', session: result.session }, 409);
     }
     this.deps.bus.emit('session:deleted', { sessionId });
     return jsonResponse({ session: result.session });
@@ -2314,10 +2933,7 @@ export class VinyanAPIServer {
     const result = this.deps.sessionManager.restore(sessionId);
     if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
     if (result.reason === 'invalid_state') {
-      return jsonResponse(
-        { error: 'Session is not in trash', session: result.session },
-        409,
-      );
+      return jsonResponse({ error: 'Session is not in trash', session: result.session }, 409);
     }
     this.deps.bus.emit('session:restored', { sessionId });
     return jsonResponse({ session: result.session });
@@ -2618,10 +3234,12 @@ export class VinyanAPIServer {
       // user message — defeating the chain. (Eager-record was suppressed
       // above for the streaming path so we don't double-write.)
       const prevTail = this.sessionTaskChain.get(sessionId) ?? Promise.resolve();
-      const taskPromise = prevTail.catch(() => undefined).then(() => {
-        this.deps.sessionManager.recordUserTurn(sessionId, content);
-        return this.deps.executeTask(input);
-      });
+      const taskPromise = prevTail
+        .catch(() => undefined)
+        .then(() => {
+          this.deps.sessionManager.recordUserTurn(sessionId, content);
+          return this.deps.executeTask(input);
+        });
       this.sessionTaskChain.set(sessionId, taskPromise);
       taskPromise
         .then((result) => {
@@ -2896,6 +3514,68 @@ function jsonResponse(data: unknown, status = 200, extraHeaders?: Record<string,
 }
 
 /**
+ * Salvage the suggestion list from a model's raw output. Tries strict JSON
+ * first, then a fenced-code-block JSON, then a line-by-line fallback that
+ * pulls bullet/numbered items. Returns at most `expected` non-empty items
+ * trimmed to 240 chars each.
+ *
+ * The salvage paths exist because some `fast`-tier providers wrap JSON in
+ * prose ("Here are 3 suggestions: { … }") even with strict-JSON system
+ * prompts. We never throw — the caller decides whether to surface 502.
+ */
+function parseSuggestionList(raw: string, expected: number): string[] {
+  const PER_ITEM_CAP = 240;
+  const cap = (s: string): string => {
+    const t = s.trim();
+    return t.length > PER_ITEM_CAP ? `${t.slice(0, PER_ITEM_CAP - 1)}…` : t;
+  };
+
+  const tryJson = (text: string): string[] | null => {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { suggestions?: unknown }).suggestions)) {
+        const arr = (parsed as { suggestions: unknown[] }).suggestions;
+        const items = arr.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).map(cap);
+        return items.length > 0 ? items.slice(0, expected) : null;
+      }
+    } catch {
+      /* fallthrough */
+    }
+    return null;
+  };
+
+  const direct = tryJson(raw.trim());
+  if (direct) return direct;
+
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]+?)```/i);
+  if (fenced && fenced[1]) {
+    const fromFence = tryJson(fenced[1].trim());
+    if (fromFence) return fromFence;
+  }
+
+  const braceStart = raw.indexOf('{');
+  const braceEnd = raw.lastIndexOf('}');
+  if (braceStart >= 0 && braceEnd > braceStart) {
+    const fromBraces = tryJson(raw.slice(braceStart, braceEnd + 1));
+    if (fromBraces) return fromBraces;
+  }
+
+  // Line-by-line fallback — some providers emit "1. …" / "- …" lists when
+  // the JSON instruction is ignored. Pull the leading marker off and keep
+  // the body. Strip trailing punctuation that looks like a list separator.
+  const lineItems: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$/);
+    if (m && m[1]) {
+      const body = m[1].replace(/^["“'`]|["”'`]$/g, '');
+      if (body.trim().length > 0) lineItems.push(cap(body));
+      if (lineItems.length >= expected) break;
+    }
+  }
+  return lineItems;
+}
+
+/**
  * Derive a short, single-line title from a free-form user message.
  * Used by `handleSessionMessage` to auto-name fresh sessions on the
  * first task. Operators can override the result via PATCH /sessions/:id.
@@ -2999,4 +3679,104 @@ export function resolveRequestProfile(
 function extractTaskId(path: string): string | undefined {
   const match = path.match(/^\/api\/v1\/tasks\/([^/]+)/);
   return match?.[1];
+}
+
+// ── Simple-skill CRUD body parsing ──────────────────────────────────
+
+type SimpleSkillScope = 'user' | 'project' | 'user-agent' | 'project-agent';
+
+interface SimpleSkillWriteValue {
+  readonly name: string;
+  readonly description: string;
+  readonly body: string;
+  readonly scope: SimpleSkillScope;
+  readonly agentId?: string;
+}
+
+const SIMPLE_SKILL_SLUG = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Parse the JSON body for `POST/PUT /api/v1/skills`. Defaults `scope` to
+ * `'project'` so the simplest body (`{name,description,body}`) creates a
+ * project-scope skill. When `requireAllFields` is true (PUT path) every
+ * field must be present so partial updates don't silently lose data.
+ */
+function parseSimpleSkillWriteBody(
+  raw: unknown,
+  _requireAllFields: boolean = false,
+): { ok: true; value: SimpleSkillWriteValue } | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'object') {
+    return { ok: false, error: 'body must be an object' };
+  }
+  const r = raw as Record<string, unknown>;
+  if (typeof r.name !== 'string' || !SIMPLE_SKILL_SLUG.test(r.name)) {
+    return { ok: false, error: 'name must match /^[a-z][a-z0-9-]*$/' };
+  }
+  if (typeof r.description !== 'string') {
+    return { ok: false, error: 'description must be a string' };
+  }
+  if (typeof r.body !== 'string') {
+    return { ok: false, error: 'body must be a string' };
+  }
+  const rawScope = (r.scope as string | undefined) ?? 'project';
+  if (
+    rawScope !== 'user' &&
+    rawScope !== 'project' &&
+    rawScope !== 'user-agent' &&
+    rawScope !== 'project-agent'
+  ) {
+    return { ok: false, error: "scope must be 'user' | 'project' | 'user-agent' | 'project-agent'" };
+  }
+  const agentId = typeof r.agentId === 'string' && r.agentId.length > 0 ? r.agentId : undefined;
+  if ((rawScope === 'user-agent' || rawScope === 'project-agent') && !agentId) {
+    return { ok: false, error: `scope '${rawScope}' requires agentId` };
+  }
+  if (agentId !== undefined && !SIMPLE_SKILL_SLUG.test(agentId)) {
+    return { ok: false, error: 'agentId must match /^[a-z][a-z0-9-]*$/' };
+  }
+  return {
+    ok: true,
+    value: {
+      name: r.name,
+      description: r.description,
+      body: r.body,
+      scope: rawScope,
+      ...(agentId ? { agentId } : {}),
+    },
+  };
+}
+
+/**
+ * Decode a simple-skill catalog id payload (the part after `simple:`).
+ *
+ * Shapes:
+ *   `<scope>:<name>`                  shared scopes (user / project)
+ *   `<scope>:<agentId>:<name>`        per-agent scopes (user-agent / project-agent)
+ *
+ * Returns null on any malformed input — callers should surface 400.
+ */
+function parseSimpleIdPayload(
+  payload: string,
+): { scope: SimpleSkillScope; name: string; agentId?: string } | null {
+  const parts = payload.split(':');
+  if (parts.length === 2) {
+    const [scope, name] = parts;
+    if ((scope === 'user' || scope === 'project') && name && SIMPLE_SKILL_SLUG.test(name)) {
+      return { scope, name };
+    }
+    return null;
+  }
+  if (parts.length === 3) {
+    const [scope, agentId, name] = parts;
+    if (
+      (scope === 'user-agent' || scope === 'project-agent') &&
+      agentId &&
+      name &&
+      SIMPLE_SKILL_SLUG.test(agentId) &&
+      SIMPLE_SKILL_SLUG.test(name)
+    ) {
+      return { scope, name, agentId };
+    }
+  }
+  return null;
 }

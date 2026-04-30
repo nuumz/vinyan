@@ -297,6 +297,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       ruleStore: orchestrator.ruleStore,
       workerStore: orchestrator.workerStore,
       engineRegistry: orchestrator.engineRegistry,
+      llmRegistry: orchestrator.llmRegistry,
       worldGraph: orchestrator.worldGraph,
       metricsCollector: orchestrator.metricsCollector,
       degradationStatus: orchestrator.degradationStatus,
@@ -306,6 +307,12 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       approvalGate: orchestrator.approvalGate,
       agentProfileStore: orchestrator.agentProfileStore,
       skillStore: orchestrator.skillStore,
+      // Hybrid skills — surface the simple loader + heavy artifact store so
+      // the unified Skill Library at /api/v1/skills can list and detail
+      // simple/heavy/cached items in one place. CRUD writes go to
+      // <workspace>/.vinyan/skills (project) or ~/.vinyan/skills (user).
+      simpleSkillRegistry: orchestrator.simpleSkillRegistry,
+      skillArtifactStore: orchestrator.skillArtifactStore,
       patternStore: orchestrator.patternStore,
       agentContextStore: orchestrator.agentContextStore,
       agentRegistry: orchestrator.agentRegistry,
@@ -318,6 +325,11 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       federationBudgetPool: orchestrator.federationBudgetPool,
       marketScheduler: orchestrator.marketScheduler,
       capabilityModel: orchestrator.capabilityModel,
+      // External Coding CLI — surfaces /api/v1/coding-cli/* (sessions,
+      // approvals, follow-up messages, event replay) when the controller
+      // is constructed by the factory.
+      codingCliController: orchestrator.codingCliController,
+      codingCliStore: orchestrator.codingCliStore,
       workspace,
       defaultProfile: resolvedProfile.name,
     },

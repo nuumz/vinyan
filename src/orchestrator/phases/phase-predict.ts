@@ -8,6 +8,7 @@
 import { applyPredictionEscalation, withLevel } from '../../gate/risk-router.ts';
 import { buildPersonaBidContext } from '../agents/persona-context-builder.ts';
 import { applyRoutingGovernance } from '../governance-provenance.ts';
+import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type {
   EngineSelectionResult,
   PerceptualHierarchy,
@@ -18,6 +19,38 @@ import type {
 } from '../types.ts';
 import type { PhaseContext, PhaseContinue, PhaseReturn, PredictResult } from './types.ts';
 import { Phase } from './types.ts';
+
+/**
+ * Refresh `routing.model` to the actual provider id resolvable in the live
+ * LLM registry. See the long-form rationale at the call site in
+ * `executePredictPhase`. Pure function — exported so the resolution
+ * contract can be unit-tested without spinning up a full PhaseContext.
+ *
+ * Resolution order matches `worker-pool.dispatch` so phase-predict's view
+ * of the executable engine is the same one the dispatch path picks:
+ *   1. routing.workerId   — fleet profile id (if set)
+ *   2. routing.model      — engine id pinned by engineSelector / prior phase
+ *   3. selectForRoutingLevel(level) — tier default
+ *
+ * Returns an updated routing when the resolved provider's id differs from
+ * what's currently in `routing.model`. Returns the input routing unchanged
+ * when the registry has no candidate (L0 / unwired registry / no providers
+ * for this tier) — leaving the cosmetic tier label intact so error paths
+ * still emit a human-readable hint about which tier was attempted.
+ */
+export function resolveExecutableProviderId(
+  routing: RoutingDecision,
+  registry: LLMProviderRegistry | undefined,
+): RoutingDecision {
+  if (!registry) return routing;
+  const candidate =
+    (routing.workerId ? registry.selectById(routing.workerId) : undefined) ??
+    (routing.model ? registry.selectById(routing.model) : undefined) ??
+    registry.selectForRoutingLevel(routing.level);
+  if (!candidate) return routing;
+  if (candidate.id === routing.model) return routing;
+  return { ...routing, model: candidate.id };
+}
 
 export async function executePredictPhase(
   ctx: PhaseContext,
@@ -235,6 +268,21 @@ export async function executePredictPhase(
       });
     }
   }
+
+  // ── Refresh `routing.model` to the executable provider id ──────────
+  //
+  // `LEVEL_CONFIG[level].model` in `risk-router.ts` seeds `routing.model`
+  // with a tier-label hint (e.g. `'claude-haiku'` for L1) — useful as a
+  // routing default but NOT a real provider id. Under an OpenRouter setup
+  // (`OPENROUTER_FAST_MODEL=...`) the registered provider id is something
+  // like `openrouter/fast/google/gemma-...` and the cosmetic `claude-haiku`
+  // label never matches anything in the registry. Without this refresh,
+  // `routing.model` flows through every downstream consumer (CLI display,
+  // `core-loop`'s `modelUsed` trace, `phase-learn`'s
+  // `providerTrustStore.recordOutcome`, `worker-pool`'s engine lookup) as
+  // if the run used Haiku — a telemetry lie that also corrupts the trust
+  // ledger because outcomes get recorded against the cosmetic label.
+  routing = resolveExecutableProviderId(routing, deps.llmRegistry);
 
   return Phase.continue({
     prediction,

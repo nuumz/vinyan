@@ -145,6 +145,15 @@ export function assemblePrompt(
    * `derived.loadedSkills.map(toSkillCardView)`.
    */
   loadedSkillCards?: import('../agents/derive-persona-capabilities.ts').SkillCardView[],
+  /**
+   * Hybrid skill redesign — Claude-Code-style simple skills. `simpleSkills`
+   * lists every loaded skill (eager: name + description in system prompt);
+   * `simpleSkillBodies` is the matched subset whose body inlines for this
+   * task (lazy: bodies only when description matches intent). Callers
+   * compute the matched subset via `matchSkillsForTask(goal, all)`.
+   */
+  simpleSkills?: readonly import('../../skills/simple/loader.ts').SimpleSkill[],
+  simpleSkillBodies?: readonly import('../../skills/simple/loader.ts').SimpleSkill[],
 ): AssembledPrompt {
   const ctx: SectionContext = {
     goal,
@@ -161,6 +170,8 @@ export function assemblePrompt(
     agentProfile,
     peerAgents,
     loadedSkillCards,
+    simpleSkills,
+    simpleSkillBodies,
   };
 
   // Gap 4A: Reasoning tasks now use composable section registry

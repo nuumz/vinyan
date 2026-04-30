@@ -9,33 +9,84 @@
 import type { VinyanBus } from '../../core/bus.ts';
 import type { WorldGraph } from '../../world-graph/world-graph.ts';
 import type { AgentMemoryAPI } from '../agent-memory/agent-memory-api.ts';
+import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { TaskInput, TaskResult } from '../types.ts';
-import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import {
   approvalTimeoutMs,
   awaitApprovalDecision,
-  requiresApproval,
+  classifyApprovalRequirement,
+  evaluateAutoApproval,
   type WorkflowConfig,
 } from './approval-gate.ts';
 import { buildKnowledgeContext } from './knowledge-context.ts';
+import { buildResearchStep, detectResearchCues, prependResearchStep } from './research-step-builder.ts';
 import { formatSessionTranscript } from './session-transcript.ts';
 import {
-  buildResearchStep,
-  detectResearchCues,
-  prependResearchStep,
-} from './research-step-builder.ts';
-import type {
-  WorkflowPlan,
-  WorkflowResult,
-  WorkflowStep,
-  WorkflowStepResult,
-  WorkflowStepStrategy,
-} from './types.ts';
+  buildStageManifest,
+  parseWinnerVerdict,
+  type MultiAgentSubtask,
+  type MultiAgentSubtaskErrorKind,
+  type WorkflowStageManifest,
+  type WorkflowTodoStatus,
+} from './stage-manifest.ts';
+import type { WorkflowPlan, WorkflowResult, WorkflowStep, WorkflowStepResult, WorkflowStepStrategy } from './types.ts';
 import { planWorkflow, type WorkflowPlannerDeps } from './workflow-planner.ts';
 
-const MIN_WORKFLOW_LLM_TIMEOUT_MS = 120_000;
+/**
+ * Idle floor for the delegate-sub-agent watchdog. Raised from 120s → 180s
+ * on 2026-04-30 after a second `step2 idle timeout after 121s ... agent=researcher`
+ * incident hit despite the 2026-04-29 structural fix (WATCHDOG_ACTIVITY_EVENTS
+ * + first-activity-arming + provider retry heartbeat). The structural fix
+ * remains the right design — but a research-class persona doing a single
+ * long `provider.generate()` call without a heartbeat-emitting tool span
+ * can plausibly burn 2+ minutes of model time, and the prior floor was too
+ * tight a margin around the heartbeat cadence (30s × 4 = 120s, no slack).
+ *
+ * Heartbeat in `llm/retry.ts` is 30s, so the new floor gives 6× cushion
+ * before false-positive timeouts. If THIS bumps and hits again, do NOT
+ * raise further — escalate to per-persona caps or split the step.
+ */
+const MIN_WORKFLOW_LLM_TIMEOUT_MS = 180_000;
+
+/**
+ * Bus events that count as "the sub-task is making progress" for the
+ * delegate watchdog. Each event must carry a top-level `taskId` field
+ * so the executor can scope-filter to the dispatched sub-task. The set
+ * intentionally spans every code path a sub-task can take:
+ *
+ *   - Streaming LLM:           `llm:stream_delta`, `agent:text_delta`
+ *   - Full-pipeline phases:    `phase:timing`, `task:stage_update`
+ *   - Agent-loop (subprocess): `agent:tool_started`, `agent:tool_executed`,
+ *                              `agent:turn_complete`, `agent:thinking`,
+ *                              `agent:plan_update`
+ *
+ * Subscribing only to `llm:stream_delta` (the pre-fix design) silently
+ * relied on `streaming.assistantDelta` being on, which is false by
+ * default — so any sub-task that ran the non-streaming path was killed
+ * at the idle floor without a real liveness check. `llm:retry_attempt`
+ * and `llm:request_alive` cover the rest of the gap: 429 storms sleeping
+ * in `retry.ts`, and a single long `provider.generate()` call (e.g.
+ * author writing a 150s prose response) that emits no other event
+ * during the wait — the latter incident hit author/step3 at 121s.
+ *
+ * Idle floor is `MIN_WORKFLOW_LLM_TIMEOUT_MS` (180s) — see that constant
+ * for the rationale on why it was raised from 120s.
+ */
+const WATCHDOG_ACTIVITY_EVENTS = [
+  'llm:stream_delta',
+  'llm:retry_attempt',
+  'llm:request_alive',
+  'agent:text_delta',
+  'phase:timing',
+  'task:stage_update',
+  'agent:tool_started',
+  'agent:tool_executed',
+  'agent:turn_complete',
+  'agent:thinking',
+  'agent:plan_update',
+] as const;
 
 /**
  * Wrap multi-line shell output in a markdown code fence so the chat UI
@@ -55,6 +106,147 @@ function fenceShellOutput(output: string): string {
 function workflowStepTimeoutMs(input: TaskInput, budgetFraction: number): number {
   const fractionalBudget = Math.floor(input.budget.maxDurationMs * Math.max(budgetFraction, 0.25));
   return Math.max(MIN_WORKFLOW_LLM_TIMEOUT_MS, fractionalBudget);
+}
+
+/**
+ * Per-execution runtime for the stage manifest. Holds the immutable manifest
+ * shape plus mutable state needed to emit per-step lifecycle updates (todo
+ * status flips, subtask running/done/failed transitions). Owned by
+ * `executeWorkflow` and passed through `WorkflowExecutorDeps.stageRuntime`
+ * so step dispatch can update without re-plumbing args.
+ */
+interface StageRuntime {
+  manifest: WorkflowStageManifest;
+  todoByStep: Map<string, string>;
+  subtaskByStep: Map<string, MultiAgentSubtask>;
+  /** Live mirror of every subtask record by subtaskId. */
+  subtaskState: Map<string, MultiAgentSubtask>;
+}
+
+function emitTodoUpdate(
+  deps: WorkflowExecutorDeps,
+  taskId: string,
+  sessionId: string | undefined,
+  stepId: string,
+  status: WorkflowTodoStatus,
+  failureReason?: string,
+): void {
+  if (!deps.bus || !deps.stageRuntime) return;
+  const todoId = deps.stageRuntime.todoByStep.get(stepId);
+  if (!todoId) return;
+  deps.bus.emit('workflow:todo_updated', {
+    taskId,
+    sessionId,
+    todoId,
+    status,
+    ...(failureReason ? { failureReason } : {}),
+  });
+}
+
+/** Strip the trailing fenced ```json verdict block from a competition
+ *  synthesizer answer so the user-facing final answer doesn't display the
+ *  same reasoning twice (once as free-text, once as JSON). The block is
+ *  ALWAYS at the end per the planner system prompt — we anchor the regex
+ *  to the tail with `$` and trim trailing whitespace. */
+function stripTrailingVerdictBlock(output: string): string {
+  return output.replace(/```json\s*[\s\S]*?\s*```\s*$/i, '').trimEnd();
+}
+
+/**
+ * COMPETITION-mode winner emission + final-answer cleanup. When the stage
+ * manifest's groupMode is 'competition' AND the synthesizer's answer ends
+ * with a fenced ```json block matching {@link WinnerVerdict} AND the
+ * winner agentId is in the participating delegate set, emit
+ * `workflow:winner_determined` and return a `cleanedOutput` with the
+ * JSON block stripped (so the user-facing final answer stays prose-only,
+ * no duplicate reasoning).
+ *
+ * When any check fails the function is a no-op: returns the raw output
+ * unchanged and emits no event. UI must NEVER infer winners.
+ *
+ * `winner: null` IS a valid verdict (deliberate tie) — we still emit and
+ * still strip the block.
+ */
+function processCompetitionVerdict(
+  deps: WorkflowExecutorDeps,
+  input: TaskInput,
+  rawOutput: string,
+): { cleanedOutput: string } {
+  if (!deps.bus || !deps.stageRuntime) return { cleanedOutput: rawOutput };
+  if (deps.stageRuntime.manifest.groupMode !== 'competition') {
+    return { cleanedOutput: rawOutput };
+  }
+  // Build the participating-agent set from the manifest's delegate
+  // subtasks — this is the same set the planner authorized, so a
+  // hallucinated "winner: foo" never sneaks through.
+  const participating = deps.stageRuntime.manifest.multiAgentSubtasks
+    .map((s) => s.agentId)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  if (participating.length === 0) return { cleanedOutput: rawOutput };
+  const verdict = parseWinnerVerdict(rawOutput, participating);
+  if (!verdict) return { cleanedOutput: rawOutput };
+  deps.bus.emit('workflow:winner_determined', {
+    taskId: input.id,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    winnerAgentId: verdict.winner,
+    ...(verdict.runnerUp !== undefined ? { runnerUpAgentId: verdict.runnerUp } : {}),
+    reasoning: verdict.reasoning,
+    ...(verdict.scores ? { scores: verdict.scores } : {}),
+  });
+  return { cleanedOutput: stripTrailingVerdictBlock(rawOutput) };
+}
+
+function emitSubtaskUpdate(
+  deps: WorkflowExecutorDeps,
+  taskId: string,
+  sessionId: string | undefined,
+  stepId: string,
+  patch: Partial<MultiAgentSubtask> & { status: MultiAgentSubtask['status'] },
+): void {
+  if (!deps.bus || !deps.stageRuntime) return;
+  const sub = deps.stageRuntime.subtaskByStep.get(stepId);
+  if (!sub) return;
+  const live = deps.stageRuntime.subtaskState.get(sub.subtaskId);
+  const next: MultiAgentSubtask = { ...(live ?? sub), ...patch };
+  deps.stageRuntime.subtaskState.set(sub.subtaskId, next);
+  deps.bus.emit('workflow:subtask_updated', {
+    taskId,
+    sessionId,
+    subtaskId: next.subtaskId,
+    stepId: next.stepId,
+    status: next.status,
+    ...(next.agentId ? { agentId: next.agentId } : {}),
+    ...(next.startedAt !== undefined ? { startedAt: next.startedAt } : {}),
+    ...(next.completedAt !== undefined ? { completedAt: next.completedAt } : {}),
+    ...(next.outputPreview !== undefined ? { outputPreview: next.outputPreview } : {}),
+    ...(next.errorKind !== undefined ? { errorKind: next.errorKind } : {}),
+    ...(next.errorMessage !== undefined ? { errorMessage: next.errorMessage } : {}),
+    ...(next.partialOutputAvailable !== undefined ? { partialOutputAvailable: next.partialOutputAvailable } : {}),
+    ...(next.fallbackAttempted !== undefined ? { fallbackAttempted: next.fallbackAttempted } : {}),
+  });
+}
+
+/**
+ * Map the sub-task's failure surface (timeout kind, executeTask error
+ * string) onto a structured {@link MultiAgentSubtaskErrorKind}. Rule-based
+ * — keyword scan over the error text. The taxonomy intentionally covers
+ * the failure modes we already handle elsewhere in the executor; a
+ * miss falls through to `unknown` so we never lie about the cause.
+ */
+function classifyDelegateError(
+  errorMessage: string,
+  ctx: { timeoutKind?: 'idle' | 'ceiling' | null },
+): MultiAgentSubtaskErrorKind {
+  if (ctx.timeoutKind) return 'timeout';
+  const msg = errorMessage.toLowerCase();
+  if (/quota|rate.?limit|429|too.many.requests/.test(msg)) return 'provider_quota';
+  if (/timeout|timed out/.test(msg)) return 'timeout';
+  if (/empty|no output|no content/.test(msg)) return 'empty_response';
+  if (/parse|invalid json|json.parse/.test(msg)) return 'parse_error';
+  if (/contract|guardrail|injection/.test(msg)) return 'contract_violation';
+  if (/dependency.failed|depends on/.test(msg)) return 'dependency_failed';
+  if (msg.length > 0) return 'subtask_failed';
+  return 'unknown';
 }
 
 function emitWorkflowTextDelta(deps: WorkflowExecutorDeps, taskId: string, text: string): void {
@@ -84,6 +276,14 @@ export interface WorkflowExecutorDeps {
    * when omitted, A1 enforcement is skipped (legacy / test paths).
    */
   agentRegistry?: import('../agents/registry.ts').AgentRegistry;
+  /**
+   * External Coding CLI strategy adapter. When wired, workflow steps with
+   * `strategy: 'external-coding-cli'` are dispatched here. Vinyan-side
+   * verification (A1) runs inside the strategy — a CLI's "completed" claim
+   * is never accepted without the verifier's verdict. Optional; omitted in
+   * deployments where coding-cli routing is disabled.
+   */
+  codingCliStrategy?: import('../external-coding-cli/external-coding-cli-workflow-strategy.ts').CodingCliWorkflowStrategy;
   intentWorkflowPrompt?: string;
   /** Workflow config from vinyan.json — controls approval gating behaviour. */
   workflowConfig?: WorkflowConfig;
@@ -95,12 +295,16 @@ export interface WorkflowExecutorDeps {
    * single-turn or non-conversational invocations.
    */
   sessionTurns?: import('../types.ts').Turn[];
+  /**
+   * Internal: stage manifest runtime state. Set by `executeWorkflow` after
+   * the manifest is built and reused by `executeStep` / `dispatchStrategy`
+   * for per-step lifecycle updates. Callers must NOT supply this — passing
+   * it here is implementation-private plumbing.
+   */
+  stageRuntime?: StageRuntime;
 }
 
-export async function executeWorkflow(
-  input: TaskInput,
-  deps: WorkflowExecutorDeps,
-): Promise<WorkflowResult> {
+export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDeps): Promise<WorkflowResult> {
   const startTime = performance.now();
 
   const plannerDeps: WorkflowPlannerDeps = {
@@ -129,12 +333,13 @@ export async function executeWorkflow(
   // market-oriented goals so downstream drafting has trend context to work
   // against. LLM-knowledge-only — no external web access.
   const researchCue = detectResearchCues(input.goal);
-  const plan: WorkflowPlan = researchCue.needsResearch && researchCue.brief
-    ? {
-        ...rawPlan,
-        steps: prependResearchStep(rawPlan.steps, buildResearchStep(researchCue.brief)),
-      }
-    : rawPlan;
+  const plan: WorkflowPlan =
+    researchCue.needsResearch && researchCue.brief
+      ? {
+          ...rawPlan,
+          steps: prependResearchStep(rawPlan.steps, buildResearchStep(researchCue.brief)),
+        }
+      : rawPlan;
 
   if (researchCue.needsResearch) {
     deps.bus?.emit('workflow:research_injected', {
@@ -142,6 +347,51 @@ export async function executeWorkflow(
       reason: researchCue.reason ?? 'unknown',
     });
   }
+
+  // Stage Manifest — durable post-prompt decision + todo + multi-agent
+  // subtask state. Emitted BEFORE the approval gate so the UI's process-
+  // replay surface sees the decision the moment Vinyan made it; the
+  // approval gate may delay execution but it must not delay visibility.
+  // A3: classification is rule-based on the finalized plan, no LLM.
+  const stageManifest: WorkflowStageManifest = buildStageManifest({
+    taskId: input.id,
+    sessionId: input.sessionId,
+    userPrompt: input.goal,
+    plan,
+    agentRegistry: deps.agentRegistry,
+    decisionRationale: deps.intentWorkflowPrompt,
+  });
+  if (deps.bus) {
+    deps.bus.emit('workflow:decision_recorded', {
+      taskId: input.id,
+      sessionId: input.sessionId,
+      decision: stageManifest.decision,
+    });
+    deps.bus.emit('workflow:todo_created', {
+      taskId: input.id,
+      sessionId: input.sessionId,
+      todoList: stageManifest.todoList,
+      ...(stageManifest.groupMode ? { groupMode: stageManifest.groupMode } : {}),
+    });
+    if (stageManifest.multiAgentSubtasks.length > 0) {
+      deps.bus.emit('workflow:subtasks_planned', {
+        taskId: input.id,
+        sessionId: input.sessionId,
+        ...(stageManifest.groupMode ? { groupMode: stageManifest.groupMode } : {}),
+        subtasks: stageManifest.multiAgentSubtasks,
+      });
+    }
+  }
+
+  // Indexes for fast status updates while the executor runs. todoByStep
+  // maps `step.id` → `todoItem.id` so per-step lifecycle events can emit
+  // `workflow:todo_updated` without scanning the manifest each time.
+  const todoByStep = new Map<string, string>();
+  for (const todo of stageManifest.todoList) {
+    if (todo.sourceStepId) todoByStep.set(todo.sourceStepId, todo.id);
+  }
+  const subtaskByStep = new Map<string, MultiAgentSubtask>();
+  for (const sub of stageManifest.multiAgentSubtasks) subtaskByStep.set(sub.stepId, sub);
 
   // Phase E: emit the final plan so UIs can render a TODO checklist before
   // execution starts. When `workflow.requireUserApproval` is active, the
@@ -159,10 +409,23 @@ export async function executeWorkflow(
     // steps where the planner did not pin a specific persona.
     ...(s.agentId ? { agentId: s.agentId } : {}),
   }));
-  const needsApproval = deps.bus != null && requiresApproval(deps.workflowConfig, input.goal);
-  if (needsApproval && deps.bus) {
+  // Approval gate is a USER-facing checkpoint — only fires for top-level
+  // tasks. Sub-tasks (`input.parentTaskId` set) inherit the parent's
+  // approval and must NOT trigger their own approval prompts. Without
+  // this bypass:
+  //   - a delegate-sub-agent whose synthesized plan would normally trigger
+  //     approval would pause waiting for a user decision
+  //   - the user only sees the parent task in the UI; they have no
+  //     surface to approve a sub-task → workflow stuck forever
+  //   - if config has `requireUserApproval='always'`, EVERY delegate
+  //     would block, multiplying the human friction by N
+  // Treat sub-tasks as pre-authorized via the parent's gate.
+  const approvalMode =
+    deps.bus && !input.parentTaskId ? classifyApprovalRequirement(deps.workflowConfig, input.goal, plan) : 'none';
+  if (approvalMode !== 'none' && deps.bus) {
     const bus = deps.bus;
     const timeoutMs = approvalTimeoutMs(deps.workflowConfig);
+    const autoDecisionAllowed = approvalMode === 'agent-discretion';
     // Subscribe BEFORE emitting plan_ready so we never miss an approval event
     // that races the emit (HTTP client may POST approve very quickly).
     const decisionPromise = awaitApprovalDecision(bus, input.id, timeoutMs);
@@ -171,6 +434,9 @@ export async function executeWorkflow(
       goal: plan.goal,
       steps: stepsForEvent,
       awaitingApproval: true,
+      approvalMode,
+      timeoutMs,
+      autoDecisionAllowed,
     });
     const decision = await decisionPromise;
     if (decision === 'rejected') {
@@ -188,13 +454,69 @@ export async function executeWorkflow(
         totalDurationMs: performance.now() - startTime,
       };
     }
-    // `decision === 'timeout'` falls through to execution: an absent user is
-    // treated as implicit approval. Emit `workflow:plan_approved` so UIs
-    // subscribed to the gate events tear down the inline approval card and
-    // flip back to a normal running state instead of waiting for the next
-    // step event to arrive.
     if (decision === 'timeout') {
-      bus.emit('workflow:plan_approved', { taskId: input.id });
+      // Mode-aware timeout handling. `human-required` plans MUST NOT
+      // auto-approve — the plan contains a step that genuinely needs a
+      // human's judgement (clarify, choose, decide, …). The runtime
+      // contract requires a finite WorkflowResult, so on timeout we
+      // surface an honest "human decision required" failure instead of
+      // letting the worker hang or silently approving.
+      if (approvalMode === 'human-required') {
+        const rationale =
+          'Human decision required; Vinyan cannot auto-approve this plan. ' +
+          'The plan asks the user to choose / confirm / clarify before it ' +
+          'can continue, and no decision arrived within the review window.';
+        bus.emit('workflow:plan_rejected', {
+          taskId: input.id,
+          auto: true,
+          rationale,
+        });
+        bus.emit('workflow:complete', {
+          goal: plan.goal,
+          status: 'failed',
+          stepsCompleted: 0,
+          totalSteps: plan.steps.length,
+        });
+        return {
+          status: 'failed',
+          stepResults: [],
+          synthesizedOutput: rationale,
+          totalTokensConsumed: 0,
+          totalDurationMs: performance.now() - startTime,
+        };
+      }
+      // `agent-discretion` — exercise Vinyan's deferred judgement via
+      // `evaluateAutoApproval` (A3-compliant rule-based verdict over the
+      // plan). Read-only / no-side-effect plans get auto-approved and
+      // continue to step dispatch; plans containing code mutations or
+      // destructive shell commands are auto-rejected with a rationale.
+      const verdict = evaluateAutoApproval(plan);
+      if (verdict.decision === 'approved') {
+        bus.emit('workflow:plan_approved', {
+          taskId: input.id,
+          auto: true,
+          rationale: verdict.rationale,
+        });
+      } else {
+        bus.emit('workflow:plan_rejected', {
+          taskId: input.id,
+          auto: true,
+          rationale: verdict.rationale,
+        });
+        bus.emit('workflow:complete', {
+          goal: plan.goal,
+          status: 'failed',
+          stepsCompleted: 0,
+          totalSteps: plan.steps.length,
+        });
+        return {
+          status: 'failed',
+          stepResults: [],
+          synthesizedOutput: verdict.rationale,
+          totalTokensConsumed: 0,
+          totalDurationMs: performance.now() - startTime,
+        };
+      }
     }
   } else {
     deps.bus?.emit('workflow:plan_ready', {
@@ -204,6 +526,19 @@ export async function executeWorkflow(
       awaitingApproval: false,
     });
   }
+
+  // Stage runtime — shared between executeWorkflow's main loop and
+  // executeStep below. Holds the manifest indexes plus a status mirror
+  // for subtask records so `workflow:subtask_updated` payloads always
+  // carry the latest snapshot. Threaded through deps to avoid plumbing
+  // four new arguments down to executeStep / dispatchStrategy.
+  const stageRuntime: StageRuntime = {
+    manifest: stageManifest,
+    todoByStep,
+    subtaskByStep,
+    subtaskState: new Map(stageManifest.multiAgentSubtasks.map((s) => [s.subtaskId, { ...s }])),
+  };
+  const depsWithStage: WorkflowExecutorDeps = { ...deps, stageRuntime };
 
   const stepResults = new Map<string, WorkflowStepResult>();
   // `succeeded` carries dependency-satisfaction semantics: a downstream step
@@ -262,9 +597,7 @@ export async function executeWorkflow(
       await deps.agentMemory.recordFailedApproach({
         taskId: input.id,
         taskType: input.taskType,
-        approach: failedSteps.length > 0
-          ? `${approach}|failed:${failedSteps.join(',')}`
-          : approach,
+        approach: failedSteps.length > 0 ? `${approach}|failed:${failedSteps.join(',')}` : approach,
         failureOracle,
         routingLevel: 2,
         fileTarget: input.targetFiles?.[0] ?? '',
@@ -286,9 +619,7 @@ export async function executeWorkflow(
     const skipNow: Array<{ step: (typeof plan.steps)[number]; failedDeps: string[] }> = [];
     for (const step of plan.steps) {
       if (!remaining.has(step.id)) continue;
-      const failedDeps = step.dependencies.filter(
-        (d) => finished.has(d) && !succeeded.has(d),
-      );
+      const failedDeps = step.dependencies.filter((d) => finished.has(d) && !succeeded.has(d));
       if (failedDeps.length > 0) {
         skipNow.push({ step, failedDeps });
         continue;
@@ -300,7 +631,10 @@ export async function executeWorkflow(
 
     if (ready.length === 0 && skipNow.length === 0 && remaining.size > 0) {
       // Deadlock — circular dependency or a step depends on something not in the plan
-      for (const id of remaining) stepStatuses.set(id, 'failed');
+      for (const id of remaining) {
+        stepStatuses.set(id, 'failed');
+        emitTodoUpdate(depsWithStage, input.id, input.sessionId, id, 'failed', 'workflow deadlock');
+      }
       emitPlanUpdate();
       await recordFailure('workflow-deadlock', [...remaining]);
       deps.bus?.emit('workflow:complete', {
@@ -311,13 +645,13 @@ export async function executeWorkflow(
       });
       return buildResult(
         plan,
-        input.id,
+        input,
         input.budget.maxDurationMs,
         stepResults,
         'failed',
         performance.now() - startTime,
         totalTokens,
-        deps,
+        depsWithStage,
       );
     }
 
@@ -337,6 +671,17 @@ export async function executeWorkflow(
       finished.add(step.id);
       remaining.delete(step.id);
       stepStatuses.set(step.id, 'skipped');
+      const depReason = `dependency failed (${failedDeps.join(', ')})`;
+      emitTodoUpdate(depsWithStage, input.id, input.sessionId, step.id, 'skipped', depReason);
+      if (step.strategy === 'delegate-sub-agent') {
+        emitSubtaskUpdate(depsWithStage, input.id, input.sessionId, step.id, {
+          status: 'skipped',
+          completedAt: Date.now(),
+          errorKind: 'dependency_failed',
+          errorMessage: depReason,
+          partialOutputAvailable: false,
+        });
+      }
     }
     if (skipNow.length > 0) emitPlanUpdate();
 
@@ -344,13 +689,14 @@ export async function executeWorkflow(
 
     // Mark all ready steps as running before dispatching so the UI can show
     // multiple parallel steps as in-flight when topology allows it.
-    for (const step of ready) stepStatuses.set(step.id, 'running');
+    for (const step of ready) {
+      stepStatuses.set(step.id, 'running');
+      emitTodoUpdate(depsWithStage, input.id, input.sessionId, step.id, 'running');
+    }
     emitPlanUpdate();
 
     // Execute ready steps in parallel
-    const results = await Promise.all(
-      ready.map((step) => executeStep(step, plan, stepResults, input, deps)),
-    );
+    const results = await Promise.all(ready.map((step) => executeStep(step, plan, stepResults, input, depsWithStage)));
 
     for (const result of results) {
       stepResults.set(result.stepId, result);
@@ -358,30 +704,126 @@ export async function executeWorkflow(
       remaining.delete(result.stepId);
       if (result.status === 'completed') succeeded.add(result.stepId);
       totalTokens += result.tokensConsumed;
-      stepStatuses.set(
-        result.stepId,
-        result.status === 'completed'
-          ? 'done'
-          : result.status === 'skipped'
-            ? 'skipped'
-            : 'failed',
-      );
+      const planStepStatus: PlanStepStatus =
+        result.status === 'completed' ? 'done' : result.status === 'skipped' ? 'skipped' : 'failed';
+      stepStatuses.set(result.stepId, planStepStatus);
+      const todoStatus: WorkflowTodoStatus =
+        planStepStatus === 'done' ? 'done' : planStepStatus === 'skipped' ? 'skipped' : 'failed';
+      const failureReason = result.status === 'failed' ? result.output.slice(0, 240) : undefined;
+      emitTodoUpdate(depsWithStage, input.id, input.sessionId, result.stepId, todoStatus, failureReason);
     }
     emitPlanUpdate();
   }
 
   const allCompleted = [...stepResults.values()].every((r) => r.status === 'completed');
   const anyFailed = [...stepResults.values()].some((r) => r.status === 'failed');
-  const status = allCompleted ? 'completed' : anyFailed ? 'partial' : 'completed';
+  let status: WorkflowResult['status'] = allCompleted ? 'completed' : anyFailed ? 'partial' : 'completed';
 
   // Record approach failure when at least one step failed. `partial` covers
   // the "some succeeded, some failed" case — still useful signal for the
   // planner to know this strategy mix is unreliable for this task type.
   if (anyFailed) {
-    const failedStepIds = [...stepResults.values()]
-      .filter((r) => r.status === 'failed')
-      .map((r) => r.stepId);
+    const failedStepIds = [...stepResults.values()].filter((r) => r.status === 'failed').map((r) => r.stepId);
     await recordFailure('workflow-step-failed', failedStepIds);
+
+    // Runtime decision gate (MVP — multi-agent partial only): when at
+    // least one DELEGATE-SUB-AGENT step failed AND its cascade caused at
+    // least one dependent step to skip, the workflow can no longer
+    // deliver what the user originally asked for (e.g. the planner's
+    // Compare step depends on all delegates succeeding — one delegate
+    // timing out skips the comparison and forces the executor to ship a
+    // deterministic concat of survivors). Pause and ask the user before
+    // shipping that degraded result.
+    //
+    // Scope-limited to delegate-sub-agent failures on purpose:
+    //   - human-input failure is user-driven (they provided empty / no
+    //     answer); asking them again with a decision card is redundant
+    //   - llm-reasoning / direct-tool failures are infrastructure issues
+    //     that don't have a "ship as-is vs alternatives" semantic; keep
+    //     the existing silent-partial behavior until we have a separate
+    //     UX for those modes
+    //
+    // Also bypassed when:
+    //   - bus is not configured (CLI smoke without event bus)
+    //   - task is a delegated sub-task (`input.parentTaskId` set) — the
+    //     parent's gate covers the user's decision surface
+    //   - status would be 'completed' or no cascade-skip happened (a
+    //     leaf step failure with no dependents is honestly partial but
+    //     does not change what the user asked for)
+    const skippedDueToFailedDep = [...stepResults.values()].filter(
+      (r) => r.status === 'skipped' && r.output.startsWith('Skipped: dependency failed'),
+    );
+    const failedDelegateStep = plan.steps.find(
+      (s) => s.strategy === 'delegate-sub-agent' && stepResults.get(s.id)?.status === 'failed',
+    );
+    const shouldPauseForDecision =
+      !!deps.bus &&
+      !input.parentTaskId &&
+      status === 'partial' &&
+      !!failedDelegateStep &&
+      skippedDueToFailedDep.length > 0;
+
+    if (shouldPauseForDecision) {
+      const bus = deps.bus!;
+      const skippedStepIds = skippedDueToFailedDep.map((r) => r.stepId);
+      const completedStepIds = [...stepResults.values()].filter((r) => r.status === 'completed').map((r) => r.stepId);
+      const summary =
+        `${failedStepIds.length} of ${plan.steps.length} step` +
+        `${plan.steps.length === 1 ? '' : 's'} failed; ` +
+        `${skippedStepIds.length} dependent step${skippedStepIds.length === 1 ? '' : 's'} skipped.`;
+      const partialPreview = buildPartialPreview(plan, stepResults, 600);
+      const timeoutMs = approvalTimeoutMs(deps.workflowConfig);
+
+      // Subscribe BEFORE emitting `_needed` so a fast UI cannot race the
+      // request — same hazard as approval / human-input gates.
+      const decisionPromise = awaitPartialFailureDecision(bus, input.id, timeoutMs);
+      bus.emit('workflow:partial_failure_decision_needed', {
+        taskId: input.id,
+        sessionId: input.sessionId,
+        failedStepIds,
+        skippedStepIds,
+        completedStepIds,
+        summary,
+        partialPreview,
+        timeoutMs,
+      });
+      const decision = await decisionPromise;
+
+      if (decision === 'abort' || decision === 'timeout') {
+        const auto = decision === 'timeout';
+        const rationale = auto
+          ? `User did not respond within ${Math.round(timeoutMs / 1000)}s; aborting partial result.`
+          : 'User chose to abort after partial-failure review.';
+        bus.emit('workflow:partial_failure_decision_provided', {
+          taskId: input.id,
+          sessionId: input.sessionId,
+          decision: 'abort',
+          rationale,
+          ...(auto ? { auto: true } : {}),
+        });
+        bus.emit('workflow:complete', {
+          goal: plan.goal,
+          status: 'failed',
+          stepsCompleted: succeeded.size,
+          totalSteps: plan.steps.length,
+        });
+        return {
+          status: 'failed',
+          stepResults: [...stepResults.values()],
+          synthesizedOutput: rationale,
+          totalTokensConsumed: totalTokens,
+          totalDurationMs: performance.now() - startTime,
+        };
+      }
+      // decision === 'continue' — fall through to buildResult / emit
+      // workflow:complete with the original 'partial' status. Echo the
+      // user's decision on the bus for observability + UI teardown.
+      bus.emit('workflow:partial_failure_decision_provided', {
+        taskId: input.id,
+        sessionId: input.sessionId,
+        decision: 'continue',
+      });
+    }
   }
 
   deps.bus?.emit('workflow:complete', {
@@ -393,13 +835,13 @@ export async function executeWorkflow(
 
   return buildResult(
     plan,
-    input.id,
+    input,
     input.budget.maxDurationMs,
     stepResults,
     status,
     performance.now() - startTime,
     totalTokens,
-    deps,
+    depsWithStage,
   );
 }
 
@@ -413,6 +855,8 @@ async function executeStep(
   const stepStart = performance.now();
 
   deps.bus?.emit('workflow:step_start', {
+    taskId: input.id,
+    sessionId: input.sessionId,
     stepId: step.id,
     strategy: step.strategy,
     description: step.description,
@@ -426,18 +870,13 @@ async function executeStep(
   // Fallback on failure
   if (result.status === 'failed' && step.fallbackStrategy) {
     deps.bus?.emit('workflow:step_fallback', {
+      taskId: input.id,
+      sessionId: input.sessionId,
       stepId: step.id,
       primaryStrategy: step.strategy,
       fallbackStrategy: step.fallbackStrategy,
     });
-    result = await dispatchStrategy(
-      step.fallbackStrategy,
-      step,
-      plan,
-      interpolatedInputs,
-      input,
-      deps,
-    );
+    result = await dispatchStrategy(step.fallbackStrategy, step, plan, interpolatedInputs, input, deps);
     result.strategyUsed = step.fallbackStrategy;
   }
 
@@ -445,6 +884,8 @@ async function executeStep(
   result.durationMs = durationMs;
 
   deps.bus?.emit('workflow:step_complete', {
+    taskId: input.id,
+    sessionId: input.sessionId,
     stepId: step.id,
     status: result.status,
     strategy: result.strategyUsed,
@@ -495,6 +936,60 @@ async function dispatchStrategy(
           status: taskResult.status === 'completed' ? 'completed' : 'failed',
           output: taskResult.answer ?? taskResult.mutations.map((m) => `${m.file}: ${m.diff.slice(0, 200)}`).join('\n'),
           tokensConsumed: taskResult.trace?.tokensConsumed ?? 0,
+        };
+      }
+
+      case 'external-coding-cli': {
+        if (!deps.codingCliStrategy) {
+          return {
+            ...base,
+            status: 'failed',
+            output: 'external-coding-cli strategy not wired (missing codingCliStrategy in WorkflowExecutorDeps)',
+          };
+        }
+        const stepInput = step.inputs ?? {};
+        const subTaskId = `${input.id}-coding-cli-${step.id}`;
+        const outcome = await deps.codingCliStrategy.run({
+          taskId: subTaskId,
+          rootGoal: `${step.description}\n\nContext from prior steps:\n${interpolatedInputs}`,
+          cwd: deps.workspace ?? process.cwd(),
+          sessionId: input.sessionId,
+          providerId: stepInput.providerId === 'claude-code' || stepInput.providerId === 'github-copilot'
+            ? stepInput.providerId
+            : undefined,
+          mode: stepInput.mode === 'headless' || stepInput.mode === 'interactive'
+            ? stepInput.mode
+            : 'headless',
+          allowedScope: input.targetFiles ?? [],
+          notes: stepInput.notes,
+          correlationId: input.id,
+          model: stepInput.model,
+        });
+        const outputText = outcome.claim
+          ? [
+              `Provider: ${outcome.providerId ?? '(unknown)'}`,
+              `Status: ${outcome.status}`,
+              `Reason: ${outcome.reason}`,
+              `Summary: ${outcome.claim.summary}`,
+              outcome.claim.changedFiles.length
+                ? `Changed files:\n  - ${outcome.claim.changedFiles.join('\n  - ')}`
+                : 'No file changes claimed.',
+              outcome.verification
+                ? `Verification: passed=${outcome.verification.passed}, predictionError=${outcome.verification.predictionError}`
+                : 'Verification: skipped',
+            ].join('\n')
+          : `External CLI ${outcome.status}: ${outcome.reason}`;
+        // unsupported maps to failed at the workflow layer — the step's
+        // contract is "produce an outcome we can synthesize from", and an
+        // unsupported provider produces nothing useful. Operator should
+        // re-route via fallbackStrategy or fix provider availability.
+        const status: WorkflowStepResult['status'] =
+          outcome.status === 'completed' ? 'completed' : 'failed';
+        return {
+          ...base,
+          status,
+          output: outputText,
+          subTaskId,
         };
       }
 
@@ -599,16 +1094,16 @@ async function dispatchStrategy(
           step.expectedOutput ? `Expected output: ${step.expectedOutput}` : null,
           interpolatedInputs ? `Prior workflow step output:\n${interpolatedInputs}` : null,
           '',
-          'Produce just this step\'s output. Match the user\'s language and register from the goal. Do not preface with meta-commentary about the workflow or the step number.',
+          "Produce just this step's output. Match the user's language and register from the goal. Do not preface with meta-commentary about the workflow or the step number.",
         ]
           .filter((s): s is string => s !== null)
           .join('\n\n');
         const stepSystemPrompt =
           'You are completing one step of a multi-step workflow toward a goal the user already approved. ' +
           'Stay focused on this step alone — do not anticipate later steps, do not summarize prior work, ' +
-          'do not greet, do not ask clarifying questions. Match the user\'s language and tone from the goal. ' +
+          "do not greet, do not ask clarifying questions. Match the user's language and tone from the goal. " +
           'For creative writing tasks, write in narrative voice; for analytical tasks, be precise. ' +
-          'Output the step\'s deliverable directly with no meta-framing.';
+          "Output the step's deliverable directly with no meta-framing.";
         const request = {
           systemPrompt: stepSystemPrompt,
           userPrompt,
@@ -661,15 +1156,65 @@ async function dispatchStrategy(
         // A1 separation contract is a hard invariant; planner-assigned IDs
         // are advisory.
         const resolvedAgentId = verifierAgentId ?? step.agentId ?? undefined;
+        // Build the sub-task's goal with the full context the delegate needs
+        // to produce its own answer (not a meta-description of the workflow).
+        // Without this the sub-agent only saw `step.description` — the
+        // planner's template phrasing — and lost: (a) the original user
+        // request, (b) prior step outputs (e.g. step1's generated question
+        // that this delegate is meant to answer), (c) the expectedOutput
+        // hint, (d) any explicit instruction to PRODUCE the deliverable
+        // rather than describe how it should be produced. The session
+        // a43487fd audit showed delegates "proposing competition rules"
+        // instead of answering the question step1 had generated.
+        //
+        // Structure (sections separated by blank lines so the receiving LLM
+        // can parse them as distinct context blocks):
+        //   1. The delegate task itself (step.description)
+        //   2. Original user request (plan.goal) — anchor for intent
+        //   3. Prior step output (interpolatedInputs) — usually step1's
+        //      generated question for the delegate to answer
+        //   4. Expected output shape (step.expectedOutput) — when set
+        //   5. Explicit instruction to deliver the answer, not narrate
+        const subTaskGoalParts: string[] = [step.description];
+        if (plan.goal && plan.goal !== step.description) {
+          subTaskGoalParts.push(`[Original user request: ${plan.goal}]`);
+        }
+        if (interpolatedInputs && interpolatedInputs.trim().length > 0) {
+          subTaskGoalParts.push(`[Prior workflow step output you should answer / build on]:\n${interpolatedInputs}`);
+        }
+        if (step.expectedOutput && step.expectedOutput.trim().length > 0) {
+          subTaskGoalParts.push(`[Expected output: ${step.expectedOutput}]`);
+        }
+        subTaskGoalParts.push(
+          'Produce your own answer / deliverable as the assigned persona — do NOT propose how the workflow or competition should be run, do NOT ask the user to provide the topic, and do NOT meta-describe what your role would do. The orchestrator already routed you here because YOU are the agent that should answer.',
+        );
+        const subTaskGoal = subTaskGoalParts.join('\n\n');
         const subInput: TaskInput = {
           id: `${input.id}-delegate-${step.id}`,
           source: input.source,
-          goal: step.description,
+          goal: subTaskGoal,
           taskType: input.taskType,
           targetFiles: input.targetFiles,
           budget: {
-            maxTokens: Math.floor(input.budget.maxTokens * step.budgetFraction),
-            maxDurationMs: Math.floor(input.budget.maxDurationMs * step.budgetFraction),
+            // Sub-task wall-clock budget. Set to the OUTER hard ceiling
+            // (`HARD_CEILING_MS` below) — NOT the idle/soft limit. The
+            // outer Promise.race uses a streaming-aware watchdog: the
+            // LLM gets `subTaskTimeoutMs` of idle budget that is RESET
+            // by every `llm:stream_delta` for the sub-task, plus an
+            // absolute ceiling. The sub-task's own self-timer in
+            // `core-loop.ts:2624` only sees this number and is unaware
+            // of streaming activity, so we MUST give it the full
+            // ceiling — otherwise it self-kills mid-stream and the
+            // watchdog never gets a chance to extend on activity.
+            // Session f4117fe3 symptom: author streaming a substantive
+            // Thai response was killed at exactly 2m0s = the static
+            // 120s wall, even though tokens were arriving steadily —
+            // both clocks now key off `HARD_CEILING_MS` so a streaming
+            // LLM has up to 10 min of total wall, with idle bursts
+            // ≥ 120s each killing it. Token floor stays at 500 (a
+            // different concern from wall-clock budget).
+            maxTokens: Math.max(500, Math.floor(input.budget.maxTokens * step.budgetFraction)),
+            maxDurationMs: Math.max(600_000, workflowStepTimeoutMs(input, step.budgetFraction) * 4),
             maxRetries: input.budget.maxRetries,
           },
           ...(resolvedAgentId ? { agentId: resolvedAgentId } : {}),
@@ -686,28 +1231,116 @@ async function dispatchStrategy(
             verifierAgentId,
           });
         }
-        // Wall-clock cap on the delegate. Without this a free-tier 429
-        // retry loop inside the sub-agent's LLM provider hangs the entire
-        // workflow indefinitely (incident: session ede9e9e1 — 3 delegates
-        // sat for 40 min until a server restart marked the task orphaned;
-        // step1 had completed in 6.5s but steps 2-4 produced no observable
-        // progress and no honest failure either). The cap pairs with the
-        // length===0 honesty fast-path so the synthesizer reports "step X
-        // timed out" instead of fabricating an answer the agent never
-        // produced.
+        // Wall-clock guard on the delegate. Streaming-aware watchdog:
+        //   - `subTaskTimeoutMs` (≥ MIN_WORKFLOW_LLM_TIMEOUT_MS = 180s) is the IDLE budget — how long
+        //     we tolerate ZERO progress activity AFTER the first sign
+        //     of life before declaring the sub-task stuck. Any tracked
+        //     activity event (see WATCHDOG_ACTIVITY_EVENTS) for this
+        //     sub-task's id resets the idle clock.
+        //   - `HARD_CEILING_MS` is the absolute wall — even a happily
+        //     streaming LLM gets killed if total elapsed exceeds this,
+        //     so a token-loop / runaway generation cannot run forever.
+        //
+        // Two design points worth flagging:
+        //
+        // 1. Idle clock arms on FIRST activity, not at dispatch. Pre-fix
+        //    the executor armed the idle timer immediately, so a
+        //    non-streaming LLM call (default `streaming.assistantDelta:
+        //    false` → `provider.generate()` blocking, no deltas) was
+        //    killed at 120s every time (incident: sub-task
+        //    `11557ffd-...-delegate-step2`, researcher persona, idle
+        //    timeout with NO stream activity ever). The streaming
+        //    watchdog cannot tell apart "stuck" from "non-streaming
+        //    path" using stream events alone — so we let HARD_CEILING_MS
+        //    own that case until activity proves the sub-task is alive.
+        //
+        // 2. Activity is a SET of events, not just `llm:stream_delta`.
+        //    Full-pipeline phases use `provider.generate()` and never
+        //    emit stream deltas, but they DO emit `phase:timing` per
+        //    boundary. Agent-loop emits `agent:turn_complete`,
+        //    `agent:tool_*`, etc. Subscribing to all of these gives a
+        //    true liveness signal regardless of which path the sub-task
+        //    takes. All listed events carry `taskId` — see
+        //    `src/core/bus.ts` for the matrix.
+        //
+        // Both timers are still necessary together. Without the idle
+        // watchdog, a streaming LLM that genuinely hangs (rare) would
+        // wait the full HARD_CEILING_MS. Without the ceiling, a 429
+        // retry loop inside the LLM provider could hang the entire
+        // workflow (incident: session ede9e9e1 — 3 delegates sat for
+        // 40 min until a server restart marked the task orphaned). The
+        // watchdog pairs with the length===0 honesty fast-path so the
+        // synthesizer reports "step X timed out" instead of fabricating
+        // an answer the agent never produced.
         const subTaskTimeoutMs = workflowStepTimeoutMs(input, step.budgetFraction);
-        let timer: ReturnType<typeof setTimeout> | undefined;
+        const HARD_CEILING_MS = Math.max(600_000, subTaskTimeoutMs * 4);
+        let lastActivityAt = performance.now();
+        let firstActivitySeen = false;
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        let ceilingTimer: ReturnType<typeof setTimeout> | undefined;
+        let timeoutKind: 'idle' | 'ceiling' | null = null;
         const timeoutPromise = new Promise<TaskResult>((_, reject) => {
-          timer = setTimeout(
-            () =>
+          const idleCheck = () => {
+            // Defer the idle verdict until the sub-task has shown at
+            // least one activity event. This is the structural fix for
+            // non-streaming paths: with default config (streaming off)
+            // OR full-pipeline phases (always non-streaming), no
+            // activity event ever arrives, and the idle clock would
+            // false-positive at 120s. Re-arm and let HARD_CEILING_MS
+            // own the cap; if activity DOES start later, we transition
+            // into tight-idle mode automatically.
+            if (!firstActivitySeen) {
+              idleTimer = setTimeout(idleCheck, subTaskTimeoutMs);
+              return;
+            }
+            const idleMs = performance.now() - lastActivityAt;
+            if (idleMs >= subTaskTimeoutMs) {
+              timeoutKind = 'idle';
               reject(
                 new Error(
-                  `delegate-sub-agent step ${step.id} timed out after ${Math.round(subTaskTimeoutMs / 1000)}s (agent=${resolvedAgentId ?? 'default'})`,
+                  `delegate-sub-agent step ${step.id} idle timeout after ${Math.round(idleMs / 1000)}s ` +
+                    `(no progress events after first activity, agent=${resolvedAgentId ?? 'default'})`,
                 ),
+              );
+              return;
+            }
+            // Re-arm for the remaining idle budget. Min 1s avoids a
+            // busy-spin if an activity event arrived right before the
+            // timer fired and pushed `lastActivityAt` forward.
+            idleTimer = setTimeout(idleCheck, Math.max(1_000, subTaskTimeoutMs - idleMs));
+          };
+          idleTimer = setTimeout(idleCheck, subTaskTimeoutMs);
+          ceilingTimer = setTimeout(() => {
+            timeoutKind = 'ceiling';
+            reject(
+              new Error(
+                `delegate-sub-agent step ${step.id} wall-clock timeout (absolute ceiling) ` +
+                  `after ${Math.round(HARD_CEILING_MS / 1000)}s (agent=${resolvedAgentId ?? 'default'})`,
               ),
-            subTaskTimeoutMs,
-          );
+            );
+          }, HARD_CEILING_MS);
         });
+        // Reset idle clock on any liveness signal from this sub-task.
+        // The taskId filter scopes to `subInput.id`, so concurrent
+        // delegates do not bleed activity across each other. The
+        // `typeof` guard handles narrow test mocks that supply only
+        // `bus.emit` — without it the watchdog throws on subscription.
+        // Production `VinyanBus` always has `.on`.
+        const busOn =
+          deps.bus && typeof (deps.bus as { on?: unknown }).on === 'function' ? deps.bus.on.bind(deps.bus) : undefined;
+        const markActivity = () => {
+          firstActivitySeen = true;
+          lastActivityAt = performance.now();
+        };
+        const unsubActivity: Array<() => void> = [];
+        if (busOn) {
+          for (const eventName of WATCHDOG_ACTIVITY_EVENTS) {
+            const off = busOn(eventName, (payload: { taskId?: string }) => {
+              if (payload?.taskId === subInput.id) markActivity();
+            });
+            if (off) unsubActivity.push(off);
+          }
+        }
         // Emit "delegate dispatched" so the UI agent-timeline card can show
         // the sub-agent as `running` immediately, without waiting for the
         // sub-task's own `task:start` to bubble up.
@@ -718,29 +1351,74 @@ async function dispatchStrategy(
           subTaskId: subInput.id,
           stepDescription: step.description,
         });
+        // Stage manifest mirror — subtask transitions planned → dispatched
+        // → running. The `dispatched` payload pins the resolved agent id
+        // so reload/replay shows "Agent N: <agentId>" instead of "agent?"
+        // even if the sub-task's own task:start has not arrived yet.
+        emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+          status: 'running',
+          agentId: resolvedAgentId,
+          startedAt: Date.now(),
+        });
         let taskResult: TaskResult;
         try {
           taskResult = await Promise.race([deps.executeTask(subInput), timeoutPromise]);
         } catch (err) {
+          // Surface the watchdog verdict so dashboards / replays can tell
+          // an idle/stuck timeout (LLM produced no tokens for ≥120s) apart
+          // from a hard-ceiling kill (LLM streamed but ran past 10 min).
+          // `timeoutMs` carries whichever budget actually fired so
+          // operators see the matching number on the trace card.
           deps.bus?.emit('workflow:delegate_timeout', {
             taskId: input.id,
             stepId: step.id,
             agentId: resolvedAgentId ?? null,
-            timeoutMs: subTaskTimeoutMs,
+            timeoutMs: timeoutKind === 'ceiling' ? HARD_CEILING_MS : subTaskTimeoutMs,
+          });
+          const errMessage = err instanceof Error ? err.message : String(err);
+          // Honest failure record on the subtask manifest — replaces the
+          // UI's previous "[no output captured — agent failed]" placeholder
+          // with structured detail (errorKind, errorMessage, agentId,
+          // timeoutMs already on workflow:delegate_timeout). Status is
+          // `timeout` when the watchdog fired, `failed` when the sub-task
+          // self-terminated.
+          emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+            status: timeoutKind ? 'timeout' : 'failed',
+            agentId: resolvedAgentId,
+            completedAt: Date.now(),
+            errorKind: classifyDelegateError(errMessage, { timeoutKind }),
+            errorMessage: errMessage,
+            partialOutputAvailable: false,
           });
           return {
             ...base,
             status: 'failed',
-            output: err instanceof Error ? err.message : String(err),
+            output: errMessage,
             agentId: resolvedAgentId,
             subTaskId: subInput.id,
           };
         } finally {
-          if (timer) clearTimeout(timer);
+          if (idleTimer) clearTimeout(idleTimer);
+          if (ceilingTimer) clearTimeout(ceilingTimer);
+          for (const off of unsubActivity) off();
         }
-        const finalStatus = taskResult.status === 'completed' ? 'completed' : 'failed';
-        const stepOutput =
-          taskResult.answer ?? JSON.stringify(taskResult.mutations.map((m) => m.file));
+        const stepOutput = taskResult.answer ?? JSON.stringify(taskResult.mutations.map((m) => m.file));
+        // A2 honesty: a delegate that returned status='completed' but
+        // with no usable output (empty/whitespace-only `answer` AND no
+        // mutations to fall back on) is silently failing. Mark it as
+        // failed with errorKind='empty_response' so the UI surfaces the
+        // gap explicitly instead of rendering DONE on top of "[no
+        // activity captured]". The trace + duration are still preserved.
+        // We also treat the deterministic mutations-fallback "[]" string
+        // as empty — it's the JSON.stringify of an empty mutation list,
+        // not a real answer.
+        const trimmedOutput = stepOutput.trim();
+        const isEmptyResponse =
+          trimmedOutput.length === 0 ||
+          trimmedOutput === '[]' ||
+          trimmedOutput === '""';
+        const finalStatus =
+          taskResult.status === 'completed' && !isEmptyResponse ? 'completed' : 'failed';
         // Preview cap: 2000 chars is enough for the user to read the
         // sub-agent's reasoning + answer in the chat UI's expandable plan
         // step. Earlier 300-char cap chopped mid-word ("**Auth" instead of
@@ -771,6 +1449,51 @@ async function dispatchStrategy(
           outputPreview,
           tokensUsed: taskResult.trace?.tokensConsumed ?? 0,
         });
+        // Stage manifest mirror — subtask done/failed with an honest
+        // shape. When the sub-task itself failed without throwing (e.g.
+        // its core-loop returned status='failed' with an error
+        // explanation in `answer`), we surface that as `errorKind:
+        // subtask_failed` + the answer/explanation as errorMessage so
+        // the UI does not collapse to "[no output captured]".
+        if (finalStatus === 'completed') {
+          emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+            status: 'done',
+            agentId: resolvedAgentId,
+            completedAt: Date.now(),
+            outputPreview,
+            partialOutputAvailable: outputPreview.length > 0,
+          });
+        } else if (isEmptyResponse && taskResult.status === 'completed') {
+          // Provider/persona returned cleanly but with no answer —
+          // distinguish from real failures (timeout, contract violation)
+          // so operators can spot stuck personas separately from infra
+          // failures. The duration is still real (the LLM ran, just
+          // produced nothing useful), so we keep it as-is.
+          emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+            status: 'failed',
+            agentId: resolvedAgentId,
+            completedAt: Date.now(),
+            outputPreview: undefined,
+            errorKind: 'empty_response',
+            errorMessage:
+              `Sub-agent ${resolvedAgentId ?? 'delegate'} completed without producing an answer ` +
+              `(empty response from provider/persona). Duration ${Math.round(
+                (taskResult.trace?.durationMs ?? 0) / 1000,
+              )}s; tokens ${taskResult.trace?.tokensConsumed ?? 0}.`,
+            partialOutputAvailable: false,
+          });
+        } else {
+          const failExplanation = stepOutput?.trim() || 'Sub-agent reported failure with no explanation.';
+          emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+            status: 'failed',
+            agentId: resolvedAgentId,
+            completedAt: Date.now(),
+            outputPreview: stepOutput.length > 0 ? outputPreview : undefined,
+            errorKind: classifyDelegateError(failExplanation, { timeoutKind: null }),
+            errorMessage: failExplanation,
+            partialOutputAvailable: stepOutput.length > 0,
+          });
+        }
         return {
           ...base,
           status: finalStatus,
@@ -782,11 +1505,73 @@ async function dispatchStrategy(
       }
 
       case 'human-input': {
-        deps.bus?.emit('workflow:human_input_needed', {
-          stepId: step.id,
-          question: step.description,
+        // Pause the executor until the user answers. Without this wait the
+        // step would silently return `skipped`, cascading dependency failure
+        // through every downstream delegate (incident: session b749e5bd —
+        // the user pressed Approve on a 5-step plan whose step1 was
+        // "Ask the user for the topic"; steps 2-4 then all skipped with
+        // "Skipped: dependency failed (step1)" because step1 returned
+        // skipped immediately on dispatch).
+        //
+        // Without a bus we can't pause — fail honestly so the user sees
+        // why instead of skipping into an undefined cascade.
+        if (!deps.bus) {
+          return {
+            ...base,
+            status: 'failed',
+            output: 'human-input step requires a bus to await user response',
+          };
+        }
+        const bus = deps.bus;
+        // Re-use the approval window as the human-input ceiling; same
+        // intent (a finite cap so an absent user does not hang the worker
+        // forever) and the same default 3 min in DEFAULT_APPROVAL_TIMEOUT_MS.
+        const timeoutMs = approvalTimeoutMs(deps.workflowConfig);
+        const value = await new Promise<string | { timedOut: true }>((resolve) => {
+          let settled = false;
+          const settle = (v: string | { timedOut: true }) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            unsub();
+            resolve(v);
+          };
+          const timer = setTimeout(() => settle({ timedOut: true }), timeoutMs);
+          // Subscribe BEFORE emitting `_needed` so a fast UI cannot race the
+          // request — POST-then-bus-emit happens through the API endpoint
+          // and we must not miss the response if it lands within the same
+          // tick.
+          const unsub = bus.on('workflow:human_input_provided', (payload) => {
+            if (payload.taskId !== input.id) return;
+            if (payload.stepId !== step.id) return;
+            settle(typeof payload.value === 'string' ? payload.value : '');
+          });
+          bus.emit('workflow:human_input_needed', {
+            taskId: input.id,
+            sessionId: input.sessionId,
+            stepId: step.id,
+            question: step.description,
+          });
         });
-        return { ...base, status: 'skipped', output: '[Awaiting human input]' };
+        if (typeof value !== 'string') {
+          return {
+            ...base,
+            status: 'failed',
+            output:
+              `Human-input step ${step.id} timed out after ` +
+              `${Math.round(timeoutMs / 1000)}s without a user response. ` +
+              'No answer was provided so dependent steps cannot proceed.',
+          };
+        }
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+          return {
+            ...base,
+            status: 'failed',
+            output: 'Human-input step received an empty answer; refusing to fabricate a value for downstream steps.',
+          };
+        }
+        return { ...base, status: 'completed', output: trimmed };
       }
 
       default:
@@ -801,10 +1586,7 @@ async function dispatchStrategy(
   }
 }
 
-function interpolateInputs(
-  inputs: Record<string, string>,
-  priorResults: Map<string, WorkflowStepResult>,
-): string {
+function interpolateInputs(inputs: Record<string, string>, priorResults: Map<string, WorkflowStepResult>): string {
   const parts: string[] = [];
   for (const [key, ref] of Object.entries(inputs)) {
     const match = ref.match(/^\$(\w+)\.result$/);
@@ -823,7 +1605,7 @@ function interpolateInputs(
 
 async function buildResult(
   plan: WorkflowPlan,
-  taskId: string,
+  input: TaskInput,
   taskTimeoutMs: number,
   stepResults: Map<string, WorkflowStepResult>,
   status: WorkflowResult['status'],
@@ -831,6 +1613,7 @@ async function buildResult(
   totalTokens: number,
   deps: WorkflowExecutorDeps,
 ): Promise<WorkflowResult> {
+  const taskId = input.id;
   const allResults = [...stepResults.values()];
   const failedSteps = allResults.filter((r) => r.status === 'failed');
   const skippedSteps = allResults.filter((r) => r.status === 'skipped');
@@ -843,9 +1626,7 @@ async function buildResult(
   // answers from the step descriptions is exactly the regression we are
   // protecting against (incident: session fa12c770 — Researcher delegate
   // timed out, synthesizer still wrote "จำลองการตอบของ Agent ที่เหลือ").
-  const delegateStepIds = new Set(
-    plan.steps.filter((s) => s.strategy === 'delegate-sub-agent').map((s) => s.id),
-  );
+  const delegateStepIds = new Set(plan.steps.filter((s) => s.strategy === 'delegate-sub-agent').map((s) => s.id));
   const delegateResults = allResults.filter((r) => delegateStepIds.has(r.stepId));
   const completedDelegates = delegateResults.filter((r) => r.status === 'completed');
   const allDelegatesFailed = delegateResults.length > 0 && completedDelegates.length === 0;
@@ -878,10 +1659,7 @@ async function buildResult(
               // context, then list each delegate failure honestly.
               const supportLines = allResults
                 .filter((r) => r.status === 'completed')
-                .map(
-                  (r) =>
-                    `- ${r.stepId} (${r.strategyUsed}) succeeded:\n  ${r.output.trim().slice(0, 400)}`,
-                )
+                .map((r) => `- ${r.stepId} (${r.strategyUsed}) succeeded:\n  ${r.output.trim().slice(0, 400)}`)
                 .join('\n');
               const delegateLines = delegateResults
                 .map((r) => {
@@ -925,8 +1703,73 @@ async function buildResult(
 
   // Synthesize final output
   let synthesizedOutput: string;
+
+  // Already-final-step short-circuit: when the plan ends with a single
+  // aggregation/synthesis step that depends on prior steps and produced
+  // real output, treat its output as the final answer directly. Running
+  // an additional synthesizer pass on top of an already-aggregated step
+  // is the surface where the parent layer fabricated polished agent
+  // answers in session a43487fd — the delegates returned meta-commentary,
+  // step4 (the planner-supplied "Compare the three answers" step) wasn't
+  // run because it depended on the failing delegates, and the buildResult
+  // synthesizer then improvised its own "comparison" from the step
+  // descriptions. Even when delegates DO succeed, double-synthesis
+  // produces a summary-of-summary that smooths over per-persona voice.
+  // Structural rule:
+  //   - last plan step is `llm-reasoning` (the synthesis strategy planner uses)
+  //   - has dependencies (depends on prior steps; otherwise it's a single
+  //     standalone step and the multi-step path doesn't apply)
+  //   - is the only "sink" of the DAG (no other step depends on it)
+  //   - has a successful, non-empty result
+  // When all four hold, return its output verbatim.
+  const lastPlanStep = plan.steps[plan.steps.length - 1];
+  if (lastPlanStep && allResults.length > 1) {
+    const lastResult = stepResults.get(lastPlanStep.id);
+    const isLastSink = !plan.steps.some((s) => s.dependencies.includes(lastPlanStep.id));
+    const isSynthesisStep = lastPlanStep.strategy === 'llm-reasoning' && lastPlanStep.dependencies.length > 0;
+    const hasUsableOutput = !!lastResult && lastResult.status === 'completed' && lastResult.output.trim().length > 0;
+    if (isLastSink && isSynthesisStep && hasUsableOutput) {
+      // COMPETITION-mode: parse fenced JSON block, emit winner event,
+      // and STRIP the JSON block from the user-facing answer so the
+      // verdict reasoning isn't duplicated (free-text + JSON had the
+      // same content shown twice). For non-competition turns this is
+      // a no-op and `cleanedOutput === rawOutput`.
+      const { cleanedOutput } = processCompetitionVerdict(
+        deps,
+        input,
+        lastResult!.output,
+      );
+      return {
+        status,
+        stepResults: allResults,
+        synthesizedOutput: cleanedOutput,
+        totalTokensConsumed: totalTokens,
+        totalDurationMs: Math.round(durationMs),
+      };
+    }
+  }
+
   if (allResults.length === 1) {
     synthesizedOutput = allResults[0]!.output;
+  } else if (completedDelegates.length >= 1) {
+    // Deterministic delegate aggregation — fires when the workflow had
+    // delegate-sub-agent steps that succeeded but the planner did NOT
+    // include a final aggregator/sink llm-reasoning step (the
+    // already-final-step short-circuit above handles the with-aggregator
+    // case). Without this branch, buildResult falls through to its
+    // synthesizer LLM call which on weak free-tier models smooths persona
+    // voices into a shared register, paraphrases delegate output, and can
+    // even fabricate detail to "improve" missing content. The fix is
+    // structural: skip the LLM entirely when delegates are present and a
+    // verbatim concatenation under persona headers would be honest. This
+    // preserves per-persona voice and removes the fabrication surface.
+    return {
+      status,
+      stepResults: allResults,
+      synthesizedOutput: buildDeterministicDelegateAggregation(plan, stepResults, delegateStepIds),
+      totalTokensConsumed: totalTokens,
+      totalDurationMs: Math.round(durationMs),
+    };
   } else {
     const provider = deps.llmRegistry?.selectByTier('fast');
     if (provider) {
@@ -945,8 +1788,7 @@ async function buildResult(
         const stepSections = allResults.map((r, idx) => {
           const isLast = idx === allResults.length - 1;
           const cap = isLast ? Math.max(PER_STEP_CAP, r.output.length) : PER_STEP_CAP;
-          const body =
-            r.output.length > cap ? `${r.output.slice(0, cap)}\n…[truncated]` : r.output;
+          const body = r.output.length > cap ? `${r.output.slice(0, cap)}\n…[truncated]` : r.output;
           // Status tag is load-bearing: it marks failed/skipped steps so the
           // synthesizer cannot silently treat their error text as if it were
           // a real step output. See A2 honesty contract clause in the system
@@ -969,12 +1811,12 @@ async function buildResult(
             : '';
         const synthesizerSystemPrompt =
           'You are producing the final answer for the user from a multi-step workflow that just completed. ' +
-          'The user only sees your output, not the steps. Match the user\'s language and tone from the goal. ' +
+          "The user only sees your output, not the steps. Match the user's language and tone from the goal. " +
           'Choose the right shape for the goal: ' +
           'creative work → output the prose / poem / story directly without bullet-pointing it; ' +
           'analytical work → structured answer with the key findings; ' +
           'instructional work → clear step-by-step. ' +
-          'When the last step\'s output is already a polished deliverable matching the goal, return it as-is ' +
+          "When the last step's output is already a polished deliverable matching the goal, return it as-is " +
           '(or with light edits) — do NOT compress it into a summary. ' +
           'When a step output contains a fenced code block (```…``` or ~~~…~~~) — typically raw shell ' +
           'output like `ls -la` listings — reproduce that fenced block verbatim in your answer (or quote ' +
@@ -987,7 +1829,15 @@ async function buildResult(
           'missing content to make the answer look complete. Surface failures plainly (e.g., ' +
           '"I could not run X because of an error" / "ขั้นตอน X ไม่สำเร็จ") and only deliver content ' +
           'derived from the COMPLETED steps. Fabricating to fill gaps is forbidden, even if the user ' +
-          'goal asks for a complete deliverable.';
+          'goal asks for a complete deliverable. ' +
+          'STITCHER RULE (non-negotiable): you are a STITCHER, not a re-author. When step outputs are ' +
+          'tagged with persona / agent identity (e.g. "[step3 — author] (delegate-sub-agent):"), copy ' +
+          "each persona's text VERBATIM under a header that names the persona. Do NOT paraphrase, " +
+          'smooth, blend, or compress per-persona content into your own register — doing so destroys the ' +
+          'voice diversity the user asked for. Your job is limited to: a brief framing intro/outro (1-2 ' +
+          'sentences), persona headers, and the verbatim outputs in between. If the user asked for a ' +
+          'comparison, the comparison is whatever ALREADY exists in the per-persona texts plus your ' +
+          'one-paragraph synthesis at the end — never a re-write of what each persona said.';
         const synthesizerUserPrompt = (() => {
           // Anchor the synthesis on prior conversation when the workflow is
           // a follow-up turn ("write chapter 2"). Without this the
@@ -1022,22 +1872,53 @@ async function buildResult(
           : await provider.generate(request);
         synthesizedOutput = response.content;
         totalTokens += (response.tokensUsed?.input ?? 0) + (response.tokensUsed?.output ?? 0);
+        // Compression safety net: when the LLM synthesizer ignores the
+        // STITCHER rule (weak free-tier models do this — they paraphrase /
+        // summarize per-step content into a tight register, destroying any
+        // voice diversity that was present), the synthesized output is
+        // dramatically shorter than the sum of step outputs. Detect this
+        // and fall back to a deterministic concat with step headers.
+        // Threshold rationale: aggressive compression (<25% of total
+        // step output length) on a workflow with substantial outputs
+        // (>1500 chars across steps) is almost always paraphrase, not
+        // genuine consolidation. Below those bounds the synthesizer might
+        // be legitimately compressing redundant content.
+        const totalStepOutputLen = allResults.reduce((sum, r) => sum + r.output.length, 0);
+        const compressionRatio = synthesizedOutput.length / Math.max(1, totalStepOutputLen);
+        if (totalStepOutputLen > 1500 && compressionRatio < 0.25) {
+          deps.bus?.emit('workflow:synthesizer_compression_detected', {
+            taskId,
+            stepOutputBytes: totalStepOutputLen,
+            synthesizedBytes: synthesizedOutput.length,
+            compressionRatio,
+          });
+          // Replace with a deterministic concat that preserves every step's
+          // verbatim content under a `## Step N: <description>` header. The
+          // user keeps voice + detail; the LLM's compressed prose is
+          // discarded. This is the same shape as the all-delegate-failed
+          // fast-path — honest, no fabrication, no smoothing.
+          const concatSections = allResults.map((r) => {
+            const step = plan.steps.find((s) => s.id === r.stepId);
+            const heading = step?.description ? `## ${r.stepId}: ${step.description}` : `## ${r.stepId}`;
+            const statusTag =
+              r.status === 'completed' ? '' : r.status === 'failed' ? ' [FAILED]' : ` [${r.status.toUpperCase()}]`;
+            const body = r.output.trim() || '(no output)';
+            return `${heading}${statusTag}\n\n${body}`;
+          });
+          synthesizedOutput = concatSections.join('\n\n---\n\n');
+        }
       } catch {
         // Fallback when the synthesizer LLM call fails: prefer the last step's
         // raw output (usually the polished deliverable) over stitching every
         // step together with headers — the latter looks like debug output.
         const last = allResults[allResults.length - 1];
         synthesizedOutput =
-          last?.output && last.output.trim().length > 0
-            ? last.output
-            : allResults.map((r) => r.output).join('\n\n');
+          last?.output && last.output.trim().length > 0 ? last.output : allResults.map((r) => r.output).join('\n\n');
       }
     } else {
       const last = allResults[allResults.length - 1];
       synthesizedOutput =
-        last?.output && last.output.trim().length > 0
-          ? last.output
-          : allResults.map((r) => r.output).join('\n\n');
+        last?.output && last.output.trim().length > 0 ? last.output : allResults.map((r) => r.output).join('\n\n');
     }
   }
 
@@ -1048,4 +1929,201 @@ async function buildResult(
     totalTokensConsumed: totalTokens,
     totalDurationMs: Math.round(durationMs),
   };
+}
+
+/**
+ * Build a deterministic, voice-preserving aggregation of delegate-sub-agent
+ * outputs without invoking an LLM synthesizer. Each delegate's verbatim
+ * output appears under a `### <agentId> — <step.description>` header.
+ * Failed/skipped delegate slots are acknowledged honestly with a bracketed
+ * placeholder; their content is NOT fabricated. Non-delegate completed
+ * steps (setup llm-reasoning steps that fed context into the delegates)
+ * appear as a small trailing "Setup steps that informed the agents above"
+ * note so the user can see what the workflow gathered, not as primary
+ * content competing with the personas' voices.
+ *
+ * Iterates `plan.steps` (not stepResults Map values) to guarantee the
+ * delegates appear in plan order — important when the planner intends
+ * a specific narrative ordering between personas (e.g. researcher first
+ * to set facts, then author to humanize, then mentor to frame).
+ *
+ * Pure: no I/O, no LLM, no clock. Safe to call multiple times.
+ */
+function buildDeterministicDelegateAggregation(
+  plan: WorkflowPlan,
+  stepResults: Map<string, WorkflowStepResult>,
+  delegateStepIds: Set<string>,
+): string {
+  const sections: string[] = [];
+
+  // Single-delegate visual cleanup: when only ONE delegate ran, the
+  // `### <agentId> — <description>` header looks orphaned in the chat
+  // surface (the UI plan checklist already shows the persona chip on
+  // that step, so repeating it as a markdown h3 is redundant + visually
+  // "heading-y" without a sibling section to compare against). Render
+  // the verbatim output without the header in that case. Multi-delegate
+  // plans keep the headers because the user IS comparing voices.
+  const isSingleDelegate = delegateStepIds.size === 1;
+
+  // Per-delegate cap. With N delegates each producing ~10k chars, the
+  // deterministic concat balloons to 30k+ chars — the chat UI struggles
+  // (browser layout jank, message bubble wrapping issues) and any
+  // downstream consumer that re-feeds this output to an LLM blows the
+  // input budget. 8000 chars per delegate is generous enough for a
+  // multi-paragraph essay-style answer while keeping total output under
+  // ~32k for typical 3-agent plans. Truncated outputs are tagged so the
+  // user knows content was cut, not silently dropped.
+  const PER_DELEGATE_CAP = 8000;
+  const truncate = (text: string): string => {
+    if (text.length <= PER_DELEGATE_CAP) return text;
+    return `${text.slice(0, PER_DELEGATE_CAP).trim()}\n\n*[…truncated, full output ${text.length} chars]*`;
+  };
+
+  // Delegate sections — render in plan order so the persona narrative is
+  // stable across re-runs of the same workflow.
+  for (const step of plan.steps) {
+    if (!delegateStepIds.has(step.id)) continue;
+    const result = stepResults.get(step.id);
+    const agentLabel = step.agentId ?? 'agent';
+    const headerLine = isSingleDelegate ? '' : `### ${agentLabel} — ${step.description}`;
+    const headerPrefix = isSingleDelegate ? '' : `${headerLine}\n\n`;
+    if (!result) {
+      sections.push(
+        isSingleDelegate
+          ? `[no response from ${agentLabel} — step did not run]`
+          : `${headerLine}\n\n[no response — step did not run]`,
+      );
+      continue;
+    }
+    const trimmedOutput = result.output.trim();
+    if (result.status === 'completed' && trimmedOutput.length > 0) {
+      sections.push(`${headerPrefix}${truncate(trimmedOutput)}`);
+      continue;
+    }
+    // Empty-output edge case. The executor's empty-response classifier
+    // now reclassifies these as `status: 'failed'` (errorKind=empty_response)
+    // so the UI surfaces the gap explicitly — but the deterministic
+    // aggregator still renders them as "[no response — empty output]"
+    // regardless of the reclassified status, so the user-facing summary
+    // stays specific (vs the generic "step failed" the failed-reason
+    // fallback would otherwise emit).
+    if (trimmedOutput.length === 0) {
+      sections.push(
+        isSingleDelegate
+          ? `[no response from ${agentLabel} — empty output]`
+          : `${headerLine}\n\n[no response — empty output]`,
+      );
+      continue;
+    }
+    // Honest acknowledgement of missing/failed delegates. Output text
+    // (e.g. "step timed out after 120s") is preserved as the reason but
+    // wrapped in brackets so it cannot be mistaken for a real answer.
+    const reason = trimmedOutput || `step ${result.status}`;
+    sections.push(
+      isSingleDelegate ? `[no response from ${agentLabel} — ${reason}]` : `${headerLine}\n\n[no response — ${reason}]`,
+    );
+  }
+
+  // Setup-step note: any non-delegate step that completed gets shown as
+  // supporting context, not as primary content. Truncated to keep the
+  // note compact (1000 chars per setup step is plenty for a question or
+  // brief). Skip when there's nothing to show.
+  const setupCompleted = plan.steps
+    .filter((s) => !delegateStepIds.has(s.id))
+    .map((s) => ({ step: s, result: stepResults.get(s.id) }))
+    .filter(
+      (x): x is { step: WorkflowStep; result: WorkflowStepResult } =>
+        !!x.result && x.result.status === 'completed' && x.result.output.trim().length > 0,
+    );
+  if (setupCompleted.length > 0) {
+    const setupLines = setupCompleted.map(({ step, result }) => {
+      const SETUP_CAP = 1000;
+      const body = result.output.trim();
+      const snippet = body.length > SETUP_CAP ? `${body.slice(0, SETUP_CAP).trim()}…` : body;
+      return `- **${step.id}** (${step.strategy}): ${snippet}`;
+    });
+    // Pluralize the note when multi-delegate; singular when only 1.
+    const aboveLabel = isSingleDelegate ? 'response above' : 'agents above';
+    sections.push(
+      `---\n\n*Setup steps that informed the ${aboveLabel} (shown for transparency, not as part of the persona answers):*\n\n${setupLines.join('\n\n')}`,
+    );
+  }
+
+  // Failed/skipped non-delegate steps — honest list, no fabricated content.
+  const setupFailed = plan.steps
+    .filter((s) => !delegateStepIds.has(s.id))
+    .map((s) => ({ step: s, result: stepResults.get(s.id) }))
+    .filter(
+      (x): x is { step: WorkflowStep; result: WorkflowStepResult } =>
+        !!x.result && (x.result.status === 'failed' || x.result.status === 'skipped'),
+    );
+  if (setupFailed.length > 0) {
+    const failedLines = setupFailed.map(
+      ({ step, result }) =>
+        `- **${step.id}** [${result.status}]: ${result.output.trim().slice(0, 240) || '(no detail)'}`,
+    );
+    sections.push(`*Setup steps that did not complete:*\n\n${failedLines.join('\n')}`);
+  }
+
+  return sections.join('\n\n---\n\n');
+}
+
+/**
+ * Wait for the user's partial-failure decision. Mirrors the approval-gate
+ * pattern at `awaitApprovalDecision`: subscribe BEFORE the matching
+ * `_needed` event is emitted so a fast UI cannot race the executor and
+ * settle exactly once. The executor's own self-emitted `_provided` payload
+ * (the timeout abort path) carries `auto: true` so the listener can ignore
+ * it — without that filter the timeout settle would fire twice.
+ */
+function awaitPartialFailureDecision(
+  bus: VinyanBus,
+  taskId: string,
+  timeoutMs: number,
+): Promise<'continue' | 'abort' | 'timeout'> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (v: 'continue' | 'abort' | 'timeout') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsub();
+      resolve(v);
+    };
+    const timer = setTimeout(() => settle('timeout'), timeoutMs);
+    const unsub = bus.on('workflow:partial_failure_decision_provided', (payload) => {
+      if (payload.taskId !== taskId) return;
+      if (payload.auto) return;
+      settle(payload.decision);
+    });
+  });
+}
+
+/**
+ * Brief preview of what would ship if the user picks "continue" on the
+ * partial-failure gate. A tightly-capped excerpt of the deterministic
+ * aggregation — enough for the user to judge "is this useful?" without
+ * dumping the full multi-paragraph aggregation into the decision card.
+ */
+function buildPartialPreview(
+  plan: WorkflowPlan,
+  stepResults: Map<string, WorkflowStepResult>,
+  maxChars: number,
+): string {
+  const sections: string[] = [];
+  for (const step of plan.steps) {
+    const result = stepResults.get(step.id);
+    if (!result || result.status !== 'completed') continue;
+    if (result.output.trim().length === 0) continue;
+    const persona = step.agentId ?? step.id;
+    const body = result.output.trim();
+    sections.push(`**${persona}**: ${body}`);
+    // Stop early once we've accumulated enough; truncated output gets a
+    // trailing ellipsis so the UI can show "more available" honestly.
+    const joined = sections.join('\n\n');
+    if (joined.length >= maxChars) {
+      return `${joined.slice(0, maxChars).trimEnd()}…`;
+    }
+  }
+  return sections.join('\n\n');
 }

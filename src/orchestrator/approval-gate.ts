@@ -13,10 +13,14 @@ import type { VinyanBus } from '../core/bus.ts';
 
 export type ApprovalDecision = 'approved' | 'rejected';
 
-interface PendingApproval {
+export interface PendingApprovalInfo {
   taskId: string;
   riskScore: number;
   reason: string;
+  requestedAt: number;
+}
+
+interface PendingApproval extends PendingApprovalInfo {
   resolve: (decision: ApprovalDecision) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -39,11 +43,23 @@ export class ApprovalGate {
   requestApproval(taskId: string, riskScore: number, reason: string): Promise<ApprovalDecision> {
     return new Promise<ApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
+        // Auto-reject path: drop the entry first so a racing /approval POST
+        // sees a 404 instead of double-resolving, then notify listeners
+        // (chat clients drop their cached approval card) and finally
+        // settle the awaiting promise.
         this.pending.delete(taskId);
+        this.bus.emit('task:approval_resolved', { taskId, decision: 'rejected', source: 'timeout' });
         resolve('rejected');
       }, this.timeoutMs);
 
-      this.pending.set(taskId, { taskId, riskScore, reason, resolve, timer });
+      this.pending.set(taskId, {
+        taskId,
+        riskScore,
+        reason,
+        requestedAt: Date.now(),
+        resolve,
+        timer,
+      });
 
       // Emit event for TUI/listeners to pick up
       this.bus.emit('task:approval_required', { taskId, riskScore, reason });
@@ -57,6 +73,12 @@ export class ApprovalGate {
 
     clearTimeout(entry.timer);
     this.pending.delete(taskId);
+    // Notify cross-tab UIs BEFORE resolving the awaiting promise so the
+    // approval card disappears the moment the gate clears, not after the
+    // dependent task transitions further. Source = 'human' covers both
+    // explicit API calls and TUI keybinds — anything that is not the
+    // auto-timeout path.
+    this.bus.emit('task:approval_resolved', { taskId, decision, source: 'human' });
     entry.resolve(decision);
     return true;
   }
@@ -71,10 +93,25 @@ export class ApprovalGate {
     return [...this.pending.keys()];
   }
 
+  /** Get all pending approvals with full context (riskScore, reason, requestedAt). */
+  getPending(): PendingApprovalInfo[] {
+    return [...this.pending.values()].map(({ taskId, riskScore, reason, requestedAt }) => ({
+      taskId,
+      riskScore,
+      reason,
+      requestedAt,
+    }));
+  }
+
   /** Clear all pending approvals (auto-reject). Used during shutdown. */
   clear(): void {
     for (const entry of this.pending.values()) {
       clearTimeout(entry.timer);
+      this.bus.emit('task:approval_resolved', {
+        taskId: entry.taskId,
+        decision: 'rejected',
+        source: 'shutdown',
+      });
       entry.resolve('rejected');
     }
     this.pending.clear();

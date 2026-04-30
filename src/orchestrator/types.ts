@@ -166,7 +166,15 @@ export interface IntentDeterministicCandidate {
     | 'mapUnderstandingToStrategy'
     | 'composed'
     | 'creative-deliverable-pattern'
-    | 'multi-agent-delegation-pattern';
+    | 'multi-agent-delegation-pattern'
+    /**
+     * Sub-task recursion guard demoted `agentic-workflow` (returned by the
+     * STU mapper) back to `conversational` because the input had a
+     * `parentTaskId`. Surfaced so the agent timeline / trace dashboard can
+     * tell a deliberate recursion-safety choice apart from a fresh STU
+     * mapping decision.
+     */
+    | 'sub-task-recursion-guard';
   /** Whether the rule flagged the input as ambiguous (blocks LLM skip). */
   ambiguous: boolean;
 }
@@ -228,6 +236,24 @@ export interface IntentResolution {
   syntheticAgentId?: string;
   /** Local-first knowledge contexts when the research branch surfaced evidence. */
   knowledgeUsed?: KnowledgeContext[];
+  /**
+   * External Coding CLI delegation request — set by the deterministic
+   * external-coding-cli pre-classifier when the user asks Vinyan to delegate
+   * work to Claude Code / GitHub Copilot CLI. The core-loop dispatches
+   * directly through `deps.codingCliStrategy` (or surfaces an honest
+   * unsupported-capability outcome when the strategy is not wired) instead
+   * of routing through `direct-tool` `shell_exec`. A6: external CLI is a
+   * worker, never an authority.
+   */
+  externalCodingCli?: {
+    providerId: 'claude-code' | 'github-copilot' | 'auto';
+    mode: 'headless' | 'interactive' | 'auto';
+    taskText: string;
+    cwd?: string;
+    targetPaths?: string[];
+    requiresVerification?: boolean;
+    reason: string;
+  };
 }
 
 /** Read-only tools available for non-mutating reasoning tasks. */
@@ -1430,6 +1456,21 @@ export interface WorkerInput {
    * `agent-skill-cards` section renders identically in both dispatch paths.
    */
   loadedSkillCards?: import('./agents/derive-persona-capabilities.ts').SkillCardView[];
+  /**
+   * Specialist agent dispatched for this task. Threaded across IPC so the
+   * subprocess can apply per-agent skill visibility (per-agent simple skills
+   * are filtered by this id) and any other persona-keyed wiring.
+   */
+  agentId?: string;
+  /**
+   * Hybrid skill redesign — Claude-Code-style simple skills available to
+   * this task. The orchestrator's `SimpleSkillRegistry` resolves the
+   * snapshot at dispatch time; descriptions render in the system prompt at
+   * `simple-skill-descriptions`, bodies (subset matched to goal text) at
+   * `simple-skill-bodies`.
+   */
+  simpleSkills?: import('../skills/simple/loader.ts').SimpleSkill[];
+  simpleSkillBodies?: import('../skills/simple/loader.ts').SimpleSkill[];
 }
 
 /** Output from a worker process */

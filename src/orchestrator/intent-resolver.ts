@@ -61,6 +61,8 @@ import {
 } from './intent/parser.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver.ts';
+import { classifyExternalCodingCliIntent } from './intent/external-coding-cli-classifier.ts';
+import { detectCodingCliContinuation } from './intent/external-coding-cli-continuation.ts';
 import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type {
   AgentSpec,
@@ -354,14 +356,90 @@ export async function resolveIntent(
   const now = deps.now?.() ?? Date.now();
   const understanding = deps.understanding;
 
-  // [A] Cache — prefer comprehension.inputHash (A4 content-addressed) →
-  // understandingFingerprint → (session, goal) as a last resort.
   const cacheKey = buildCacheKey(
     input.goal,
     deps.sessionId,
     understanding,
     deps.comprehension,
   );
+
+  // [A.0] External Coding CLI deterministic pre-classifier — runs BEFORE
+  // the cache lookup. If a stale cache entry from a prior LLM-tier
+  // resolution exists for the same fingerprint (e.g., the user retried
+  // before the orchestrator was upgraded to know about external-coding-
+  // cli routing), the cache would otherwise serve the wrong strategy.
+  // Structural matches MUST always win — that's the deterministic
+  // governance invariant (A3).
+  //
+  // Continuation: when the user types a bare routing directive
+  // ("full-pipeline", "retry", "ลองใหม่") right after a prior CLI
+  // delegation, re-issue THAT delegation through the same dispatch.
+  // Without this, the LLM workflow planner takes over and produces a
+  // 7-step plan that *describes* "Generate and execute claude-code CLI
+  // commands" as llm-reasoning steps, which never actually invoke the
+  // controller and time out at L2 budget.
+  {
+    let cliIntent = classifyExternalCodingCliIntent(input.goal);
+    if (!cliIntent.matched || cliIntent.confidence < 0.85) {
+      const continuation = detectCodingCliContinuation({
+        goal: input.goal,
+        turns: deps.turns,
+      });
+      if (continuation.matched && continuation.reconstructed) {
+        cliIntent = continuation.reconstructed;
+        deps.bus?.emit('intent:short_retry_matched', {
+          taskId: input.id,
+          reconstructedFromTurnSeq: continuation.reconstructedFromTurnSeq ?? -1,
+          reason: continuation.reason ?? 'cli-continuation',
+        });
+      }
+    }
+    if (cliIntent.matched && cliIntent.confidence >= 0.85) {
+      const { agentId, agentSelectionReason } = resolveSelectedAgent(
+        input,
+        deps.agents,
+        deps.defaultAgentId,
+        undefined,
+        `external-coding-cli pre-classifier (provider=${cliIntent.providerId}, conf=${cliIntent.confidence})`,
+      );
+      const result: IntentResolution = {
+        strategy: 'agentic-workflow',
+        refinedGoal: input.goal,
+        workflowPrompt: `External coding CLI delegation: provider=${cliIntent.providerId}, mode=${cliIntent.requestedMode}. Task: ${cliIntent.taskText}${cliIntent.cwd ? `\nWorkspace: ${cliIntent.cwd}` : ''}${cliIntent.targetPaths.length > 0 ? `\nTargets: ${cliIntent.targetPaths.join(', ')}` : ''}`,
+        confidence: cliIntent.confidence,
+        reasoning: `Deterministic external-coding-cli classifier matched: ${cliIntent.reason}.`,
+        reasoningSource: 'deterministic',
+        type: 'known',
+        agentId,
+        agentSelectionReason,
+        externalCodingCli: {
+          providerId: cliIntent.providerId,
+          mode: cliIntent.requestedMode,
+          taskText: cliIntent.taskText,
+          cwd: cliIntent.cwd,
+          targetPaths: cliIntent.targetPaths,
+          requiresVerification: true,
+          reason: cliIntent.reason,
+        },
+      };
+      // Overwrite any stale cache entry for this fingerprint so subsequent
+      // turns see the deterministic verdict, not the LLM-tier ghost.
+      intentCache.set(cacheKey, result, now);
+      intentCache.prune(now);
+      deps.bus?.emit('intent:resolved', {
+        taskId: input.id,
+        strategy: result.strategy,
+        confidence: result.confidence,
+        reasoning: result.reasoning,
+        type: 'known',
+        source: 'deterministic',
+      });
+      return result;
+    }
+  }
+
+  // [A] Cache — prefer comprehension.inputHash (A4 content-addressed) →
+  // understandingFingerprint → (session, goal) as a last resort.
   const cached = intentCache.get(cacheKey, now);
   if (cached) {
     deps.bus?.emit('intent:cache_hit', { taskId: input.id, cacheKey });

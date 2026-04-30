@@ -110,6 +110,25 @@ export interface SectionContext {
    * section renders nothing. Wired by core-loop / agent dispatch path.
    */
   loadedSkillCards?: import('../agents/derive-persona-capabilities.ts').SkillCardView[];
+  /**
+   * Hybrid skill redesign — Claude-Code-style simple skills.
+   *
+   * Eager surface: every skill's `name + description` is listed in the system
+   * prompt at session start so the model knows what's available. Cheap (≈100
+   * chars/skill).
+   *
+   * Lazy surface: bodies of skills whose description matches the task intent
+   * are injected via `simpleSkillBodies` below. Together they reproduce
+   * Claude Code's "skills sit dormant until invoked" UX without the heavy
+   * SKILL.md schema, auction matching, or tier ladder.
+   */
+  simpleSkills?: readonly import('../../skills/simple/loader.ts').SimpleSkill[];
+  /**
+   * Subset of `simpleSkills` whose body should be inlined for THIS task. The
+   * caller (core-loop / agent-loop) decides which by running the matcher
+   * against the goal text. Empty/undefined → bodies section renders nothing.
+   */
+  simpleSkillBodies?: readonly import('../../skills/simple/loader.ts').SimpleSkill[];
 }
 
 export interface PromptSection {
@@ -1335,6 +1354,59 @@ function registerAgentContextSections(registry: PromptSectionRegistry): void {
       lines.push(...rendered);
       if (skipped > 0) {
         lines.push(`(${skipped} skill card${skipped === 1 ? '' : 's'} omitted: card too large)`);
+      }
+      return lines.join('\n');
+    },
+  });
+
+  // Hybrid skill redesign — Claude-Code-style simple-skill descriptions.
+  // Eager surface: every available simple skill is listed (name + description)
+  // at session start so the model knows what's on hand. Body content is
+  // deferred to the lazy `simple-skill-bodies` section below to keep the
+  // session-cached prompt prefix stable when skill set is small.
+  registry.register({
+    id: 'simple-skill-descriptions',
+    target: 'system',
+    cache: 'session',
+    volatility: 'session',
+    priority: 131,
+    render: (ctx) => {
+      const skills = ctx.simpleSkills;
+      if (!skills || skills.length === 0) return null;
+      const lines = ['[AVAILABLE SKILLS]'];
+      lines.push(
+        'These skills can be invoked when relevant. Bodies for matched skills follow if they apply to the current task.',
+      );
+      for (const skill of skills) {
+        lines.push(`- ${skill.name}: ${skill.description || '(no description)'}`);
+      }
+      return lines.join('\n');
+    },
+  });
+
+  // Lazy surface: bodies for the subset of simple skills the caller decided
+  // are relevant for THIS task (description-match against task intent).
+  // Volatility is `turn` so the body set is recomputed each task — different
+  // tasks invoke different skills.
+  registry.register({
+    id: 'simple-skill-bodies',
+    target: 'system',
+    cache: 'ephemeral',
+    volatility: 'turn',
+    priority: 232,
+    render: (ctx) => {
+      const bodies = ctx.simpleSkillBodies;
+      if (!bodies || bodies.length === 0) return null;
+      const lines = ['[ACTIVE SKILLS]'];
+      lines.push(
+        'Bodies of skills matched to this task. Apply when the situation fits the skill\'s "when to use" guidance.',
+      );
+      for (const skill of bodies) {
+        lines.push('');
+        lines.push(`── ${skill.name} ──`);
+        if (skill.description) lines.push(skill.description);
+        lines.push('');
+        lines.push(skill.body.trim());
       }
       return lines.join('\n');
     },

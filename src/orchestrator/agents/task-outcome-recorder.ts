@@ -73,6 +73,46 @@ export function recordTaskOutcomeForPersona(
 }
 
 /**
+ * Hybrid skill redesign — record one task outcome for every Claude-Code-style
+ * simple skill whose body was inlined into the task's prompt. Independent of
+ * the heavy-stack `recordTaskOutcomeForPersona` so the simple layer can earn
+ * its own outcome history without sharing the auction's bid structure.
+ *
+ * The Phase-5 bridge reads this same SkillOutcomeStore via `listForSkill` to
+ * decide whether a simple skill has earned a heavy-schema graduation.
+ *
+ * Best-effort: per-skill failures are swallowed (A9). Returns the count of
+ * rows successfully written.
+ */
+export function recordSimpleSkillOutcomes(
+  input: TaskInput,
+  result: TaskResult,
+  invokedSimpleSkillNames: ReadonlySet<string>,
+  store: SkillOutcomeStore,
+  now = Date.now(),
+): { recorded: number; taskSignature: string } {
+  const taskSignature = deriveTaskSignature(input);
+  if (!input.agentId || invokedSimpleSkillNames.size === 0) {
+    return { recorded: 0, taskSignature };
+  }
+  const outcome: SkillOutcome = result.status === 'completed' ? 'success' : 'failure';
+  let recorded = 0;
+  for (const name of invokedSimpleSkillNames) {
+    try {
+      store.recordOutcome(
+        { personaId: input.agentId, skillId: name, taskSignature },
+        outcome,
+        now,
+      );
+      recorded += 1;
+    } catch {
+      /* per-skill best-effort */
+    }
+  }
+  return { recorded, taskSignature };
+}
+
+/**
  * Derive a task signature for outcome attribution. Stable across runs of
  * the same task family so the autonomous skill creator can aggregate.
  *

@@ -9,6 +9,8 @@
  * A3: fallback to single-step is deterministic.
  */
 import type { VinyanBus } from '../../core/bus.ts';
+// (used by sanitizeDelegateAgentIds / formatAgentRoster — keep import even
+// if the only consumer above is implicit)
 import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { Turn } from '../types.ts';
@@ -61,7 +63,7 @@ Output ONLY valid JSON matching this schema:
       "id": "step1",
       "description": "what this step does (human-readable)",
       "command": "OPTIONAL — required when strategy='direct-tool'; the exact shell command to execute (e.g. 'ls -la ~/Desktop'). Omit for non-direct-tool steps.",
-      "strategy": "full-pipeline | direct-tool | knowledge-query | llm-reasoning | delegate-sub-agent | human-input",
+      "strategy": "full-pipeline | direct-tool | knowledge-query | llm-reasoning | delegate-sub-agent | human-input | external-coding-cli",
       "agentId": "OPTIONAL — required when strategy='delegate-sub-agent' AND the goal asks for a specific persona / multi-agent diversity; the exact agent id from the [AVAILABLE AGENTS] roster (e.g. 'developer', 'architect'). Omit for non-delegate steps or when any persona will do.",
       "dependencies": ["step IDs this depends on"],
       "inputs": { "key": "$stepN.result — reference to a prior step's output" },
@@ -79,6 +81,9 @@ Strategy selection rules:
 - "llm-reasoning": analysis, summarization, decision-making (no side effects). Do NOT use this when the user asked for filesystem/shell data — the LLM cannot see the user's machine; pair it with a \`direct-tool\` step first.
 - "delegate-sub-agent": complex sub-tasks that need their own planning cycle
 - "human-input": when you genuinely cannot proceed without user clarification
+- "external-coding-cli": delegate the *whole* coding task to an external coding-CLI agent (Claude Code, GitHub Copilot CLI). Use this when the user explicitly asks Vinyan to drive an external CLI ("สั่งงาน claude code", "ask Claude Code to ...", "use copilot cli to ...") OR when prior turns established that Vinyan is operating on behalf of an external CLI delegation and the current step continues that delegation. The executor spawns the CLI, captures hook events, and runs Vinyan's verifier on the CLI's claim — you do NOT need to write the CLI invocation yourself; just produce ONE step with strategy='external-coding-cli' and put the CLI's task in \`description\`. Inputs MAY include \`{ "providerId": "claude-code" | "github-copilot", "mode": "headless" | "interactive" }\` to override the controller's default routing.
+
+When the goal is structurally a CLI delegation, do NOT decompose it into 5+ \`llm-reasoning\` steps that *describe* running CLI commands — that produces a plan the LLM hallucinates through. Emit ONE \`external-coding-cli\` step (with an optional preceding \`direct-tool\` ls/cat to validate input paths, and an optional trailing \`llm-reasoning\` step to summarize the CLI's verification report).
 
 Worked examples for filesystem / shell goals:
 - Goal: "list files in ~/Desktop" / "ตรวจสอบไฟล์ ~/Desktop/" → step1 strategy='direct-tool', description='List files in ~/Desktop', command='ls -la ~/Desktop'; step2 strategy='llm-reasoning' if the user wants analysis on top of the listing.
@@ -86,6 +91,12 @@ Worked examples for filesystem / shell goals:
 - Goal: "ตรวจสอบว่า npm test ผ่านมั้ย" → step1 strategy='direct-tool', description='Run npm test', command='npm test'.
 - For \`direct-tool\` steps the \`command\` field MUST be a runnable shell command, never a natural-language sentence. \`description\` may be human-readable.
 - Never invent the contents of a file/directory in \`llm-reasoning\`; always read it first via \`direct-tool\`.
+
+Worked examples for external coding-CLI delegation:
+- Goal: "สั่งงาน claude code cli ช่วยรัน verify flow ใน /path/to/spec" → step1 strategy='direct-tool', command='ls -la /path/to/spec' (sanity check the path); step2 strategy='external-coding-cli', description='Verify the open-account flow against the design spec at /path/to/spec', inputs={"providerId": "claude-code", "mode": "headless"}; step3 strategy='llm-reasoning' depending on step2, description='Summarize the CLI verification report'.
+- Goal: "ask claude code to refactor src/foo.ts" → ONE step with strategy='external-coding-cli', description='Refactor src/foo.ts (pass clear acceptance criteria from the goal)', inputs={"providerId": "claude-code"}.
+- Goal: "use github copilot cli to scaffold a TypeScript project" → ONE step with strategy='external-coding-cli', description='Scaffold a TypeScript project per the user request', inputs={"providerId": "github-copilot"}.
+- ANTI-PATTERN — do NOT do this: "Generate and execute claude-code CLI commands to verify X" / "Generate and execute claude-code CLI commands to verify Y" / "Generate and execute claude-code CLI commands to verify Z" / ... as four \`llm-reasoning\` steps. The LLM cannot run the CLI from inside an llm-reasoning step. Use ONE \`external-coding-cli\` step and let the controller drive the CLI.
 
 Creative writing rules:
 - For novel, fiction, book, webtoon, story, plot, chapter, or prose work, "write" means author creative text, not write code.
@@ -99,7 +110,20 @@ Multi-agent rules (when the user asks for "N agents" / "have agents debate/compe
 - If the user asks for a specific persona ("ให้ developer ตอบ", "have the architect answer"), match that persona name to the closest \`agentId\` in the roster.
 - If the user only specifies a count ("3 agents") without naming personas, pick N agents from the roster whose roles are diverse enough to make the comparison meaningful (e.g. one Generator, one Verifier, one Guide rather than three Generators).
 - A single \`llm-reasoning\` step that internally role-plays "Agent A says X, Agent B says Y" is FORBIDDEN for multi-agent goals — that produces fake diversity from one model. Use \`delegate-sub-agent\` so each persona actually runs in its own sub-task.
+- step.description for a delegate-sub-agent step MUST describe ONLY the task to perform (the question to answer / the artifact to produce). It MUST NOT prescribe HOW the agent should answer — no "focusing on X", "provide a deep/creative/structured answer", "with style Y", "from the perspective of Y emphasizing Z". The agent's own persona (its soul) already encodes how. Adding stylistic hints to the description duplicates the soul, conflicts with it, and collapses the very diversity the user asked for — different personas read the same prescriptive description and converge on a shared template.
+  - Good: "Answer the question: <question text>"
+  - Good: "Respond to step1.result"
+  - Bad:  "Provide a deep, evidence-based answer focusing on factual synthesis"
+  - Bad:  "Craft a creative narrative emphasizing storytelling and engagement"
+  - Bad:  "Provide a guided answer focusing on the 'how' and 'why'"
 - Add a final \`llm-reasoning\` synthesis step (depends on all delegate steps) that combines the distinct agent outputs into the comparison/debate the user asked for.
+- For COMPETITION goals (the user explicitly asked to pick a winner / rank / compete: "แข่ง", "winner", "best of", "vote", "compete"), the synthesisPrompt MUST end with this exact instruction so the executor can extract a structured verdict:
+  > After your free-text answer, end the response with a fenced JSON block matching:
+  > \`\`\`json
+  > { "winner": "<agentId from the participating set, or null for a deliberate tie>", "reasoning": "one-sentence rationale", "scores": { "<agentId>": 0-10 integer, ... } }
+  > \`\`\`
+  > Do NOT replace the free-text answer with the JSON; both must be present, free-text first.
+  Use the integer 0-10 scale for scores (higher = better) and only include agentIds that actually participated. The JSON block is REQUIRED for COMPETITION goals; non-competition multi-agent (debate / comparison / parallel work) does NOT need it.
 
 Guidelines:
 - Start with a knowledge-query step to gather context when the goal is broad
@@ -185,7 +209,18 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
         .replace(/^```(?:json)?\s*/i, '')
         .replace(/\s*```$/i, '');
       const parsed = JSON.parse(cleaned);
-      const plan = WorkflowPlanSchema.parse(parsed);
+      const rawPlan = WorkflowPlanSchema.parse(parsed);
+      // Sanitize delegate agentIds: drop hallucinated ids (not in registry)
+      // and de-duplicate within the same plan. Both failure modes silently
+      // collapse persona diversity — a hallucinated id falls back to the
+      // default coordinator soul (sub-agent answers in coordinator voice
+      // instead of the requested specialist), and a duplicated id runs the
+      // same persona twice in parallel (the user gets two near-identical
+      // answers presented as if they were distinct voices). Sanitization
+      // strips the offending agentId so the executor uses default routing
+      // — the planner's intent to delegate is preserved, but the delegate
+      // is honestly anonymous rather than misattributed.
+      const plan = sanitizeDelegateAgentIds(rawPlan, deps.agentRegistry, deps.bus);
 
       deps.bus?.emit('workflow:plan_created', {
         goal: opts.goal,
@@ -200,6 +235,86 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
   }
 
   return fallbackPlan(opts.goal);
+}
+
+/**
+ * Validate and clean up `step.agentId` on `delegate-sub-agent` steps.
+ *
+ * Two failure modes the LLM planner produces in practice:
+ *
+ * 1. **Hallucinated id** — planner writes an `agentId` that doesn't exist
+ *    in the registry (e.g. `'developer-agent'` when only `'developer'` is
+ *    registered, or invents `'philosopher'` for a persona we don't have).
+ *    Without sanitization, the executor's `verifierAgentId ?? step.agentId`
+ *    chain still tries the bad id and falls through to the default
+ *    coordinator — but the delegate's output is then attributed to the
+ *    PLANNER'S intended persona, not the actual coordinator who ran it.
+ *    Silent persona misattribution.
+ *
+ * 2. **Duplicate id within the same plan** — planner assigns the same
+ *    persona to multiple `delegate-sub-agent` steps (e.g. two steps with
+ *    `agentId='researcher'`). The two parallel sub-tasks run the same
+ *    persona with the same step description, producing near-identical
+ *    answers presented in the UI as if they were distinct voices.
+ *    Fake diversity.
+ *
+ * Sanitization drops the offending agentId rather than dropping the whole
+ * step — the executor will fall back to default routing, and the
+ * UI/trace shows the delegate as `agent?` (the AgentTimelineCard's
+ * fallback label) rather than misattributing the answer.
+ *
+ * Pure: no I/O. Emits a single observability event when corrections are
+ * applied so production can detect when planner output deviates.
+ */
+function sanitizeDelegateAgentIds(
+  plan: WorkflowPlan,
+  registry: AgentRegistry | undefined,
+  bus?: VinyanBus,
+): WorkflowPlan {
+  // Build the registry id set once. When no registry is wired, we cannot
+  // verify ids — pass through (legacy / minimal test setups).
+  const knownIds = new Set<string>();
+  if (registry) {
+    try {
+      for (const a of registry.listAgents()) knownIds.add(a.id);
+    } catch {
+      return plan;
+    }
+  }
+
+  const seenAgentIds = new Set<string>();
+  const droppedHallucinated: Array<{ stepId: string; agentId: string }> = [];
+  const droppedDuplicate: Array<{ stepId: string; agentId: string }> = [];
+
+  const steps = plan.steps.map((s) => {
+    if (s.strategy !== 'delegate-sub-agent' || !s.agentId) return s;
+    const id = s.agentId;
+    // Hallucinated: not in registry. Skip when registry was unavailable
+    // (knownIds is empty AND registry was undefined).
+    if (registry && !knownIds.has(id)) {
+      droppedHallucinated.push({ stepId: s.id, agentId: id });
+      const { agentId: _drop, ...rest } = s;
+      return rest;
+    }
+    // Duplicate within plan.
+    if (seenAgentIds.has(id)) {
+      droppedDuplicate.push({ stepId: s.id, agentId: id });
+      const { agentId: _drop, ...rest } = s;
+      return rest;
+    }
+    seenAgentIds.add(id);
+    return s;
+  });
+
+  if (droppedHallucinated.length > 0 || droppedDuplicate.length > 0) {
+    bus?.emit('workflow:planner_validation_warning', {
+      goal: plan.goal,
+      hallucinatedAgentIds: droppedHallucinated,
+      duplicateAgentIds: droppedDuplicate,
+    });
+  }
+
+  return { ...plan, steps };
 }
 
 /**

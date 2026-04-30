@@ -17,6 +17,14 @@ import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
 import type { AgentSpecConfig } from '../config/schema.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
+import {
+  ClaudeCodeAdapter,
+  CodingCliConfigSchema,
+  CodingCliWorkflowStrategy,
+  ExternalCodingCliController,
+  GitHubCopilotAdapter,
+} from './external-coding-cli/index.ts';
+import { CodingCliStore } from '../db/coding-cli-store.ts';
 import { AgentContextStore } from '../db/agent-context-store.ts';
 import { AgentProfileStore } from '../db/agent-profile-store.ts';
 import { AgentProposalStore } from '../db/agent-proposal-store.ts';
@@ -66,6 +74,8 @@ import { loadBundleManifests } from '../plugin/index.ts';
 import type { PluginRegistry } from '../plugin/registry.ts';
 import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
 import { SkillArtifactStore } from '../skills/artifact-store.ts';
+import { buildSyncSkillResolver } from '../skills/sync-skill-resolver.ts';
+import { createSimpleSkillRegistry, type SimpleSkillRegistry } from '../skills/simple/registry.ts';
 import { AutonomousSkillCreator } from '../skills/autonomous/creator.ts';
 import { buildLLMDraftGenerator } from '../skills/autonomous/draft-generator-llm.ts';
 import { buildImporterCriticFn } from '../skills/hub/critic-adapter.ts';
@@ -127,6 +137,8 @@ import { startLLMProxy } from './llm/llm-proxy.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
 import { compressPerception } from './llm/perception-compressor.ts';
+import { applyGovernanceToRegistry } from './llm/provider-governance.ts';
+import { ProviderHealthStore } from './llm/provider-health.ts';
 import { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { buildMcpToolMap } from './mcp/mcp-tool-adapter.ts';
 import { OracleEMACalibrator } from './monitoring/oracle-ema-calibrator.ts';
@@ -287,6 +299,10 @@ export interface Orchestrator {
   taskEventStore?: TaskEventStore;
   ruleStore?: RuleStore;
   skillStore?: SkillStore;
+  /** Hybrid skills — simple Claude-Code-compatible SKILL.md registry. */
+  simpleSkillRegistry?: SimpleSkillRegistry;
+  /** Hybrid skills — heavy epistemic SKILL.md artifact store. */
+  skillArtifactStore?: SkillArtifactStore;
   patternStore?: PatternStore;
   shadowStore?: ShadowStore;
   workerStore?: WorkerStore;
@@ -322,6 +338,13 @@ export interface Orchestrator {
    * traces.
    */
   engineRegistry?: ReasoningEngineRegistry;
+  /**
+   * Raw LLM provider registry. Always populated when at least one LLM
+   * provider is configured. Exposed so the API server can run small
+   * one-shot generations (e.g. human-input answer suggestions) without
+   * spinning up a full task.
+   */
+  llmRegistry?: LLMProviderRegistry;
   worldGraph?: WorldGraph;
   metricsCollector?: MetricsCollector;
   /** A9 / T4: live operator visibility surface; undefined when disabled in config. */
@@ -354,6 +377,21 @@ export interface Orchestrator {
    * populated when `config.plugins.enabled` is true.
    */
   pluginsReady?: Promise<PluginInitResult>;
+  /**
+   * External Coding CLI controller — wired when at least one provider
+   * adapter detects an installed CLI binary. Exposed so the API server
+   * can mount `/api/v1/coding-cli/*` and so tests can drive the
+   * controller directly.
+   */
+  codingCliController?: import('./external-coding-cli/external-coding-cli-controller.ts').ExternalCodingCliController;
+  /**
+   * Workflow strategy wrapping the controller — same instance used by the
+   * core-loop's external-coding-cli fast-path AND by workflow plans that
+   * explicitly emit `strategy: 'external-coding-cli'`.
+   */
+  codingCliStrategy?: import('./external-coding-cli/external-coding-cli-workflow-strategy.ts').CodingCliWorkflowStrategy;
+  /** Persistence backing for coding-cli sessions (mirrors `traceStore`). */
+  codingCliStore?: import('../db/coding-cli-store.ts').CodingCliStore;
   getSessionCount(): number;
   /**
    * Release all resources held by the orchestrator. Awaits truly async
@@ -426,8 +464,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     }
   }
 
-  // Set up LLM provider registry
-  const registry = config.registry ?? createDefaultRegistry();
+  // Set up LLM provider registry. Pass the bus so providers can emit
+  // `llm:retry_attempt` per backoff sleep — keeps the delegate watchdog
+  // and dashboards from interpreting silent 429 retry storms as a hang.
+  const registry = config.registry ?? createDefaultRegistry(bus);
 
   // Set up persistent database. When the caller injected a handle, reuse it
   // so we don't open a second bun:sqlite connection on the same WAL file.
@@ -572,6 +612,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let goalLoopConfig: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number } | undefined;
   // Wave 3: Agent-Facing Memory API — default ON (additive).
   let agentMemoryEnabled = true;
+  // C1: critic historical-adversary mode — default OFF (opt-in).
+  let criticHistoricalAdversaryEnabled = false;
   // Wave 2: Replan Engine config (gated OFF by default, requires goalLoop).
   let replanConfig: ReplanEngineConfig | undefined;
   // Wave 5a: Reactive micro-learning config (gated OFF by default).
@@ -617,6 +659,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       }
       if (vinyanConfig.orchestrator.agent_memory) {
         agentMemoryEnabled = vinyanConfig.orchestrator.agent_memory.enabled !== false;
+      }
+      if (vinyanConfig.orchestrator.critic) {
+        criticHistoricalAdversaryEnabled = vinyanConfig.orchestrator.critic.historical_adversary_enabled === true;
       }
       const rp = vinyanConfig.orchestrator.replan;
       if (rp) {
@@ -703,12 +748,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         // persona overclaim. Reuses the existing `bid_accuracy` table from
         // migration 001; no new migration needed.
         const bidAccuracyStore = db ? new BidAccuracyStore(db.getDb()) : undefined;
-        marketScheduler = new MarketScheduler(
-          economyConfig.market,
-          bus,
-          personaOverclaimStore,
-          bidAccuracyStore,
-        );
+        marketScheduler = new MarketScheduler(economyConfig.market, bus, personaOverclaimStore, bidAccuracyStore);
       }
       // Economy L3→K2.1: settlement → trust ledger feedback loop
       if (providerTrustStore) {
@@ -1095,6 +1135,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           agentProposalStore,
           costLedger,
           marketScheduler,
+          // Phase C2: rebuild `<workspace>/.vinyan/knowledge-index.md` at the
+          // end of every cycle so the catalog stays current with code drift.
+          knowledgeIndexWorkspace: workspace,
         })
       : undefined;
 
@@ -1484,6 +1527,36 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Approval Gate (A6: human-in-the-loop for high-risk tasks)
   const approvalGate = new ApprovalGateImpl(bus);
 
+  // External Coding CLI (Claude Code / GitHub Copilot) — controller +
+  // workflow strategy. Always constructed so:
+  //   1. The deterministic intent classifier can route to it.
+  //   2. The API server can mount /api/v1/coding-cli/* without an extra
+  //      bootstrap dance.
+  //   3. Missing binaries surface as `unsupported-capability` honestly
+  //      (A9) rather than silently failing as shell errors.
+  // Adapter detection runs lazily on first use; constructing them here is
+  // a pure object allocation (no subprocess spawned).
+  let codingCliController: ExternalCodingCliController | undefined;
+  let codingCliStrategy: CodingCliWorkflowStrategy | undefined;
+  let codingCliStoreInstance: CodingCliStore | undefined;
+  try {
+    if (db) {
+      codingCliStoreInstance = new CodingCliStore(db.getDb());
+    }
+    const cliConfig = CodingCliConfigSchema.parse({});
+    codingCliController = new ExternalCodingCliController({
+      bus,
+      approvalGate,
+      config: cliConfig,
+      adapters: [new ClaudeCodeAdapter(), new GitHubCopilotAdapter()],
+      store: codingCliStoreInstance,
+    });
+    codingCliStrategy = new CodingCliWorkflowStrategy(codingCliController);
+  } catch {
+    /* coding-cli wiring is best-effort — leave undefined and the
+     * pre-classifier surfaces an unsupported-capability outcome */
+  }
+
   // Forward Predictor (A7: prediction error as learning signal)
   let forwardPredictor: import('./forward-predictor-types.ts').ForwardPredictor | undefined;
   let predictionLedger: PredictionLedger | undefined;
@@ -1546,24 +1619,94 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // + Round F: `.claude/agents/<id>/AGENT.md` markdown loader for Claude Code
   // drop-in compat). vinyan.json wins on id conflict — markdown loader merges
   // first, then config agents override.
+  //
+  // Pre-resolve skills synchronously so `getDerivedCapabilities` can compose
+  // base + bound + acquired skills into the persona's effective claim list.
+  // Without this, `loadedSkills` stays empty and skill bodies never reach
+  // the LLM prompt — the smoking gun that kept the entire skill subsystem
+  // inert across Phases 1-15.5.
+  const skillResolverResult = buildSyncSkillResolver(join(workspace, '.vinyan', 'skills'));
+  if (skillResolverResult.loadedCount > 0) {
+    console.log(`[vinyan] Skill resolver: ${skillResolverResult.loadedCount} skill(s) loaded from .vinyan/skills/`);
+  }
+  if (skillResolverResult.failedIds.length > 0) {
+    console.warn(
+      `[vinyan] Skill resolver: ${skillResolverResult.failedIds.length} skill(s) failed to parse: ${skillResolverResult.failedIds.join(', ')}`,
+    );
+  }
+  const registryOptions = {
+    skillResolver: skillResolverResult.resolver,
+    enableSkillComposition: true,
+  };
   let agentRegistry: ReturnType<typeof loadAgentRegistry> | undefined;
   try {
     const vinyanCfg = loadConfig(workspace);
     const mdScan = scanAgentMarkdown(workspace);
     const mergedConfigs: AgentSpecConfig[] = [...mdScan.entries.map((e) => e.config), ...(vinyanCfg.agents ?? [])];
-    agentRegistry = loadAgentRegistry(workspace, mergedConfigs, soulsByIdFrom(mdScan.entries));
+    agentRegistry = loadAgentRegistry(workspace, mergedConfigs, soulsByIdFrom(mdScan.entries), registryOptions);
     if (mdScan.entries.length > 0) {
       console.log(`[vinyan] Agent registry: ${mdScan.entries.length} agent(s) loaded from .claude/agents/`);
     }
   } catch (err) {
     console.warn('[vinyan] Agent registry load failed, using built-in defaults:', err);
-    agentRegistry = loadAgentRegistry(workspace, undefined);
+    agentRegistry = loadAgentRegistry(workspace, undefined, undefined, registryOptions);
   }
   // Thread registry into WorkerPool so dispatch can resolve agentProfile + peers
   if (agentRegistry) workerPool.setAgentRegistry(agentRegistry);
   // Phase-6: hand the worker pool the runtime skill acquirer so it can fill
   // persona capability gaps from the local artifact store before dispatch.
   workerPool.setSkillAcquirer(skillAcquirer);
+
+  // Hybrid skill redesign — Claude-Code-style simple skill layer. Default
+  // mode='simple' surfaces dropped-in `~/.vinyan/skills/<name>/SKILL.md`
+  // files immediately in the system prompt without going through the heavy
+  // ACL/tier/auction pipeline. mode='epistemic' disables this layer in favor
+  // of the historical stack; mode='both' keeps both active. The watcher
+  // self-refreshes the registry as files change.
+  const skillsCfg = (
+    loadConfig(workspace) as {
+      skills?: {
+        mode?: string;
+        simple?: {
+          enabled?: boolean;
+          user_dir?: string;
+          project_dir?: string;
+          watcher_debounce_ms?: number;
+          match_threshold?: number;
+          match_top_k?: number;
+        };
+      };
+    }
+  ).skills;
+  const skillsMode = skillsCfg?.mode ?? 'simple';
+  const simpleEnabled = skillsCfg?.simple?.enabled ?? true;
+  let simpleSkillRegistry: SimpleSkillRegistry | undefined;
+  if (simpleEnabled && (skillsMode === 'simple' || skillsMode === 'both')) {
+    simpleSkillRegistry = createSimpleSkillRegistry({
+      workspace,
+      ...(skillsCfg?.simple?.user_dir !== undefined ? { userSkillsDir: skillsCfg.simple.user_dir } : {}),
+      ...(skillsCfg?.simple?.project_dir !== undefined ? { projectSkillsDir: skillsCfg.simple.project_dir } : {}),
+      ...(skillsCfg?.simple?.watcher_debounce_ms !== undefined
+        ? { watcherDebounceMs: skillsCfg.simple.watcher_debounce_ms }
+        : {}),
+      watch: true,
+    });
+    const matcherOpts: { threshold?: number; topK?: number } = {};
+    if (skillsCfg?.simple?.match_threshold !== undefined) matcherOpts.threshold = skillsCfg.simple.match_threshold;
+    if (skillsCfg?.simple?.match_top_k !== undefined) matcherOpts.topK = skillsCfg.simple.match_top_k;
+    workerPool.setSimpleSkillRegistry(simpleSkillRegistry, matcherOpts);
+    if (simpleSkillRegistry.getAll().length > 0) {
+      console.log(
+        `[vinyan] Simple skills: ${simpleSkillRegistry.getAll().length} loaded (mode='${skillsMode}'). Matcher: threshold=${matcherOpts.threshold ?? 0.15} topK=${matcherOpts.topK ?? 3}.`,
+      );
+    }
+  }
+
+  // Heavy skill artifact store — shared by the tier/scope promoters, the
+  // autonomous skill creator, AND the API server's unified skill catalog.
+  // Hoisted to factory scope so all four consumers see the same on-disk
+  // root and the API can list/read SKILL.md without re-instantiating.
+  const skillArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
 
   // Phase 2: rule-first AgentRouter — pre-routes tasks to specialists deterministically.
   // Constructed alongside the registry so it sees the same roster.
@@ -1587,17 +1730,35 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // ledger; safely skipped when DB or skillOutcomeStore absent.
   if (sleepCycleRunner && agentRegistry && skillOutcomeStore && db) {
     try {
-      const tierArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
       const ledger = new SkillTrustLedgerStore(db.getDb());
       sleepCycleRunner.setSkillTierPromoter({
         skillOutcomeStore,
         registry: agentRegistry,
-        artifactStore: tierArtifactStore,
+        artifactStore: skillArtifactStore,
         ledger,
         profile: 'default',
       });
     } catch {
       /* tier graduation wiring is best-effort — startup proceeds without it */
+    }
+  }
+
+  // Hybrid skill redesign — wire the simple → heavy bridge when mode='both'.
+  // Both layers must be active for graduation to make sense: 'simple' alone
+  // has no heavy stack to promote into; 'epistemic' alone has no simple
+  // skills to source from. The promoter runs every sleep cycle.
+  if (sleepCycleRunner && skillOutcomeStore && db && simpleSkillRegistry && skillsMode === 'both') {
+    try {
+      const bridgeLedger = new SkillTrustLedgerStore(db.getDb());
+      sleepCycleRunner.setSimpleSkillPromoter({
+        registry: simpleSkillRegistry,
+        outcomeStore: skillOutcomeStore,
+        artifactStore: skillArtifactStore,
+        ledger: bridgeLedger,
+        profile: 'default',
+      });
+    } catch {
+      /* bridge wiring is best-effort — startup proceeds without it */
     }
   }
 
@@ -1627,7 +1788,6 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     const distinctEngines = !!(generatorEngineId && criticEngineId && generatorEngineId !== criticEngineId);
     if (generatorProvider && distinctEngines) {
       try {
-        const skillArtifactStore = new SkillArtifactStore({ rootDir: join(workspace, '.vinyan', 'skills') });
         const creator = new AutonomousSkillCreator({
           predictionLedger,
           skillStore,
@@ -1847,6 +2007,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           selfModel,
         })
       : undefined,
+    // C1: opt-in flag — when true and `agentMemory` is wired, the critic
+    // call site hydrates `CriticContext` with prior failures + base-rate.
+    criticHistoricalAdversaryEnabled,
     skillHintsConfig,
     goalGroundingPolicy,
     // Ecosystem: dispatch-scoped task facts so CommitmentBridge can resolve
@@ -1882,6 +2045,26 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // Phase 2: gate for token-level `agent:text_delta` emission in the
     // conversational short-circuit path of the core loop.
     streamingAssistantDelta,
+    // Hybrid skills — make the simple registry visible to the conversational
+    // short-circuit path so `/skill-name` invocations and description matches
+    // surface bodies in conversational replies + delegated sub-tasks. Worker-
+    // pool already has this via `setSimpleSkillRegistry`; this dep covers the
+    // hand-built-prompt path that doesn't go through worker-pool.
+    simpleSkillRegistry,
+    simpleSkillMatcherOpts:
+      skillsCfg?.simple?.match_threshold !== undefined || skillsCfg?.simple?.match_top_k !== undefined
+        ? {
+            ...(skillsCfg?.simple?.match_threshold !== undefined
+              ? { threshold: skillsCfg.simple.match_threshold }
+              : {}),
+            ...(skillsCfg?.simple?.match_top_k !== undefined ? { topK: skillsCfg.simple.match_top_k } : {}),
+          }
+        : undefined,
+    // External Coding CLI strategy — wired so the deterministic intent
+    // pre-classifier can dispatch through it. When undefined (require
+    // failure / store missing), the dispatch surfaces an honest
+    // unsupported-capability outcome rather than reverting to shell_exec.
+    codingCliStrategy,
   };
 
   // K2.3: Wire concurrent dispatcher (needs executeTask thunk, so done after deps)
@@ -2316,6 +2499,27 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     );
   }
 
+  // Hybrid skill redesign — track simple-skill invocations per task. The
+  // worker-pool emits `skill:simple_invoked` for every body inlined into a
+  // task's prompt; we accumulate names in a per-task set so the executeTask
+  // wrapper can record outcomes at task completion. Pure in-memory; cleared
+  // after the outcome record is written.
+  const simpleSkillInvocations = new Map<string, Set<string>>();
+  trackBusListener(
+    bus.on('skill:simple_invoked', ({ taskId, skillName }: { taskId: string; skillName: string }) => {
+      try {
+        let set = simpleSkillInvocations.get(taskId);
+        if (!set) {
+          set = new Set<string>();
+          simpleSkillInvocations.set(taskId, set);
+        }
+        set.add(skillName);
+      } catch {
+        /* observational */
+      }
+    }),
+  );
+
   const orchestrator: Orchestrator = {
     executeTask: async (input: TaskInput) => {
       const result = await executeTask(input, deps);
@@ -2342,16 +2546,26 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       if (deps.skillOutcomeStore && deps.agentRegistry) {
         try {
           const { recordTaskOutcomeForPersona } = await import('./agents/task-outcome-recorder.ts');
-          recordTaskOutcomeForPersona(
-            input,
-            result,
-            deps.agentRegistry,
-            deps.skillOutcomeStore,
-            viewedSkillIds,
-          );
+          recordTaskOutcomeForPersona(input, result, deps.agentRegistry, deps.skillOutcomeStore, viewedSkillIds);
         } catch {
           /* outcome recording is observational; never fail the task on it */
         }
+      }
+
+      // Hybrid skill redesign — record outcomes for any simple-layer skill
+      // body that was inlined for this task. Feeds `SkillOutcomeStore` so the
+      // bridge (Phase 5) can promote skills with sufficient evidence.
+      if (deps.skillOutcomeStore) {
+        const invoked = simpleSkillInvocations.get(input.id);
+        if (invoked && invoked.size > 0) {
+          try {
+            const { recordSimpleSkillOutcomes } = await import('./agents/task-outcome-recorder.ts');
+            recordSimpleSkillOutcomes(input, result, invoked, deps.skillOutcomeStore);
+          } catch {
+            /* outcome recording is observational; never fail the task on it */
+          }
+        }
+        simpleSkillInvocations.delete(input.id);
       }
 
       // Phase-11: overclaim comparator (M1). Compares the persona's
@@ -2427,10 +2641,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     taskEventStore,
     ruleStore,
     skillStore,
+    // Hybrid skills — surface the simple registry + heavy artifact store on
+    // the factory's return so the API server can build the unified Skill
+    // Library catalog without re-instantiating either subsystem.
+    simpleSkillRegistry,
+    skillArtifactStore,
     patternStore,
     shadowStore,
     workerStore,
     engineRegistry,
+    llmRegistry: registry,
     agentProfileStore,
     agentProfile,
     agentContextStore,
@@ -2449,6 +2669,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     approvalGate,
     costLedger,
     budgetEnforcer,
+    // External Coding CLI surface — exposed for the API server (mounts
+    // /api/v1/coding-cli/*) and for tests to drive directly without
+    // bouncing through the orchestrator's executeTask path.
+    codingCliController,
+    codingCliStrategy,
+    codingCliStore: codingCliStoreInstance,
     // W2: optional plugin subsystem — populated when
     // `config.plugins.enabled` is true. pluginRegistry / messagingLifecycle
     // / pluginWarnings are filled in asynchronously by the init promise,
@@ -2489,6 +2715,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         }
       }
       approvalGate.clear();
+
+      // External Coding CLI — cancel any live sessions before tearing
+      // down workers. Sessions own subprocesses + chokidar watchers;
+      // letting them outlive the orchestrator leaks fds and stdout
+      // pipes that hold the loop alive.
+      if (codingCliController) {
+        try {
+          await raceTimeout(codingCliController.dispose(), 5_000);
+        } catch {
+          /* best-effort */
+        }
+      }
 
       // Kill warm worker subprocesses FIRST — without this, their stdin
       // pipes hold file descriptors that keep the parent event loop
@@ -2970,12 +3208,12 @@ function autoRegisterWorkers(
   }
 }
 
-function createDefaultRegistry(): LLMProviderRegistry {
+function createDefaultRegistry(bus?: import('../core/bus.ts').VinyanBus): LLMProviderRegistry {
   const registry = new LLMProviderRegistry();
 
   // Try OpenRouter first (no SDK dependency, just fetch)
   try {
-    registerOpenRouterProviders(registry);
+    registerOpenRouterProviders(registry, undefined, bus ? { bus } : {});
   } catch {
     // OpenRouter not available (missing API key)
   }
@@ -2983,12 +3221,21 @@ function createDefaultRegistry(): LLMProviderRegistry {
   // Try Anthropic SDK as fallback
   if (registry.listProviders().length === 0) {
     try {
-      const provider = createAnthropicProvider();
+      const provider = createAnthropicProvider(bus ? { bus } : {});
       if (provider) registry.register(provider);
     } catch {
       // Anthropic SDK not available
     }
   }
+
+  // Outbound provider governance — every provider call from now on flows
+  // through the wrapper: 429/RESOURCE_EXHAUSTED is normalized, the failing
+  // quota bucket is cooled down in the shared `ProviderHealthStore`, and the
+  // registry's selection skips the cooled provider until its retry-after
+  // window expires. Without this wrapper Vinyan keeps re-picking the
+  // exhausted Gemma free-tier and emits a retry storm.
+  const healthStore = new ProviderHealthStore(bus ? { bus } : {});
+  applyGovernanceToRegistry(registry, { healthStore, ...(bus ? { bus } : {}) });
 
   return registry;
 }

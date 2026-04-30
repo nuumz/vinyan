@@ -88,4 +88,44 @@ describe('ApprovalGate', () => {
     const decision = await promise;
     expect(decision).toBe('approved'); // first resolve wins
   });
+
+  test('resolve emits task:approval_resolved with source=human', async () => {
+    const bus = createBus();
+    const gate = new ApprovalGate(bus, 5000);
+    const events: Array<{ taskId: string; decision: string; source: string }> = [];
+    bus.on('task:approval_resolved', (p) => events.push(p));
+
+    const promise = gate.requestApproval('task-1', 0.5, 'test');
+    gate.resolve('task-1', 'approved');
+    await promise;
+
+    expect(events).toEqual([{ taskId: 'task-1', decision: 'approved', source: 'human' }]);
+  });
+
+  test('timeout emits task:approval_resolved with source=timeout', async () => {
+    const bus = createBus();
+    const gate = new ApprovalGate(bus, 50); // tight timeout
+    const events: Array<{ taskId: string; decision: string; source: string }> = [];
+    bus.on('task:approval_resolved', (p) => events.push(p));
+
+    const decision = await gate.requestApproval('task-1', 0.9, 'timeout test');
+    expect(decision).toBe('rejected');
+    expect(events).toEqual([{ taskId: 'task-1', decision: 'rejected', source: 'timeout' }]);
+  });
+
+  test('clear emits task:approval_resolved with source=shutdown for each pending', async () => {
+    const bus = createBus();
+    const gate = new ApprovalGate(bus, 60_000);
+    const events: Array<{ taskId: string; decision: string; source: string }> = [];
+    bus.on('task:approval_resolved', (p) => events.push(p));
+
+    const p1 = gate.requestApproval('task-A', 0.5, 'a');
+    const p2 = gate.requestApproval('task-B', 0.5, 'b');
+    gate.clear();
+    await Promise.all([p1, p2]);
+
+    expect(events.length).toBe(2);
+    expect(events.every((e) => e.source === 'shutdown' && e.decision === 'rejected')).toBe(true);
+    expect(new Set(events.map((e) => e.taskId))).toEqual(new Set(['task-A', 'task-B']));
+  });
 });

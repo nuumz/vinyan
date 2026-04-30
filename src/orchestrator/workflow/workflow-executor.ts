@@ -23,6 +23,13 @@ import {
 import { buildKnowledgeContext } from './knowledge-context.ts';
 import { buildResearchStep, detectResearchCues, prependResearchStep } from './research-step-builder.ts';
 import { formatSessionTranscript } from './session-transcript.ts';
+import {
+  buildStageManifest,
+  type MultiAgentSubtask,
+  type MultiAgentSubtaskErrorKind,
+  type WorkflowStageManifest,
+  type WorkflowTodoStatus,
+} from './stage-manifest.ts';
 import type { WorkflowPlan, WorkflowResult, WorkflowStep, WorkflowStepResult, WorkflowStepStrategy } from './types.ts';
 import { planWorkflow, type WorkflowPlannerDeps } from './workflow-planner.ts';
 
@@ -100,6 +107,94 @@ function workflowStepTimeoutMs(input: TaskInput, budgetFraction: number): number
   return Math.max(MIN_WORKFLOW_LLM_TIMEOUT_MS, fractionalBudget);
 }
 
+/**
+ * Per-execution runtime for the stage manifest. Holds the immutable manifest
+ * shape plus mutable state needed to emit per-step lifecycle updates (todo
+ * status flips, subtask running/done/failed transitions). Owned by
+ * `executeWorkflow` and passed through `WorkflowExecutorDeps.stageRuntime`
+ * so step dispatch can update without re-plumbing args.
+ */
+interface StageRuntime {
+  manifest: WorkflowStageManifest;
+  todoByStep: Map<string, string>;
+  subtaskByStep: Map<string, MultiAgentSubtask>;
+  /** Live mirror of every subtask record by subtaskId. */
+  subtaskState: Map<string, MultiAgentSubtask>;
+}
+
+function emitTodoUpdate(
+  deps: WorkflowExecutorDeps,
+  taskId: string,
+  sessionId: string | undefined,
+  stepId: string,
+  status: WorkflowTodoStatus,
+  failureReason?: string,
+): void {
+  if (!deps.bus || !deps.stageRuntime) return;
+  const todoId = deps.stageRuntime.todoByStep.get(stepId);
+  if (!todoId) return;
+  deps.bus.emit('workflow:todo_updated', {
+    taskId,
+    sessionId,
+    todoId,
+    status,
+    ...(failureReason ? { failureReason } : {}),
+  });
+}
+
+function emitSubtaskUpdate(
+  deps: WorkflowExecutorDeps,
+  taskId: string,
+  sessionId: string | undefined,
+  stepId: string,
+  patch: Partial<MultiAgentSubtask> & { status: MultiAgentSubtask['status'] },
+): void {
+  if (!deps.bus || !deps.stageRuntime) return;
+  const sub = deps.stageRuntime.subtaskByStep.get(stepId);
+  if (!sub) return;
+  const live = deps.stageRuntime.subtaskState.get(sub.subtaskId);
+  const next: MultiAgentSubtask = { ...(live ?? sub), ...patch };
+  deps.stageRuntime.subtaskState.set(sub.subtaskId, next);
+  deps.bus.emit('workflow:subtask_updated', {
+    taskId,
+    sessionId,
+    subtaskId: next.subtaskId,
+    stepId: next.stepId,
+    status: next.status,
+    ...(next.agentId ? { agentId: next.agentId } : {}),
+    ...(next.startedAt !== undefined ? { startedAt: next.startedAt } : {}),
+    ...(next.completedAt !== undefined ? { completedAt: next.completedAt } : {}),
+    ...(next.outputPreview !== undefined ? { outputPreview: next.outputPreview } : {}),
+    ...(next.errorKind !== undefined ? { errorKind: next.errorKind } : {}),
+    ...(next.errorMessage !== undefined ? { errorMessage: next.errorMessage } : {}),
+    ...(next.partialOutputAvailable !== undefined ? { partialOutputAvailable: next.partialOutputAvailable } : {}),
+    ...(next.fallbackAttempted !== undefined ? { fallbackAttempted: next.fallbackAttempted } : {}),
+  });
+}
+
+/**
+ * Map the sub-task's failure surface (timeout kind, executeTask error
+ * string) onto a structured {@link MultiAgentSubtaskErrorKind}. Rule-based
+ * — keyword scan over the error text. The taxonomy intentionally covers
+ * the failure modes we already handle elsewhere in the executor; a
+ * miss falls through to `unknown` so we never lie about the cause.
+ */
+function classifyDelegateError(
+  errorMessage: string,
+  ctx: { timeoutKind?: 'idle' | 'ceiling' | null },
+): MultiAgentSubtaskErrorKind {
+  if (ctx.timeoutKind) return 'timeout';
+  const msg = errorMessage.toLowerCase();
+  if (/quota|rate.?limit|429|too.many.requests/.test(msg)) return 'provider_quota';
+  if (/timeout|timed out/.test(msg)) return 'timeout';
+  if (/empty|no output|no content/.test(msg)) return 'empty_response';
+  if (/parse|invalid json|json.parse/.test(msg)) return 'parse_error';
+  if (/contract|guardrail|injection/.test(msg)) return 'contract_violation';
+  if (/dependency.failed|depends on/.test(msg)) return 'dependency_failed';
+  if (msg.length > 0) return 'subtask_failed';
+  return 'unknown';
+}
+
 function emitWorkflowTextDelta(deps: WorkflowExecutorDeps, taskId: string, text: string): void {
   if (!text) return;
   deps.bus?.emit('llm:stream_delta', { taskId, kind: 'content', text });
@@ -146,6 +241,13 @@ export interface WorkflowExecutorDeps {
    * single-turn or non-conversational invocations.
    */
   sessionTurns?: import('../types.ts').Turn[];
+  /**
+   * Internal: stage manifest runtime state. Set by `executeWorkflow` after
+   * the manifest is built and reused by `executeStep` / `dispatchStrategy`
+   * for per-step lifecycle updates. Callers must NOT supply this — passing
+   * it here is implementation-private plumbing.
+   */
+  stageRuntime?: StageRuntime;
 }
 
 export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDeps): Promise<WorkflowResult> {
@@ -191,6 +293,51 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
       reason: researchCue.reason ?? 'unknown',
     });
   }
+
+  // Stage Manifest — durable post-prompt decision + todo + multi-agent
+  // subtask state. Emitted BEFORE the approval gate so the UI's process-
+  // replay surface sees the decision the moment Vinyan made it; the
+  // approval gate may delay execution but it must not delay visibility.
+  // A3: classification is rule-based on the finalized plan, no LLM.
+  const stageManifest: WorkflowStageManifest = buildStageManifest({
+    taskId: input.id,
+    sessionId: input.sessionId,
+    userPrompt: input.goal,
+    plan,
+    agentRegistry: deps.agentRegistry,
+    decisionRationale: deps.intentWorkflowPrompt,
+  });
+  if (deps.bus) {
+    deps.bus.emit('workflow:decision_recorded', {
+      taskId: input.id,
+      sessionId: input.sessionId,
+      decision: stageManifest.decision,
+    });
+    deps.bus.emit('workflow:todo_created', {
+      taskId: input.id,
+      sessionId: input.sessionId,
+      todoList: stageManifest.todoList,
+      ...(stageManifest.groupMode ? { groupMode: stageManifest.groupMode } : {}),
+    });
+    if (stageManifest.multiAgentSubtasks.length > 0) {
+      deps.bus.emit('workflow:subtasks_planned', {
+        taskId: input.id,
+        sessionId: input.sessionId,
+        ...(stageManifest.groupMode ? { groupMode: stageManifest.groupMode } : {}),
+        subtasks: stageManifest.multiAgentSubtasks,
+      });
+    }
+  }
+
+  // Indexes for fast status updates while the executor runs. todoByStep
+  // maps `step.id` → `todoItem.id` so per-step lifecycle events can emit
+  // `workflow:todo_updated` without scanning the manifest each time.
+  const todoByStep = new Map<string, string>();
+  for (const todo of stageManifest.todoList) {
+    if (todo.sourceStepId) todoByStep.set(todo.sourceStepId, todo.id);
+  }
+  const subtaskByStep = new Map<string, MultiAgentSubtask>();
+  for (const sub of stageManifest.multiAgentSubtasks) subtaskByStep.set(sub.stepId, sub);
 
   // Phase E: emit the final plan so UIs can render a TODO checklist before
   // execution starts. When `workflow.requireUserApproval` is active, the
@@ -326,6 +473,19 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
     });
   }
 
+  // Stage runtime — shared between executeWorkflow's main loop and
+  // executeStep below. Holds the manifest indexes plus a status mirror
+  // for subtask records so `workflow:subtask_updated` payloads always
+  // carry the latest snapshot. Threaded through deps to avoid plumbing
+  // four new arguments down to executeStep / dispatchStrategy.
+  const stageRuntime: StageRuntime = {
+    manifest: stageManifest,
+    todoByStep,
+    subtaskByStep,
+    subtaskState: new Map(stageManifest.multiAgentSubtasks.map((s) => [s.subtaskId, { ...s }])),
+  };
+  const depsWithStage: WorkflowExecutorDeps = { ...deps, stageRuntime };
+
   const stepResults = new Map<string, WorkflowStepResult>();
   // `succeeded` carries dependency-satisfaction semantics: a downstream step
   // is only `ready` when every dep ran AND completed successfully. Failed or
@@ -417,7 +577,10 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
 
     if (ready.length === 0 && skipNow.length === 0 && remaining.size > 0) {
       // Deadlock — circular dependency or a step depends on something not in the plan
-      for (const id of remaining) stepStatuses.set(id, 'failed');
+      for (const id of remaining) {
+        stepStatuses.set(id, 'failed');
+        emitTodoUpdate(depsWithStage, input.id, input.sessionId, id, 'failed', 'workflow deadlock');
+      }
       emitPlanUpdate();
       await recordFailure('workflow-deadlock', [...remaining]);
       deps.bus?.emit('workflow:complete', {
@@ -454,6 +617,17 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
       finished.add(step.id);
       remaining.delete(step.id);
       stepStatuses.set(step.id, 'skipped');
+      const depReason = `dependency failed (${failedDeps.join(', ')})`;
+      emitTodoUpdate(depsWithStage, input.id, input.sessionId, step.id, 'skipped', depReason);
+      if (step.strategy === 'delegate-sub-agent') {
+        emitSubtaskUpdate(depsWithStage, input.id, input.sessionId, step.id, {
+          status: 'skipped',
+          completedAt: Date.now(),
+          errorKind: 'dependency_failed',
+          errorMessage: depReason,
+          partialOutputAvailable: false,
+        });
+      }
     }
     if (skipNow.length > 0) emitPlanUpdate();
 
@@ -461,11 +635,14 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
 
     // Mark all ready steps as running before dispatching so the UI can show
     // multiple parallel steps as in-flight when topology allows it.
-    for (const step of ready) stepStatuses.set(step.id, 'running');
+    for (const step of ready) {
+      stepStatuses.set(step.id, 'running');
+      emitTodoUpdate(depsWithStage, input.id, input.sessionId, step.id, 'running');
+    }
     emitPlanUpdate();
 
     // Execute ready steps in parallel
-    const results = await Promise.all(ready.map((step) => executeStep(step, plan, stepResults, input, deps)));
+    const results = await Promise.all(ready.map((step) => executeStep(step, plan, stepResults, input, depsWithStage)));
 
     for (const result of results) {
       stepResults.set(result.stepId, result);
@@ -473,10 +650,13 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
       remaining.delete(result.stepId);
       if (result.status === 'completed') succeeded.add(result.stepId);
       totalTokens += result.tokensConsumed;
-      stepStatuses.set(
-        result.stepId,
-        result.status === 'completed' ? 'done' : result.status === 'skipped' ? 'skipped' : 'failed',
-      );
+      const planStepStatus: PlanStepStatus =
+        result.status === 'completed' ? 'done' : result.status === 'skipped' ? 'skipped' : 'failed';
+      stepStatuses.set(result.stepId, planStepStatus);
+      const todoStatus: WorkflowTodoStatus =
+        planStepStatus === 'done' ? 'done' : planStepStatus === 'skipped' ? 'skipped' : 'failed';
+      const failureReason = result.status === 'failed' ? result.output.slice(0, 240) : undefined;
+      emitTodoUpdate(depsWithStage, input.id, input.sessionId, result.stepId, todoStatus, failureReason);
     }
     emitPlanUpdate();
   }
@@ -1117,6 +1297,15 @@ async function dispatchStrategy(
           subTaskId: subInput.id,
           stepDescription: step.description,
         });
+        // Stage manifest mirror — subtask transitions planned → dispatched
+        // → running. The `dispatched` payload pins the resolved agent id
+        // so reload/replay shows "Agent N: <agentId>" instead of "agent?"
+        // even if the sub-task's own task:start has not arrived yet.
+        emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+          status: 'running',
+          agentId: resolvedAgentId,
+          startedAt: Date.now(),
+        });
         let taskResult: TaskResult;
         try {
           taskResult = await Promise.race([deps.executeTask(subInput), timeoutPromise]);
@@ -1132,10 +1321,25 @@ async function dispatchStrategy(
             agentId: resolvedAgentId ?? null,
             timeoutMs: timeoutKind === 'ceiling' ? HARD_CEILING_MS : subTaskTimeoutMs,
           });
+          const errMessage = err instanceof Error ? err.message : String(err);
+          // Honest failure record on the subtask manifest — replaces the
+          // UI's previous "[no output captured — agent failed]" placeholder
+          // with structured detail (errorKind, errorMessage, agentId,
+          // timeoutMs already on workflow:delegate_timeout). Status is
+          // `timeout` when the watchdog fired, `failed` when the sub-task
+          // self-terminated.
+          emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+            status: timeoutKind ? 'timeout' : 'failed',
+            agentId: resolvedAgentId,
+            completedAt: Date.now(),
+            errorKind: classifyDelegateError(errMessage, { timeoutKind }),
+            errorMessage: errMessage,
+            partialOutputAvailable: false,
+          });
           return {
             ...base,
             status: 'failed',
-            output: err instanceof Error ? err.message : String(err),
+            output: errMessage,
             agentId: resolvedAgentId,
             subTaskId: subInput.id,
           };
@@ -1176,6 +1380,32 @@ async function dispatchStrategy(
           outputPreview,
           tokensUsed: taskResult.trace?.tokensConsumed ?? 0,
         });
+        // Stage manifest mirror — subtask done/failed with an honest
+        // shape. When the sub-task itself failed without throwing (e.g.
+        // its core-loop returned status='failed' with an error
+        // explanation in `answer`), we surface that as `errorKind:
+        // subtask_failed` + the answer/explanation as errorMessage so
+        // the UI does not collapse to "[no output captured]".
+        if (finalStatus === 'completed') {
+          emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+            status: 'done',
+            agentId: resolvedAgentId,
+            completedAt: Date.now(),
+            outputPreview,
+            partialOutputAvailable: outputPreview.length > 0,
+          });
+        } else {
+          const failExplanation = stepOutput?.trim() || 'Sub-agent reported failure with no explanation.';
+          emitSubtaskUpdate(deps, input.id, input.sessionId, step.id, {
+            status: 'failed',
+            agentId: resolvedAgentId,
+            completedAt: Date.now(),
+            outputPreview: stepOutput.length > 0 ? outputPreview : undefined,
+            errorKind: classifyDelegateError(failExplanation, { timeoutKind: null }),
+            errorMessage: failExplanation,
+            partialOutputAvailable: stepOutput.length > 0,
+          });
+        }
         return {
           ...base,
           status: finalStatus,

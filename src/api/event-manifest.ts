@@ -120,6 +120,16 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'agent:capability-research', sse: true, record: true, scope: 'task' },
   { event: 'agent:capability-research-failed', sse: true, record: true, scope: 'task' },
 
+  // ── Workflow: stage manifest (decision/todo/subtask) ─────────────────
+  // Recorded so reload / SSE recovery can reconstruct the post-prompt
+  // decision + todo list + multi-agent subtask manifest without rebuilding
+  // it from raw plan text. A8: traceable, every payload carries taskId.
+  { event: 'workflow:decision_recorded', sse: true, record: true, scope: 'task' },
+  { event: 'workflow:todo_created', sse: true, record: true, scope: 'task' },
+  { event: 'workflow:todo_updated', sse: true, record: true, scope: 'task' },
+  { event: 'workflow:subtasks_planned', sse: true, record: true, scope: 'task' },
+  { event: 'workflow:subtask_updated', sse: true, record: true, scope: 'task' },
+
   // ── Workflow: approval gate + step transitions + delegation ─────────
   { event: 'workflow:plan_ready', sse: true, record: true, scope: 'task' },
   { event: 'workflow:plan_approved', sse: true, record: true, scope: 'task' },

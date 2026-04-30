@@ -1686,6 +1686,21 @@ export interface VinyanBusEvents {
    * (no user input arrived within `timeoutMs`); the executor's own listener
    * ignores those self-emits to avoid re-settling its own promise.
    */
+  /**
+   * Stage Manifest — emitted right after the workflow planner finalizes a
+   * plan and BEFORE any step executes (and BEFORE the approval gate). Powers
+   * the chat UI's process-replay surface so reload / SSE recovery can
+   * reconstruct what Vinyan decided to do, what plan it built, what todo
+   * checklist exists, and which sub-agent owns each delegated subtask —
+   * without inferring shape client-side. A3-compliant: classification is
+   * rule-based on planner output, no LLM post-processing.
+   */
+  'workflow:decision_recorded': import('../orchestrator/workflow/stage-manifest.ts').WorkflowDecisionRecordedEvent;
+  'workflow:todo_created': import('../orchestrator/workflow/stage-manifest.ts').WorkflowTodoCreatedEvent;
+  'workflow:todo_updated': import('../orchestrator/workflow/stage-manifest.ts').WorkflowTodoUpdatedEvent;
+  'workflow:subtasks_planned': import('../orchestrator/workflow/stage-manifest.ts').WorkflowSubtasksPlannedEvent;
+  'workflow:subtask_updated': import('../orchestrator/workflow/stage-manifest.ts').WorkflowSubtaskUpdatedEvent;
+
   'workflow:partial_failure_decision_provided': {
     taskId: string;
     decision: 'continue' | 'abort';

@@ -165,7 +165,7 @@ Migration `024_coding_cli.ts` adds four tables: `coding_cli_sessions`, `coding_c
 
 ## Configuration
 
-```ts
+```ts 
 codingCli: {
   enabled: false,                           // gate the whole subsystem
   defaultProvider: 'auto',                  // or 'claude-code' | 'github-copilot'

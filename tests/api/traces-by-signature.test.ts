@@ -48,18 +48,15 @@ function req(path: string): Request {
 
 function makeTrace(over: Partial<ExecutionTrace> & Pick<ExecutionTrace, 'id' | 'taskId' | 'taskTypeSignature'>): ExecutionTrace {
   return {
-    id: over.id,
-    taskId: over.taskId,
-    timestamp: over.timestamp ?? Date.now(),
+    timestamp: Date.now(),
     routingLevel: 2,
     approach: 'mock',
     modelUsed: 'mock/test',
     tokensConsumed: 100,
     durationMs: 500,
-    outcome: over.outcome ?? 'success',
+    outcome: 'success',
     affectedFiles: [],
     oracleVerdicts: {},
-    taskTypeSignature: over.taskTypeSignature,
     ...over,
   } as ExecutionTrace;
 }

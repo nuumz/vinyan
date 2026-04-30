@@ -41,6 +41,37 @@ const DEFAULT_FAILED_LIMIT = 20;
 const DEFAULT_TRACE_LIMIT = 20;
 
 /**
+ * Orchestrator-side wiring helper. Call site signature mirrors the data
+ * already available at the critic invocation point (`agentMemory` from
+ * deps, `taskTypeSignature` from `understanding`, `targetFiles` from
+ * `TaskInput`). Returns the input context unchanged when the feature is
+ * off, agentMemory is unwired, or task signature is missing — so callers
+ * can wrap it unconditionally without paying for the no-op cases.
+ */
+export async function maybeAttachHistoricalAdversary<T extends object>(
+  baseContext: T,
+  deps: {
+    readonly agentMemory?: AgentMemoryAPI;
+    readonly criticHistoricalAdversaryEnabled?: boolean;
+  },
+  taskInfo: {
+    readonly taskSignature?: string | null;
+    readonly fileTarget?: string | undefined;
+  },
+): Promise<T & HistoricalAdversaryFragment> {
+  if (!deps.criticHistoricalAdversaryEnabled) return baseContext as T & HistoricalAdversaryFragment;
+  if (!deps.agentMemory) return baseContext as T & HistoricalAdversaryFragment;
+  if (!taskInfo.taskSignature) return baseContext as T & HistoricalAdversaryFragment;
+
+  const fragment = await buildHistoricalAdversaryContext(deps.agentMemory, {
+    taskSignature: taskInfo.taskSignature,
+    ...(taskInfo.fileTarget !== undefined ? { fileTarget: taskInfo.fileTarget } : {}),
+  }).catch((): HistoricalAdversaryFragment => ({}));
+
+  return { ...baseContext, ...fragment };
+}
+
+/**
  * Build the `priorFailedApproaches` + `priorTraceSummary` fragment of
  * CriticContext for the given task signature.
  *

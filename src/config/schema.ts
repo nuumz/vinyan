@@ -178,6 +178,21 @@ const AgentMemoryConfigSchema = z.object({
 
 export type AgentMemoryConfig = z.infer<typeof AgentMemoryConfigSchema>;
 
+// ─── C1: Critic — historical-adversary mode ─────────────────────────
+
+const CriticConfigSchema = z.object({
+  /**
+   * C1: when true, the critic call site hydrates `CriticContext` with
+   * `priorFailedApproaches` + `priorTraceSummary` from `agentMemory` so
+   * the reviewer can pressure-test the proposal against past attempts.
+   * Off by default. No-op when `agentMemory` is unwired or the task has
+   * no signature. See `docs/design/knowledge-loop-rfc.md` §5.
+   */
+  historical_adversary_enabled: z.boolean().default(false),
+});
+
+export type CriticConfig = z.infer<typeof CriticConfigSchema>;
+
 // ─── Wave 2: Replan Engine ───────────────────────────────────────────
 
 const ReplanConfigSchema = z.object({
@@ -247,7 +262,11 @@ const DegradationConfigSchema = z.object({
   /** Operator visibility surface for `/api/v1/health/degradation`. Default ON (additive). */
   enabled: z.boolean().default(true),
   /** Auto-clear stale entries after this many milliseconds. 0 disables eviction. */
-  entry_ttl_ms: z.number().int().min(0).default(5 * 60 * 1000),
+  entry_ttl_ms: z
+    .number()
+    .int()
+    .min(0)
+    .default(5 * 60 * 1000),
 });
 
 export type DegradationConfig = z.infer<typeof DegradationConfigSchema>;
@@ -310,6 +329,8 @@ const OrchestratorConfigSchema = z.object({
   degradation: DegradationConfigSchema.default(() => defaults(DegradationConfigSchema)),
   /** A10 / T6: goal-and-time grounding policy + thresholds. Extended actions opt-in. */
   goalGrounding: GoalGroundingConfigSchema.default(() => defaults(GoalGroundingConfigSchema)),
+  /** C1: critic feature flags (historical-adversary mode, etc). Default OFF. */
+  critic: CriticConfigSchema.default(() => defaults(CriticConfigSchema)),
   /**
    * W3 P3: opt-in delegation of L0 dispatch through the new WorkerBackend
    * abstraction (src/runtime). Default OFF so the 1996-test baseline is
@@ -433,7 +454,17 @@ export const AgentSpecSchema = z.object({
    * with config that pre-dates the redesign.
    */
   role: z
-    .enum(['coordinator', 'developer', 'architect', 'author', 'reviewer', 'assistant', 'researcher', 'mentor', 'concierge'])
+    .enum([
+      'coordinator',
+      'developer',
+      'architect',
+      'author',
+      'reviewer',
+      'assistant',
+      'researcher',
+      'mentor',
+      'concierge',
+    ])
     .optional(),
   /** True if this is a built-in agent (shipped with Vinyan). */
   builtin: z.boolean().optional(),

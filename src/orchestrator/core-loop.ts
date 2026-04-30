@@ -256,6 +256,13 @@ export interface OrchestratorDeps {
   goalLoop?: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number };
   // Wave 3: Agent-Facing Memory API ("second brain") — read-only queries over all stores.
   agentMemory?: AgentMemoryAPI;
+  /**
+   * C1: when true (config flag `orchestrator.critic.historical_adversary_enabled`),
+   * the critic call site hydrates `CriticContext` with prior failures and
+   * trace base-rate via `maybeAttachHistoricalAdversary`. Default off.
+   * No-op when `agentMemory` is undefined or the task has no signature.
+   */
+  criticHistoricalAdversaryEnabled?: boolean;
   /** Wave 5b/Capability-First Phase 4: runtime skill hints in worker execution context. */
   skillHintsConfig?: import('./skill-hints.ts').SkillHintsConfig;
   /** A10 / T6: goal-and-time grounding policy (thresholds + extended actions). */
@@ -1497,7 +1504,6 @@ function resolveKnowledgeProviderOrder(
 // Strategy short-circuit helpers
 // ---------------------------------------------------------------------------
 
-
 async function executeDirectTool(
   input: TaskInput,
   intent: IntentResolution,
@@ -2255,12 +2261,9 @@ async function executeTaskCore(
           //     outcome). Session 4e62ebe6 surfaced this: 3/3 delegates
           //     timed out, plan was 0/4 with three red ✗, but the trace
           //     chip read "success" because partial got remapped blindly.
-          const delegateResults = workflowResult.stepResults.filter(
-            (r) => r.strategyUsed === 'delegate-sub-agent',
-          );
+          const delegateResults = workflowResult.stepResults.filter((r) => r.strategyUsed === 'delegate-sub-agent');
           const allDelegatesFailedAtTrace =
-            delegateResults.length > 0 &&
-            delegateResults.every((r) => r.status === 'failed' || r.status === 'skipped');
+            delegateResults.length > 0 && delegateResults.every((r) => r.status === 'failed' || r.status === 'skipped');
           const traceOutcome: ExecutionTrace['outcome'] =
             workflowResult.status === 'completed'
               ? 'success'
@@ -3232,13 +3235,22 @@ async function executeTaskCore(
               // worker self-grade vs deterministic verdict so the critic
               // gets a calibration warning when the worker was overconfident.
               const priorPredictionError = workingMemory.getLastPredictionError();
-              const criticContext = {
+              const baseCriticContext = {
                 riskScore: routing.riskScore,
                 routingLevel: routing.level,
                 ...(priorGrade ? { priorAccountabilityGrade: priorGrade } : {}),
                 ...(priorBlockers.length > 0 ? { priorBlockerCategories: priorBlockers } : {}),
                 ...(priorPredictionError ? { priorPredictionError } : {}),
               };
+              // C1: optionally hydrate with historical-adversary data so the
+              // reviewer can pressure-test against prior failures + base-rate.
+              // No-op when the flag is off, agentMemory is unwired, or the
+              // task has no taskTypeSignature.
+              const { maybeAttachHistoricalAdversary } = await import('./critic/historical-adversary.ts');
+              const criticContext = await maybeAttachHistoricalAdversary(baseCriticContext, deps, {
+                taskSignature: understanding?.taskTypeSignature as string | undefined,
+                fileTarget: input.targetFiles?.[0],
+              });
               const criticResult = await deps.criticEngine.review(
                 proposal,
                 input,
@@ -3729,8 +3741,6 @@ async function executeTaskCore(
     }
   }
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Helpers

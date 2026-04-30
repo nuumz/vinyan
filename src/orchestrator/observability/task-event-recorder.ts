@@ -54,6 +54,29 @@ interface BufferedEvent {
 const DEFAULT_BUFFER_LIMIT = 256;
 const DEFAULT_FLUSH_MS = 250;
 const DEFAULT_MAX_STRING = 8 * 1024;
+/**
+ * Bounded cache so a long-running orchestrator with many tasks can't grow
+ * the sessionId map without limit. The cache is only used to backfill
+ * `sessionId` on events that omit it — losing an old entry just degrades
+ * those events back to `session_id=NULL`, which is a recoverable failure
+ * not a correctness one.
+ */
+const SESSION_CACHE_LIMIT = 4096;
+/**
+ * Token-level / streaming events that are dropped first when the buffer
+ * is full. Lifecycle events (task:*, workflow:*, agent:plan_update,
+ * oracle:*, critic:*, skill:*, agent:routed/synthesized, etc.) carry
+ * irreplaceable structural state — without them the historical-process
+ * card can't reconstruct a plan checklist or sub-agent timeline. Stream
+ * deltas can be lost without breaking replay because the final answer
+ * is also stored on the assistant turn.
+ */
+const LOW_PRIORITY_EVENTS = new Set<string>([
+  'llm:stream_delta',
+  'agent:text_delta',
+  'agent:thinking',
+  'coding-cli:output_delta',
+]);
 
 export interface TaskEventRecorderHandle {
   detach: () => void;
@@ -76,6 +99,14 @@ export function attachTaskEventRecorder(
   let dropped = 0;
   let timer: ReturnType<typeof setInterval> | null = null;
   const detachers: Array<() => void> = [];
+  // taskId → sessionId cache. Many emitters (workflow-executor,
+  // agent-loop sub-paths) don't include `sessionId` in every payload —
+  // without backfill those rows persist as `session_id=NULL` and the
+  // task-tree query at `/tasks/:id/event-history?includeDescendants=true`
+  // (which filters by session_id) silently drops them. The first event
+  // for a task is always `task:start` whose `input.sessionId` populates
+  // the cache, so subsequent events for the same task get backfilled.
+  const sessionByTask = new Map<string, string>();
 
   const flush = () => {
     if (buffer.length === 0) return;
@@ -109,15 +140,51 @@ export function attachTaskEventRecorder(
         if (manifestEntry && manifestEntry.scope !== 'task') return;
         const ids = extractIds(rawPayload);
         if (!ids.taskId) return; // Skip events that can't be associated with a task.
+        // Backfill sessionId from the per-task cache when payload omits
+        // it. Cache is populated whenever an event arrives WITH sessionId
+        // (typically `task:start`), so subsequent task-scoped events for
+        // the same task inherit the right session_id even if the emitter
+        // didn't include it. Without this, ~half the recorded events
+        // land with session_id=NULL and the task-tree query filters them
+        // out on read.
+        let sessionId = ids.sessionId;
+        if (sessionId) {
+          // Bounded cache — evict oldest entry on overflow when adding a
+          // new task. Map iteration order is insertion order, so the
+          // first key is the oldest seen.
+          if (sessionByTask.size >= SESSION_CACHE_LIMIT && !sessionByTask.has(ids.taskId)) {
+            const oldest = sessionByTask.keys().next().value;
+            if (oldest !== undefined) sessionByTask.delete(oldest);
+          }
+          sessionByTask.set(ids.taskId, sessionId);
+        } else {
+          sessionId = sessionByTask.get(ids.taskId);
+        }
         const payload = truncatePayload(rawPayload, maxStringChars);
         if (buffer.length >= bufferLimit) {
-          // Overflow: drop the oldest buffered event so newer signal is preserved.
-          buffer.shift();
+          // Overflow: drop the oldest LOW-priority (token-level / streaming)
+          // event first so lifecycle events survive. If the buffer is fully
+          // saturated with high-priority events, fall back to oldest-first
+          // FIFO drop — but in practice that only happens on pathologically
+          // slow disks, since lifecycle events are sparse compared to stream
+          // deltas.
+          let evictIdx = -1;
+          for (let i = 0; i < buffer.length; i++) {
+            if (LOW_PRIORITY_EVENTS.has(buffer[i]!.eventType)) {
+              evictIdx = i;
+              break;
+            }
+          }
+          if (evictIdx === -1) {
+            buffer.shift();
+          } else {
+            buffer.splice(evictIdx, 1);
+          }
           dropped += 1;
         }
         buffer.push({
           taskId: ids.taskId,
-          sessionId: ids.sessionId,
+          sessionId,
           eventType: eventName,
           payload,
           ts: Date.now(),

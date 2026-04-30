@@ -11,6 +11,7 @@ import type { VinyanBus } from '../../core/bus.ts';
 import type { LLMProvider, LLMRequest, LLMResponse, OnTextDelta, ToolCall } from '../types.ts';
 import { PromptTooLargeError } from '../types.ts';
 import { clampOpenRouterId, getCurrentLLMTrace, type LLMTraceMetadata, resolveLLMTrace } from './llm-trace-context.ts';
+import { classifyProviderError, LLMProviderError } from './provider-errors.ts';
 import type { OpenAIMessage } from './provider-format.ts';
 import { normalizeMessages } from './provider-format.ts';
 import {
@@ -231,13 +232,17 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
               const estimate = Math.ceil(estimateText.length / 4);
               throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
             }
-            // Attach status for retry logic
-            const err = new Error(`OpenRouter API error ${response.status}: ${errorText}`);
-            (err as any).status = response.status;
-            // Attach retry-after header for backoff
-            const retryAfter = response.headers.get('retry-after');
-            if (retryAfter) (err as any).retryAfterHeader = retryAfter;
-            throw err;
+            const normalized = classifyProviderError({
+              kind: 'http',
+              providerId,
+              tier: config.tier,
+              providerName: 'OpenRouter',
+              model,
+              status: response.status,
+              bodyText: errorText,
+              retryAfterHeader: response.headers.get('retry-after'),
+            });
+            throw new LLMProviderError(normalized);
           }
 
           const data = (await response.json()) as OpenRouterResponse;
@@ -283,7 +288,10 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
           retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
           timeoutMs: requestTimeoutMs,
           parseRetryAfter: (error: unknown) => {
-            const header = (error as any)?.retryAfterHeader;
+            if (error instanceof LLMProviderError && error.normalized.retryAfterMs !== undefined) {
+              return error.normalized.retryAfterMs;
+            }
+            const header = (error as { retryAfterHeader?: string })?.retryAfterHeader;
             if (!header) return undefined;
             const parsed = parseInt(header, 10);
             return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : undefined;
@@ -375,11 +383,17 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
               const estimate = Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4);
               throw new PromptTooLargeError(estimate, `openrouter/${model}`, new Error(errorText));
             }
-            const err = new Error(`OpenRouter stream error ${response.status}: ${errorText}`);
-            (err as { status?: number }).status = response.status;
-            const retryAfter = response.headers.get('retry-after');
-            if (retryAfter) (err as { retryAfterHeader?: string }).retryAfterHeader = retryAfter;
-            throw err;
+            const normalized = classifyProviderError({
+              kind: 'http',
+              providerId,
+              tier: config.tier,
+              providerName: 'OpenRouter',
+              model,
+              status: response.status,
+              bodyText: errorText,
+              retryAfterHeader: response.headers.get('retry-after'),
+            });
+            throw new LLMProviderError(normalized);
           }
 
           const reader = response.body.getReader();
@@ -476,6 +490,9 @@ export function createOpenRouterProvider(config: OpenRouterProviderConfig): LLMP
           retryableStatuses: DEFAULT_RETRYABLE_STATUSES,
           ...effectiveStreamTimeouts,
           parseRetryAfter: (error: unknown) => {
+            if (error instanceof LLMProviderError && error.normalized.retryAfterMs !== undefined) {
+              return error.normalized.retryAfterMs;
+            }
             const header = (error as { retryAfterHeader?: string })?.retryAfterHeader;
             if (!header) return undefined;
             const parsed = parseInt(header, 10);

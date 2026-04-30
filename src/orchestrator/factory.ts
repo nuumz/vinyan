@@ -67,10 +67,7 @@ import type { PluginRegistry } from '../plugin/registry.ts';
 import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
 import { SkillArtifactStore } from '../skills/artifact-store.ts';
 import { buildSyncSkillResolver } from '../skills/sync-skill-resolver.ts';
-import {
-  createSimpleSkillRegistry,
-  type SimpleSkillRegistry,
-} from '../skills/simple/registry.ts';
+import { createSimpleSkillRegistry, type SimpleSkillRegistry } from '../skills/simple/registry.ts';
 import { AutonomousSkillCreator } from '../skills/autonomous/creator.ts';
 import { buildLLMDraftGenerator } from '../skills/autonomous/draft-generator-llm.ts';
 import { buildImporterCriticFn } from '../skills/hub/critic-adapter.ts';
@@ -132,6 +129,8 @@ import { startLLMProxy } from './llm/llm-proxy.ts';
 import { LLMReasoningEngine, ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
 import { registerOpenRouterProviders } from './llm/openrouter-provider.ts';
 import { compressPerception } from './llm/perception-compressor.ts';
+import { applyGovernanceToRegistry } from './llm/provider-governance.ts';
+import { ProviderHealthStore } from './llm/provider-health.ts';
 import { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { buildMcpToolMap } from './mcp/mcp-tool-adapter.ts';
 import { OracleEMACalibrator } from './monitoring/oracle-ema-calibrator.ts';
@@ -590,6 +589,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let goalLoopConfig: { enabled: boolean; maxOuterIterations: number; goalSatisfactionThreshold: number } | undefined;
   // Wave 3: Agent-Facing Memory API — default ON (additive).
   let agentMemoryEnabled = true;
+  // C1: critic historical-adversary mode — default OFF (opt-in).
+  let criticHistoricalAdversaryEnabled = false;
   // Wave 2: Replan Engine config (gated OFF by default, requires goalLoop).
   let replanConfig: ReplanEngineConfig | undefined;
   // Wave 5a: Reactive micro-learning config (gated OFF by default).
@@ -635,6 +636,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       }
       if (vinyanConfig.orchestrator.agent_memory) {
         agentMemoryEnabled = vinyanConfig.orchestrator.agent_memory.enabled !== false;
+      }
+      if (vinyanConfig.orchestrator.critic) {
+        criticHistoricalAdversaryEnabled = vinyanConfig.orchestrator.critic.historical_adversary_enabled === true;
       }
       const rp = vinyanConfig.orchestrator.replan;
       if (rp) {
@@ -721,12 +725,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         // persona overclaim. Reuses the existing `bid_accuracy` table from
         // migration 001; no new migration needed.
         const bidAccuracyStore = db ? new BidAccuracyStore(db.getDb()) : undefined;
-        marketScheduler = new MarketScheduler(
-          economyConfig.market,
-          bus,
-          personaOverclaimStore,
-          bidAccuracyStore,
-        );
+        marketScheduler = new MarketScheduler(economyConfig.market, bus, personaOverclaimStore, bidAccuracyStore);
       }
       // Economy L3→K2.1: settlement → trust ledger feedback loop
       if (providerTrustStore) {
@@ -1113,6 +1112,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           agentProposalStore,
           costLedger,
           marketScheduler,
+          // Phase C2: rebuild `<workspace>/.vinyan/knowledge-index.md` at the
+          // end of every cycle so the catalog stays current with code drift.
+          knowledgeIndexWorkspace: workspace,
         })
       : undefined;
 
@@ -1572,9 +1574,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // inert across Phases 1-15.5.
   const skillResolverResult = buildSyncSkillResolver(join(workspace, '.vinyan', 'skills'));
   if (skillResolverResult.loadedCount > 0) {
-    console.log(
-      `[vinyan] Skill resolver: ${skillResolverResult.loadedCount} skill(s) loaded from .vinyan/skills/`,
-    );
+    console.log(`[vinyan] Skill resolver: ${skillResolverResult.loadedCount} skill(s) loaded from .vinyan/skills/`);
   }
   if (skillResolverResult.failedIds.length > 0) {
     console.warn(
@@ -1610,7 +1610,21 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // ACL/tier/auction pipeline. mode='epistemic' disables this layer in favor
   // of the historical stack; mode='both' keeps both active. The watcher
   // self-refreshes the registry as files change.
-  const skillsCfg = (loadConfig(workspace) as { skills?: { mode?: string; simple?: { enabled?: boolean; user_dir?: string; project_dir?: string; watcher_debounce_ms?: number; match_threshold?: number; match_top_k?: number } } }).skills;
+  const skillsCfg = (
+    loadConfig(workspace) as {
+      skills?: {
+        mode?: string;
+        simple?: {
+          enabled?: boolean;
+          user_dir?: string;
+          project_dir?: string;
+          watcher_debounce_ms?: number;
+          match_threshold?: number;
+          match_top_k?: number;
+        };
+      };
+    }
+  ).skills;
   const skillsMode = skillsCfg?.mode ?? 'simple';
   const simpleEnabled = skillsCfg?.simple?.enabled ?? true;
   let simpleSkillRegistry: SimpleSkillRegistry | undefined;
@@ -1619,7 +1633,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       workspace,
       ...(skillsCfg?.simple?.user_dir !== undefined ? { userSkillsDir: skillsCfg.simple.user_dir } : {}),
       ...(skillsCfg?.simple?.project_dir !== undefined ? { projectSkillsDir: skillsCfg.simple.project_dir } : {}),
-      ...(skillsCfg?.simple?.watcher_debounce_ms !== undefined ? { watcherDebounceMs: skillsCfg.simple.watcher_debounce_ms } : {}),
+      ...(skillsCfg?.simple?.watcher_debounce_ms !== undefined
+        ? { watcherDebounceMs: skillsCfg.simple.watcher_debounce_ms }
+        : {}),
       watch: true,
     });
     const matcherOpts: { threshold?: number; topK?: number } = {};
@@ -1678,13 +1694,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // Both layers must be active for graduation to make sense: 'simple' alone
   // has no heavy stack to promote into; 'epistemic' alone has no simple
   // skills to source from. The promoter runs every sleep cycle.
-  if (
-    sleepCycleRunner &&
-    skillOutcomeStore &&
-    db &&
-    simpleSkillRegistry &&
-    skillsMode === 'both'
-  ) {
+  if (sleepCycleRunner && skillOutcomeStore && db && simpleSkillRegistry && skillsMode === 'both') {
     try {
       const bridgeLedger = new SkillTrustLedgerStore(db.getDb());
       sleepCycleRunner.setSimpleSkillPromoter({
@@ -1944,6 +1954,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           selfModel,
         })
       : undefined,
+    // C1: opt-in flag — when true and `agentMemory` is wired, the critic
+    // call site hydrates `CriticContext` with prior failures + base-rate.
+    criticHistoricalAdversaryEnabled,
     skillHintsConfig,
     goalGroundingPolicy,
     // Ecosystem: dispatch-scoped task facts so CommitmentBridge can resolve
@@ -1988,7 +2001,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     simpleSkillMatcherOpts:
       skillsCfg?.simple?.match_threshold !== undefined || skillsCfg?.simple?.match_top_k !== undefined
         ? {
-            ...(skillsCfg?.simple?.match_threshold !== undefined ? { threshold: skillsCfg.simple.match_threshold } : {}),
+            ...(skillsCfg?.simple?.match_threshold !== undefined
+              ? { threshold: skillsCfg.simple.match_threshold }
+              : {}),
             ...(skillsCfg?.simple?.match_top_k !== undefined ? { topK: skillsCfg.simple.match_top_k } : {}),
           }
         : undefined,
@@ -2433,21 +2448,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // after the outcome record is written.
   const simpleSkillInvocations = new Map<string, Set<string>>();
   trackBusListener(
-    bus.on(
-      'skill:simple_invoked',
-      ({ taskId, skillName }: { taskId: string; skillName: string }) => {
-        try {
-          let set = simpleSkillInvocations.get(taskId);
-          if (!set) {
-            set = new Set<string>();
-            simpleSkillInvocations.set(taskId, set);
-          }
-          set.add(skillName);
-        } catch {
-          /* observational */
+    bus.on('skill:simple_invoked', ({ taskId, skillName }: { taskId: string; skillName: string }) => {
+      try {
+        let set = simpleSkillInvocations.get(taskId);
+        if (!set) {
+          set = new Set<string>();
+          simpleSkillInvocations.set(taskId, set);
         }
-      },
-    ),
+        set.add(skillName);
+      } catch {
+        /* observational */
+      }
+    }),
   );
 
   const orchestrator: Orchestrator = {
@@ -2476,13 +2488,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       if (deps.skillOutcomeStore && deps.agentRegistry) {
         try {
           const { recordTaskOutcomeForPersona } = await import('./agents/task-outcome-recorder.ts');
-          recordTaskOutcomeForPersona(
-            input,
-            result,
-            deps.agentRegistry,
-            deps.skillOutcomeStore,
-            viewedSkillIds,
-          );
+          recordTaskOutcomeForPersona(input, result, deps.agentRegistry, deps.skillOutcomeStore, viewedSkillIds);
         } catch {
           /* outcome recording is observational; never fail the task on it */
         }
@@ -3145,6 +3151,15 @@ function createDefaultRegistry(bus?: import('../core/bus.ts').VinyanBus): LLMPro
       // Anthropic SDK not available
     }
   }
+
+  // Outbound provider governance — every provider call from now on flows
+  // through the wrapper: 429/RESOURCE_EXHAUSTED is normalized, the failing
+  // quota bucket is cooled down in the shared `ProviderHealthStore`, and the
+  // registry's selection skips the cooled provider until its retry-after
+  // window expires. Without this wrapper Vinyan keeps re-picking the
+  // exhausted Gemma free-tier and emits a retry storm.
+  const healthStore = new ProviderHealthStore(bus ? { bus } : {});
+  applyGovernanceToRegistry(registry, { healthStore, ...(bus ? { bus } : {}) });
 
   return registry;
 }

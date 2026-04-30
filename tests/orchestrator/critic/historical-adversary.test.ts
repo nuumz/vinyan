@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import type { RejectedApproachRow } from '../../../src/db/rejected-approach-store.ts';
 import type { AgentMemoryAPI } from '../../../src/orchestrator/agent-memory/agent-memory-api.ts';
-import { buildHistoricalAdversaryContext } from '../../../src/orchestrator/critic/historical-adversary.ts';
+import {
+  buildHistoricalAdversaryContext,
+  maybeAttachHistoricalAdversary,
+} from '../../../src/orchestrator/critic/historical-adversary.ts';
 import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -206,5 +209,73 @@ describe('buildHistoricalAdversaryContext', () => {
     expect(fragment.priorFailedApproaches).toBeUndefined();
     expect(fragment.priorTraceSummary?.totalAttempts).toBe(1);
     expect(fragment.priorTraceSummary?.successCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maybeAttachHistoricalAdversary — orchestrator wiring helper
+// ---------------------------------------------------------------------------
+
+describe('maybeAttachHistoricalAdversary', () => {
+  const baseCtx = { riskScore: 0.4, routingLevel: 2 };
+
+  test('flag off → returns base context unchanged (no fragment fields added)', async () => {
+    const memory = makeMemory({ rejected: [{ approach: 'a', failure_oracle: 'lint', created_at: 1 }] });
+    const result = await maybeAttachHistoricalAdversary(
+      baseCtx,
+      { agentMemory: memory, criticHistoricalAdversaryEnabled: false },
+      { taskSignature: 'sig', fileTarget: 'src/x.ts' },
+    );
+    expect(result).toEqual(baseCtx);
+    expect((result as { priorFailedApproaches?: unknown }).priorFailedApproaches).toBeUndefined();
+  });
+
+  test('flag on but agentMemory missing → returns base context unchanged', async () => {
+    const result = await maybeAttachHistoricalAdversary(
+      baseCtx,
+      { criticHistoricalAdversaryEnabled: true },
+      { taskSignature: 'sig' },
+    );
+    expect(result).toEqual(baseCtx);
+  });
+
+  test('flag on + agentMemory wired but no taskSignature → returns base context unchanged', async () => {
+    const memory = makeMemory({ rejected: [{ approach: 'a', failure_oracle: 'lint', created_at: 1 }] });
+    const result = await maybeAttachHistoricalAdversary(
+      baseCtx,
+      { agentMemory: memory, criticHistoricalAdversaryEnabled: true },
+      { taskSignature: undefined },
+    );
+    expect(result).toEqual(baseCtx);
+  });
+
+  test('flag on + agentMemory wired + signature present → merges fragment into context', async () => {
+    const memory = makeMemory({
+      rejected: [
+        { approach: 'a', failure_oracle: 'lint', created_at: 100 },
+        { approach: 'a', failure_oracle: 'lint', created_at: 200 },
+      ],
+      traces: [{ outcome: 'failure', routingLevel: 2 }],
+    });
+    const result = await maybeAttachHistoricalAdversary(
+      baseCtx,
+      { agentMemory: memory, criticHistoricalAdversaryEnabled: true },
+      { taskSignature: 'sig' },
+    );
+    expect(result.riskScore).toBe(0.4);
+    expect(result.routingLevel).toBe(2);
+    expect(result.priorFailedApproaches?.[0]?.occurrences).toBe(2);
+    expect(result.priorTraceSummary?.totalAttempts).toBe(1);
+    expect(result.priorTraceSummary?.failureCount).toBe(1);
+  });
+
+  test('preserves null taskSignature → no-op (treats null same as undefined)', async () => {
+    const memory = makeMemory({ rejected: [{ approach: 'a', failure_oracle: 'lint', created_at: 1 }] });
+    const result = await maybeAttachHistoricalAdversary(
+      baseCtx,
+      { agentMemory: memory, criticHistoricalAdversaryEnabled: true },
+      { taskSignature: null },
+    );
+    expect(result).toEqual(baseCtx);
   });
 });

@@ -21,7 +21,18 @@ import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
-import type { LLMProvider, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
+import type { LLMProvider, LLMResponse, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
+
+function mockResponse(
+  partial: Pick<LLMResponse, 'content' | 'tokensUsed'> & Partial<LLMResponse>,
+): LLMResponse {
+  return {
+    toolCalls: [],
+    model: 'mock/test',
+    stopReason: 'end_turn',
+    ...partial,
+  };
+}
 
 const TEST_DIR = join(tmpdir(), `vinyan-api-workflow-test-${Date.now()}`);
 const TOKEN_PATH = join(TEST_DIR, 'api-token');
@@ -34,10 +45,8 @@ let capturedEvents: Array<{ name: string; payload: unknown }>;
 // Mutable handle so individual `human-input/suggest` tests can swap the
 // provider's `generate` behavior (success / parse-fallback / error / no
 // items) without rebuilding the whole server.
-let suggestProviderImpl: LLMProvider['generate'] = async () => ({
-  content: '',
-  tokensUsed: { input: 0, output: 0 },
-});
+let suggestProviderImpl: LLMProvider['generate'] = async () =>
+  mockResponse({ content: '', tokensUsed: { input: 0, output: 0 } });
 
 function req(
   path: string,
@@ -185,10 +194,11 @@ describe('POST /api/v1/sessions/:id/workflow/reject', () => {
 
 describe('POST /api/v1/sessions/:id/workflow/human-input/suggest', () => {
   test('returns LLM-supplied suggestions parsed from strict JSON', async () => {
-    suggestProviderImpl = async () => ({
-      content: '{"suggestions":["Climate change","Universal basic income","AGI alignment"]}',
-      tokensUsed: { input: 10, output: 20 },
-    });
+    suggestProviderImpl = async () =>
+      mockResponse({
+        content: '{"suggestions":["Climate change","Universal basic income","AGI alignment"]}',
+        tokensUsed: { input: 10, output: 20 },
+      });
     const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
       taskId: 'task-hi',
       stepId: 'step1',
@@ -215,11 +225,12 @@ describe('POST /api/v1/sessions/:id/workflow/human-input/suggest', () => {
     // Some `fast`-tier providers wrap structured output in markdown fences
     // even with strict-JSON system prompts. The endpoint must not surface
     // those as 502s as long as a usable list is recoverable.
-    suggestProviderImpl = async () => ({
-      content:
-        'Here are three ideas for you:\n```json\n{"suggestions":["Quantum computing","Neuro-symbolic AI","Open-source LLMs"]}\n```\nPick whichever resonates.',
-      tokensUsed: { input: 10, output: 30 },
-    });
+    suggestProviderImpl = async () =>
+      mockResponse({
+        content:
+          'Here are three ideas for you:\n```json\n{"suggestions":["Quantum computing","Neuro-symbolic AI","Open-source LLMs"]}\n```\nPick whichever resonates.',
+        tokensUsed: { input: 10, output: 30 },
+      });
     const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
       taskId: 'task-hi',
       stepId: 'step1',
@@ -232,10 +243,11 @@ describe('POST /api/v1/sessions/:id/workflow/human-input/suggest', () => {
   });
 
   test('falls back to numbered/bulleted line parsing when no JSON is found', async () => {
-    suggestProviderImpl = async () => ({
-      content: '1. Climate change\n2. Universal basic income\n3. AGI alignment',
-      tokensUsed: { input: 5, output: 15 },
-    });
+    suggestProviderImpl = async () =>
+      mockResponse({
+        content: '1. Climate change\n2. Universal basic income\n3. AGI alignment',
+        tokensUsed: { input: 5, output: 15 },
+      });
     const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
       taskId: 'task-hi',
       stepId: 'step1',
@@ -247,10 +259,11 @@ describe('POST /api/v1/sessions/:id/workflow/human-input/suggest', () => {
   });
 
   test('returns 502 when the LLM returns nothing parseable', async () => {
-    suggestProviderImpl = async () => ({
-      content: 'I am not sure what to suggest.',
-      tokensUsed: { input: 5, output: 8 },
-    });
+    suggestProviderImpl = async () =>
+      mockResponse({
+        content: 'I am not sure what to suggest.',
+        tokensUsed: { input: 5, output: 8 },
+      });
     const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
       taskId: 'task-hi',
       stepId: 'step1',
@@ -291,10 +304,11 @@ describe('POST /api/v1/sessions/:id/workflow/human-input/suggest', () => {
     // returning more is fine; the endpoint slices the array to the
     // capped count). Easy to verify by giving the LLM a 6-item answer
     // and asserting only 4 come back.
-    suggestProviderImpl = async () => ({
-      content: '{"suggestions":["a","b","c","d","e","f"]}',
-      tokensUsed: { input: 5, output: 15 },
-    });
+    suggestProviderImpl = async () =>
+      mockResponse({
+        content: '{"suggestions":["a","b","c","d","e","f"]}',
+        tokensUsed: { input: 5, output: 15 },
+      });
     const res = await postJson('/api/v1/sessions/sess-1/workflow/human-input/suggest', {
       taskId: 'task-hi',
       stepId: 'step1',

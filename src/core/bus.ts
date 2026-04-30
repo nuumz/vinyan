@@ -130,6 +130,16 @@ export interface VinyanBusEvents {
     capabilitiesPromoted?: number;
     agentProposalsCreated?: number;
   };
+  // Phase C2: knowledge-index rebuild status emitted at the end of run().
+  'sleep_cycle:knowledge_index_rebuilt': {
+    cycleId: string;
+    modules: number;
+    path: string;
+  };
+  'sleep_cycle:knowledge_index_failed': {
+    cycleId: string;
+    reason: string;
+  };
 
   // Self-Model (Phase 1C.1)
   'selfmodel:predict': { prediction: SelfModelPrediction };
@@ -282,6 +292,19 @@ export interface VinyanBusEvents {
 
   // Human approval gate (A6: zero-trust for high-risk production tasks)
   'task:approval_required': { taskId: string; riskScore: number; reason: string };
+  /**
+   * Fired whenever an A6 task approval transitions out of the pending map —
+   * explicit human resolve via API, programmatic resolve, or auto-rejection
+   * by the timeout timer. Carries the final decision and the source so
+   * cross-tab UIs can drop their cached approval card the moment the gate
+   * clears, without polling. Persistence is intentionally skipped (the
+   * `task:complete` / `task:escalate` row already records the outcome).
+   */
+  'task:approval_resolved': {
+    taskId: string;
+    decision: 'approved' | 'rejected';
+    source: 'human' | 'timeout' | 'shutdown';
+  };
 
   // Agentic SDLC — Spec Refinement phase (between Perceive and Predict)
   'spec:drafted': {
@@ -737,6 +760,90 @@ export interface VinyanBusEvents {
     attempt: number;
     /** Total elapsed ms since the current attempt started. */
     durationMs: number;
+  };
+  /**
+   * Outbound provider quota / rate-limit governance — surfaced when an LLM
+   * provider returns 429 RESOURCE_EXHAUSTED (Google AI Studio quota), 429
+   * rate_limited, or any other failure that carries a `retryAfterMs`. The
+   * `taskId` is resolved exactly like `llm:retry_attempt`. Observational
+   * only (A3) — governance branches consume the normalized error directly.
+   *
+   * Carries the canonical normalized fields (kind/status/retryAfterMs/
+   * quotaMetric/quotaId) so a UI can render a "rate-limited until 12:34"
+   * pill without re-parsing provider error bodies.
+   */
+  'llm:provider_quota_exhausted': {
+    taskId: string;
+    providerId: string;
+    tier?: string;
+    model?: string;
+    errorKind: 'quota_exhausted' | 'rate_limited';
+    status?: number;
+    retryAfterMs?: number;
+    quotaMetric?: string;
+    quotaId?: string;
+    message: string;
+  };
+  /** Cooldown bucket opened in the health store. Drives the dashboard "cooled-down" pill. */
+  'llm:provider_cooldown_started': {
+    taskId?: string;
+    providerId: string;
+    tier?: string;
+    model?: string;
+    errorKind: import('../orchestrator/llm/provider-errors.ts').LLMProviderErrorKind;
+    cooldownUntil: number;
+    retryAfterMs?: number;
+    quotaMetric?: string;
+    quotaId?: string;
+    failureCount: number;
+    message: string;
+  };
+  /** Selection skipped a provider because its bucket was still in cooldown. */
+  'llm:provider_cooldown_skipped': {
+    taskId?: string;
+    providerId: string;
+    tier?: string;
+    model?: string;
+    cooldownUntil: number;
+    rationale: string;
+  };
+  /** Selection picked an alternate provider because the preferred one was unavailable. */
+  'llm:provider_fallback_selected': {
+    taskId?: string;
+    fromProviderId: string;
+    fromTier?: string;
+    toProviderId: string;
+    toTier?: string;
+    rationale: string;
+  };
+  /** No provider available for this tier / capability — task degrades or fails honestly. */
+  'llm:provider_unavailable': {
+    taskId?: string;
+    requestedTier?: string;
+    rationale: string;
+    nextRetryHintMs?: number;
+  };
+  /** A previously cooled-down provider successfully completed a request. */
+  'llm:provider_recovered': {
+    providerId: string;
+    tier?: string;
+    model?: string;
+    cooldownDurationMs: number;
+  };
+  /**
+   * Internal — emitted by `ProviderHealthStore.emit` so non-bus subscribers
+   * (status endpoint cache, metrics) can listen without hooking the public
+   * lifecycle events. NOT in the SSE/event-manifest delivery list.
+   */
+  'llm:provider_health_changed': {
+    type: 'cooldown_started' | 'cooldown_extended' | 'recovered' | 'unavailable';
+    providerId: string;
+    tier?: string;
+    model?: string;
+    cooldownUntil: number;
+    failureCount: number;
+    kind: import('../orchestrator/llm/provider-errors.ts').LLMProviderErrorKind;
+    taskId?: string;
   };
   // EO #5: Dual-track transcript compaction
   'agent:transcript_compaction': { taskId: string; evidenceTurns: number; narrativeTurns: number; tokensSaved: number };

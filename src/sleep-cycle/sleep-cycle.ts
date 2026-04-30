@@ -263,6 +263,13 @@ export class SleepCycleRunner {
      * See docs/design/commonsense-substrate-system-design.md §6 (M4).
      */
     commonsenseRegistry?: CommonSenseRegistry;
+    /**
+     * Phase C2 — workspace root for periodic knowledge-index rebuild.
+     * When set, the runner regenerates `<workspace>/.vinyan/knowledge-index.md`
+     * at the end of each cycle so the catalog stays current with code drift.
+     * Absent → no-op. See docs/design/knowledge-loop-rfc.md §6.
+     */
+    knowledgeIndexWorkspace?: string;
   }) {
     this.traceStore = options.traceStore;
     this.patternStore = options.patternStore;
@@ -285,7 +292,11 @@ export class SleepCycleRunner {
     this.decayExperiment = createExperimentState();
     this.sentinelMaxNoopCycles = options.sentinelMaxNoopCycles ?? DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
     this.commonsenseRegistry = options.commonsenseRegistry;
+    this.knowledgeIndexWorkspace = options.knowledgeIndexWorkspace;
   }
+
+  /** Phase C2: workspace root for periodic knowledge-index rebuild (optional). */
+  private readonly knowledgeIndexWorkspace?: string;
 
   /** M4.5 — registry handle, optional. Set via constructor or post-wiring. */
   private commonsenseRegistry?: CommonSenseRegistry;
@@ -1039,6 +1050,25 @@ export class SleepCycleRunner {
       this.consecutiveNoopCycles++;
     }
     this.lastObservedTraceCount = stats.traceCount;
+
+    // Phase C2: rebuild knowledge-index catalog. Best-effort — failures here
+    // are observability noise, never a sleep-cycle abort. See RFC §6.
+    if (this.knowledgeIndexWorkspace) {
+      try {
+        const { rebuildKnowledgeIndex } = await import('../orchestrator/knowledge-index/builder.ts');
+        const result = rebuildKnowledgeIndex(this.knowledgeIndexWorkspace);
+        this.bus?.emit('sleep_cycle:knowledge_index_rebuilt', {
+          cycleId,
+          modules: result.index.modules.length,
+          path: result.path,
+        });
+      } catch (err) {
+        this.bus?.emit('sleep_cycle:knowledge_index_failed', {
+          cycleId,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     return {
       cycleId,

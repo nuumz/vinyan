@@ -703,6 +703,10 @@ export class VinyanAPIServer {
       return this.handleListProviders();
     }
 
+    if (method === 'GET' && path === '/api/v1/providers/health') {
+      return this.handleProviderHealth();
+    }
+
     if (method === 'GET' && path === '/api/v1/federation') {
       return this.handleFederation();
     }
@@ -2023,6 +2027,42 @@ export class VinyanAPIServer {
     if (!store) return jsonResponse({ enabled: false, providers: [] });
     const providers = store.getAllProviders();
     return jsonResponse({ enabled: true, providers });
+  }
+
+  /**
+   * Outbound provider quota / cooldown state. Surfaces the same shape the UI
+   * needs to render a "rate-limited until 12:34" pill: which providers are
+   * cooled down right now, until when, and why. Empty list ⇒ all healthy.
+   */
+  private handleProviderHealth(): Response {
+    const registry = this.deps.llmRegistry;
+    const healthStore = registry?.getHealthStore();
+    if (!healthStore) {
+      return jsonResponse({ enabled: false, records: [], providers: [] });
+    }
+    const now = Date.now();
+    const records = healthStore.listHealth().map((r) => ({
+      providerId: r.providerId,
+      tier: r.tier ?? null,
+      model: r.model ?? null,
+      providerName: r.providerName ?? null,
+      quotaMetric: r.quotaMetric ?? null,
+      quotaId: r.quotaId ?? null,
+      cooldownUntil: r.cooldownUntil,
+      retryAfterMs: Math.max(0, r.cooldownUntil - now),
+      openedAt: r.openedAt,
+      failureCount: r.failureCount,
+      lastKind: r.lastKind,
+      lastErrorMessage: r.lastErrorMessage,
+      sourceTaskId: r.sourceTaskId ?? null,
+      cooled: r.cooldownUntil > now,
+    }));
+    const providers = (registry?.listProviders() ?? []).map((p) => ({
+      id: p.id,
+      tier: p.tier,
+      available: healthStore.isAvailable({ id: p.id }, now),
+    }));
+    return jsonResponse({ enabled: true, records, providers });
   }
 
   private handleFederation(): Response {

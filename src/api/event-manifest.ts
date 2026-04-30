@@ -62,11 +62,12 @@ export interface EventManifestEntry {
 export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   // ── Task lifecycle ───────────────────────────────────────────────────
   { event: 'task:start', sse: true, record: true, scope: 'task' },
-  { event: 'task:complete', sse: true, record: false, scope: 'task' },
+  { event: 'task:complete', sse: true, record: true, scope: 'task' },
   { event: 'task:escalate', sse: true, record: true, scope: 'task' },
   { event: 'task:timeout', sse: true, record: true, scope: 'task' },
   { event: 'task:stage_update', sse: true, record: true, scope: 'task' },
   { event: 'task:approval_required', sse: true, record: false, scope: 'task' },
+  { event: 'task:approval_resolved', sse: true, record: false, scope: 'task' },
   { event: 'task:retry_requested', sse: true, record: false, scope: 'task' },
 
   // ── Pipeline timing / grounding ─────────────────────────────────────
@@ -100,6 +101,17 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'agent:plan_update', sse: true, record: true, scope: 'task' },
   { event: 'llm:stream_delta', sse: true, record: true, scope: 'task' },
   { event: 'agent:clarification_requested', sse: true, record: true, scope: 'task' },
+
+  // ── LLM provider governance — outbound quota / rate-limit visibility ───
+  // `taskId` is required on quota_exhausted (the call has a triggering task);
+  // optional on the others (selection-time events also fire from background
+  // sweeps where no task is in flight).
+  { event: 'llm:provider_quota_exhausted', sse: true, record: true, scope: 'task' },
+  { event: 'llm:provider_cooldown_started', sse: true, record: true, scope: 'task' },
+  { event: 'llm:provider_cooldown_skipped', sse: true, record: false, scope: 'task' },
+  { event: 'llm:provider_fallback_selected', sse: true, record: true, scope: 'task' },
+  { event: 'llm:provider_unavailable', sse: true, record: true, scope: 'task' },
+  { event: 'llm:provider_recovered', sse: true, record: false, scope: 'global', sessionBypass: true },
 
   // ── Capability-first observability (process timeline cards) ─────────
   { event: 'agent:routed', sse: true, record: true, scope: 'task' },

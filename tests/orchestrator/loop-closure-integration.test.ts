@@ -9,6 +9,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -52,7 +53,7 @@ function makeInput(goal: string): TaskInput {
     source: 'cli',
     goal,
     taskType: 'code',
-    agentId: 'developer',
+    agentId: asPersonaId('developer'),
     budget: { maxTokens: 1000, maxDurationMs: 10_000, maxRetries: 1 },
   };
 }

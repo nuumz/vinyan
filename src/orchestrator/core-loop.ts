@@ -13,6 +13,7 @@
  */
 
 import { resolve as resolvePath } from 'node:path';
+import { asPersonaId } from '../core/agent-vocabulary.ts';
 import type { VinyanBus } from '../core/bus.ts';
 import { LEVEL_CONFIG, withLevel } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
@@ -1088,10 +1089,10 @@ async function prepareExecution(
             try {
               const spec = synthesizeAgent(plan);
               deps.agentRegistry.registerAgent(spec, { taskId: input.id });
-              input.agentId = spec.id;
+              input.agentId = asPersonaId(spec.id);
               intentResolution = {
                 ...intentResolution,
-                agentId: spec.id,
+                agentId: asPersonaId(spec.id),
                 agentSelectionReason: `synthesized task-scoped agent (gap=${reroute.capabilityAnalysis.gapNormalized.toFixed(2)})`,
                 capabilityAnalysis: reroute.capabilityAnalysis,
                 syntheticAgentId: spec.id,
@@ -1208,7 +1209,9 @@ async function prepareExecution(
       });
     }
 
-    intentResolution = enforceSubTaskLeafStrategy(input, intentResolution);
+    if (intentResolution) {
+      intentResolution = enforceSubTaskLeafStrategy(input, intentResolution);
+    }
   }
 
   // G2: Wire archiver for rejected approaches

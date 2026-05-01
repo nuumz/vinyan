@@ -16,6 +16,7 @@ import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { Turn } from '../types.ts';
 import type { AgentRegistry } from '../agents/registry.ts';
 import { buildKnowledgeContext, type KnowledgeContextDeps } from './knowledge-context.ts';
+import { normalizeWorkflowPlan } from './plan-normalizer.ts';
 import { formatSessionTranscript } from './session-transcript.ts';
 import { type WorkflowPlan, WorkflowPlanSchema } from './types.ts';
 
@@ -220,7 +221,13 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
       // strips the offending agentId so the executor uses default routing
       // — the planner's intent to delegate is preserved, but the delegate
       // is honestly anonymous rather than misattributed.
-      const plan = sanitizeDelegateAgentIds(rawPlan, deps.agentRegistry, deps.bus);
+      const sanitized = sanitizeDelegateAgentIds(rawPlan, deps.agentRegistry, deps.bus);
+      // Q1+Q2 — deterministic post-parse normalization. Fills in the
+      // step-level retry budget and the auto-fallback strategy for
+      // single delegate-sub-agent plans. Pure function; runs before
+      // the plan is handed to the executor so what gets persisted is
+      // exactly what the executor will dispatch.
+      const plan = normalizeWorkflowPlan(sanitized);
 
       deps.bus?.emit('workflow:plan_created', {
         goal: opts.goal,
@@ -338,7 +345,10 @@ function formatAgentRoster(registry: AgentRegistry): string {
 }
 
 function fallbackPlan(goal: string): WorkflowPlan {
-  return {
+  // Run through the normalizer for consistency — it's a no-op on this
+  // shape (single llm-reasoning step), but funnelling every plan through
+  // the same gate means the executor never sees an unnormalized plan.
+  return normalizeWorkflowPlan({
     goal,
     steps: [
       {
@@ -352,5 +362,5 @@ function fallbackPlan(goal: string): WorkflowPlan {
       },
     ],
     synthesisPrompt: 'Return the result of step1 directly.',
-  };
+  });
 }

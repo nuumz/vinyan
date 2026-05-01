@@ -7,6 +7,7 @@
  * Workflow Executor dispatches each step to the appropriate subsystem.
  */
 import { z } from 'zod/v4';
+import { isPersonaIdShape, type PersonaId } from '../../core/agent-vocabulary.ts';
 
 export type WorkflowStepStrategy =
   | 'full-pipeline'
@@ -16,6 +17,36 @@ export type WorkflowStepStrategy =
   | 'delegate-sub-agent'
   | 'human-input'
   | 'external-coding-cli';
+
+/**
+ * Hard ceiling for `WorkflowStep.retryBudget`. The retry loop is bounded
+ * for two reasons:
+ *
+ *   - A6 zero-trust: a runaway delegate that keeps timing out cannot be
+ *     allowed to consume infinite parent budget by retrying itself.
+ *   - A9 graceful degradation: retries are one of several explicit
+ *     degradation rungs (retry → fallbackStrategy → user gate). Letting
+ *     a single rung absorb 10+ attempts breaks that ladder.
+ *
+ * Three is the audit-friendly cap — same as the parent-task budget's
+ * `maxRetries`. Operators wanting more should split the step instead.
+ */
+export const MAX_STEP_RETRY_BUDGET = 3;
+
+/**
+ * Default retry budget for `delegate-sub-agent` steps when the planner
+ * (or operator) does not specify one. Set to 1 because:
+ *
+ *   - Most transient failures (timeout, provider quota, single-shot
+ *     subprocess crash) clear on a second attempt.
+ *   - Doubling the wall-clock for a step that already failed is the
+ *     worst-case visible to a watching user; retrying twice (=3 total
+ *     attempts) before falling back is rarely worth the wait.
+ *
+ * Non-delegate strategies default to 0 — preserves current behaviour
+ * for `llm-reasoning`, `direct-tool`, etc. unless the planner opts in.
+ */
+export const DEFAULT_DELEGATE_RETRY_BUDGET = 1;
 
 export interface WorkflowStep {
   id: string;
@@ -38,9 +69,39 @@ export interface WorkflowStep {
    * produces. Phase-13 A1 enforcement at the executor overrides this with the
    * canonical Verifier persona when a verify-style step delegates from a
    * code-mutation parent — see `selectVerifierForDelegation`.
+   *
+   * Branded `PersonaId` (lowercase ASCII slug). Validated at the planner
+   * boundary by `WorkflowStepSchema` and `sanitizeDelegateAgentIds`; the
+   * branded type prevents arbitrary strings (LLM hallucinations, manual
+   * overrides) from sneaking past type-checking into the executor.
    */
-  agentId?: string;
+  agentId?: PersonaId;
   fallbackStrategy?: WorkflowStepStrategy;
+  /**
+   * Provenance of `fallbackStrategy` (A8). When the planner emits an
+   * explicit fallback we keep it as `'planner'`. When the deterministic
+   * post-parse normalizer adds one (single delegate-sub-agent step with
+   * no fallback), it sets `'auto-normalizer'`. Used by the executor to
+   * stamp the `workflow:step_fallback` event so dashboards can tell apart
+   * "the planner thought ahead" from "Vinyan's safety net kicked in".
+   */
+  fallbackOrigin?: 'planner' | 'auto-normalizer';
+  /**
+   * Bounded number of retry attempts for this step BEFORE the fallback
+   * strategy runs. `0` preserves the legacy single-attempt behaviour;
+   * `n > 0` means the executor may invoke the primary strategy up to
+   * `1 + n` total times when the failure is classified as transient.
+   *
+   * Hard-capped by {@link MAX_STEP_RETRY_BUDGET}. Defaults applied by
+   * the post-parse normalizer:
+   *   - `delegate-sub-agent` → {@link DEFAULT_DELEGATE_RETRY_BUDGET}
+   *   - everything else      → 0 (unchanged behaviour)
+   *
+   * Permanent failures (invalid config, missing tool, contract violation,
+   * empty response from a clean provider call) skip retry — see
+   * `isRetryableDelegateFailure` in `workflow-executor.ts`.
+   */
+  retryBudget?: number;
 }
 
 export interface WorkflowPlan {
@@ -62,13 +123,27 @@ export interface WorkflowStepResult {
    * assigned `step.agentId`. Lets the UI render "step3 was answered by
    * `architect`" without joining to the trace store. Undefined for
    * non-delegate steps or when the executor inherits the default agent.
+   *
+   * Branded `PersonaId` so result consumers see the same type as the
+   * planner-side `WorkflowStep.agentId`.
    */
-  agentId?: string;
+  agentId?: PersonaId;
   /**
    * Sub-task ID for `delegate-sub-agent` steps — `${parent.id}-delegate-${step.id}`.
    * Enables UI drill-down: "open the child trace for this delegate".
    */
   subTaskId?: string;
+  /**
+   * Set to `true` by the executor when the step's primary strategy
+   * failed and `fallbackStrategy` ran in its place. Consumers (the
+   * deterministic aggregator, the partial-failure preview, the chat
+   * UI's plan surface) MUST read this and refuse to attribute the
+   * output to the planner-assigned `step.agentId` — otherwise a
+   * generic LLM fallback's answer gets rendered under the requested
+   * persona's name (A2 honesty violation). Pairs with
+   * `WorkflowStepResult.agentId` being cleared on the same path.
+   */
+  fallbackUsed?: boolean;
 }
 
 export interface WorkflowResult {
@@ -103,8 +178,17 @@ export const WorkflowStepSchema = z.object({
    * "have N agents X" workflows where each step must run under a distinct
    * persona — without it every delegate goes to the same default agent and
    * the workflow degenerates into one model role-playing N personas.
+   *
+   * Schema validates the PersonaId shape (lowercase ASCII slug, 1-64
+   * chars) and brands the survivor. A planner-emitted id that fails the
+   * shape check gets dropped by `WorkflowPlanSchema.parse` rather than
+   * silently flowing into the executor as a bare string.
    */
-  agentId: z.string().optional(),
+  agentId: z
+    .string()
+    .refine(isPersonaIdShape, 'invalid PersonaId shape — must match /^[a-z][a-z0-9-]{0,63}$/')
+    .transform((v) => v as PersonaId)
+    .optional(),
   fallbackStrategy: z
     .enum([
       'full-pipeline',
@@ -115,6 +199,19 @@ export const WorkflowStepSchema = z.object({
       'human-input',
       'external-coding-cli',
     ])
+    .optional(),
+  fallbackOrigin: z.enum(['planner', 'auto-normalizer']).optional(),
+  /**
+   * Step-level retry budget (Q1). Optional — defaults applied by the
+   * post-parse normalizer. Clamped to `[0, MAX_STEP_RETRY_BUDGET]` so a
+   * planner that emits a too-large value is silently capped instead of
+   * letting a runaway LLM saturate the parent task's budget.
+   */
+  retryBudget: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_STEP_RETRY_BUDGET)
     .optional(),
 });
 

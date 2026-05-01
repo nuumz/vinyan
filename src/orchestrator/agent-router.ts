@@ -18,6 +18,7 @@
  * already happening.
  */
 
+import { asPersonaId, type PersonaId } from '../core/agent-vocabulary.ts';
 import type { AgentRegistry } from './agents/registry.ts';
 import { analyzeRequirements } from './capabilities/capability-analyzer.ts';
 import { analyzeProfileFit } from './capabilities/capability-router.ts';
@@ -27,12 +28,12 @@ import type { CapabilityGapAnalysis, CapabilityRequirement, PerceptualHierarchy,
 export type AgentRouteReason = 'override' | 'rule-match' | 'needs-llm' | 'default' | 'synthesized';
 
 export interface AgentRouteDecision {
-  agentId: string;
+  agentId: PersonaId;
   reason: AgentRouteReason;
   /** Composite weighted fit score from capability evaluation. 0 for override/default/needs-llm. */
   score: number;
   /** Runner-up for observability (rule-match path only). */
-  runnerUp?: { agentId: string; score: number };
+  runnerUp?: { agentId: PersonaId; score: number };
   /** Capability gap analysis attached when the router actually scored agents. */
   capabilityAnalysis?: CapabilityGapAnalysis;
 }
@@ -74,7 +75,9 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
     route(input, perception, routingLevel, requirements) {
       const registry = deps.registry;
 
-      // Step 1: CLI override — user selected the specialist explicitly
+      // Step 1: CLI override — user selected the specialist explicitly.
+      // input.agentId is already PersonaId-branded at the CLI/API
+      // ingest boundary; registry.has() doubles as a membership check.
       if (input.agentId && registry.has(input.agentId)) {
         return { agentId: input.agentId, reason: 'override', score: 0 };
       }
@@ -112,10 +115,14 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
         const margin = top.fitScore - (runner?.fitScore ?? 0);
         if (margin >= RULE_MIN_MARGIN) {
           return {
-            agentId: top.agentId,
+            // Brand at the registry boundary — AgentRegistry guarantees
+            // every member id matches the PersonaId shape. The throw
+            // surfaces a registry-contract violation rather than letting
+            // a malformed id flow into traces / workflow steps.
+            agentId: asPersonaId(top.agentId),
             reason: 'rule-match',
             score: top.fitScore,
-            runnerUp: runner ? { agentId: runner.agentId, score: runner.fitScore } : undefined,
+            runnerUp: runner ? { agentId: asPersonaId(runner.agentId), score: runner.fitScore } : undefined,
             capabilityAnalysis: analysis,
           };
         }
@@ -126,10 +133,10 @@ export function createAgentRouter(deps: DefaultAgentRouterDeps): AgentRouter {
       // We return the default as a placeholder, but mark `reason: 'needs-llm'`
       // so the caller knows to defer the final decision to the classifier.
       return {
-        agentId: registry.defaultAgent().id,
+        agentId: asPersonaId(registry.defaultAgent().id),
         reason: 'needs-llm',
         score: top?.fitScore ?? 0,
-        runnerUp: runner ? { agentId: runner.agentId, score: runner.fitScore } : undefined,
+        runnerUp: runner ? { agentId: asPersonaId(runner.agentId), score: runner.fitScore } : undefined,
         capabilityAnalysis: analysis,
       };
     },

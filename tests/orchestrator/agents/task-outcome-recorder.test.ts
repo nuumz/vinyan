@@ -10,6 +10,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -134,7 +135,7 @@ describe('recordTaskOutcomeForPersona', () => {
   test('persona has no loaded skills → no rows', () => {
     const { reg, store, cleanup } = setup([]);
     try {
-      const out = recordTaskOutcomeForPersona(makeInput({ agentId: 'developer' }), makeResult(), reg, store);
+      const out = recordTaskOutcomeForPersona(makeInput({ agentId: asPersonaId('developer') }), makeResult(), reg, store);
       expect(out.skillsRecorded).toBe(0);
     } finally {
       cleanup();
@@ -145,7 +146,7 @@ describe('recordTaskOutcomeForPersona', () => {
     const { reg, store, cleanup } = setup(['ts-coding', 'react-patterns']);
     try {
       const out = recordTaskOutcomeForPersona(
-        makeInput({ agentId: 'developer', goal: 'refactor X' }),
+        makeInput({ agentId: asPersonaId('developer'), goal: 'refactor X' }),
         makeResult('completed'),
         reg,
         store,
@@ -170,7 +171,7 @@ describe('recordTaskOutcomeForPersona', () => {
     const { reg, store, cleanup } = setup(['ts-coding']);
     try {
       const out = recordTaskOutcomeForPersona(
-        makeInput({ agentId: 'developer', goal: 'refactor X' }),
+        makeInput({ agentId: asPersonaId('developer'), goal: 'refactor X' }),
         makeResult('failed'),
         reg,
         store,

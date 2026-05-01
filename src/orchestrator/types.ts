@@ -5,6 +5,8 @@
  * These types define the Orchestrator's type system. Phase 0 code does not import these;
  * they exist to enable Phase 1 development without modifying Phase 0 interfaces.
  */
+import type { PersonaId } from '../core/agent-vocabulary.ts';
+import type { CapabilityToken } from '../core/capability-token.ts';
 import type { Evidence, OracleVerdict, QualityScore } from '../core/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -197,9 +199,10 @@ export interface IntentResolution {
   /**
    * Multi-agent: selected specialist agent id (e.g., 'developer', 'author').
    * Present when the registry has ≥1 agent. Resolver picks based on goal + task type.
-   * Overridden by `input.agentId` (CLI --agent flag).
+   * Overridden by `input.agentId` (CLI --agent flag). Branded `PersonaId`;
+   * the resolver validates at the registry boundary.
    */
-  agentId?: string;
+  agentId?: PersonaId;
   /** Resolver's reasoning for agent selection (observability). */
   agentSelectionReason?: string;
   /**
@@ -543,13 +546,27 @@ export interface TaskInput {
    */
   subagentType?: 'explore' | 'plan' | 'general-purpose';
   /**
+   * R4 — runtime capability token issued by `delegation-router` for
+   * delegated sub-tasks. Carries the scoped tool/path policy plus an
+   * audit `provenance` payload. Top-level (non-delegated) tasks omit
+   * this; the tool executor preserves pre-R4 pass-through semantics
+   * for those. See `src/core/capability-token.ts`.
+   */
+  capabilityToken?: CapabilityToken;
+  /**
    * Specialist agent ID (e.g., 'developer', 'author'). Set by:
    *   1. CLI `--agent=<id>` (user override, skips auto-classification)
    *   2. Intent resolver auto-classification (when not pre-set)
    *   3. Registry default (fallback)
    * Flows into prompt (soul/persona), contract (ACL), and skill manager (scope).
+   *
+   * Branded `PersonaId`. CLI parser validates user input at the boundary;
+   * intent-resolver / agent-router brand at the registry boundary
+   * (registry membership guarantees shape). Downstream consumers can
+   * pass `input.agentId` straight into `ExecutionTrace.agentId` without
+   * a re-validation step.
    */
-  agentId?: string;
+  agentId?: PersonaId;
   budget: {
     maxTokens: number; // Total tokens for this task
     maxDurationMs: number; // Wall-clock timeout
@@ -1226,8 +1243,14 @@ export interface ExecutionTrace {
    */
   parentTaskId?: string;
   workerId?: string; // Which worker (oracle/engine) executed this step
-  /** Multi-agent: specialist id (e.g., 'developer') — distinct from workerId (oracle). */
-  agentId?: string;
+  /**
+   * Multi-agent: specialist id (e.g., 'developer') — distinct from
+   * workerId (oracle). Branded `PersonaId`; deserialization in
+   * `trace-store.rowToTrace` validates the shape and degrades to
+   * `undefined` rather than retaining a bare string for a malformed
+   * legacy row (A9 bounded degradation).
+   */
+  agentId?: PersonaId;
   timestamp: number;
   routingLevel: RoutingLevel;
   action?: string; // Specific action taken (e.g., 'file_write', 'refactor')

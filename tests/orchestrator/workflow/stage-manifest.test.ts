@@ -8,6 +8,7 @@
  * `workflow-executor.test.ts`.
  */
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import type { TaskInput } from '../../../src/orchestrator/types.ts';
 import {
   buildStageManifest,
@@ -31,7 +32,7 @@ function delegateStep(id: string, agentId?: string): WorkflowPlan['steps'][numbe
     inputs: {},
     expectedOutput: 'an answer',
     budgetFraction: 0.3,
-    ...(agentId ? { agentId } : {}),
+    ...(agentId ? { agentId: asPersonaId(agentId) } : {}),
   };
 }
 

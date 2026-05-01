@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import type { VinyanBus } from '../../src/core/bus.ts';
 import { AGENT_PROPOSAL_SCHEMA_SQL } from '../../src/db/agent-proposal-schema.ts';
 import { AgentProposalStore } from '../../src/db/agent-proposal-store.ts';
@@ -62,7 +63,7 @@ function insertSyntheticSuccessWindow(traceStore: TraceStore): void {
         taskId: `synthetic-task-${index}`,
         sessionId: `synthetic-session-${index}`,
         timestamp: 1000 + index,
-        agentId: syntheticAgentId,
+        agentId: asPersonaId(syntheticAgentId),
         syntheticAgentId,
         capabilityRequirements: reqs,
         unmetCapabilityIds: ['code.audit.jwt'],

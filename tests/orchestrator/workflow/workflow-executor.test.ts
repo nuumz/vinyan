@@ -789,6 +789,12 @@ describe('executeWorkflow', () => {
     // activity event and then never resolves. The watchdog's idle clock
     // arms on that first event and fires 120s later.
     const timeoutEvents: any[] = [];
+    // retryBudget: 0 on both steps — this test pins the idle-watchdog
+    // contract, not the retry layer. With the new Q1 default of 1, the
+    // hanging delegate would be retried once → ~360s wall-clock that
+    // blows past the test's 200s budget. Setting `retryBudget: 0` here
+    // makes the test's intent explicit ("verify the FIRST attempt's
+    // timeout fires") and decouples it from the retry default.
     const plan = JSON.stringify({
       goal: 'two delegates, one hangs',
       steps: [
@@ -798,6 +804,7 @@ describe('executeWorkflow', () => {
           strategy: 'delegate-sub-agent',
           agentId: 'developer',
           budgetFraction: 0.5,
+          retryBudget: 0,
         },
         {
           id: 'step2',
@@ -805,6 +812,7 @@ describe('executeWorkflow', () => {
           strategy: 'delegate-sub-agent',
           agentId: 'architect',
           budgetFraction: 0.5,
+          retryBudget: 0,
         },
       ],
       synthesisPrompt: 'Combine.',

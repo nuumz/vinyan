@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { minePersistentAgentProposals } from '../../../src/orchestrator/capabilities/agent-proposals.ts';
 import type { CapabilityRequirement, ExecutionTrace } from '../../../src/orchestrator/types.ts';
 
@@ -20,7 +21,7 @@ function makeTrace(index: number, overrides: Partial<ExecutionTrace> = {}): Exec
     id: `trace-${index}`,
     taskId: `task-${index}`,
     sessionId: `session-${index}`,
-    agentId: syntheticAgentId,
+    agentId: asPersonaId(syntheticAgentId),
     timestamp: 1000 + index,
     routingLevel: 2,
     taskTypeSignature: 'audit::jwt',
@@ -84,7 +85,7 @@ describe('minePersistentAgentProposals', () => {
 
   test('ignores non-synthetic and already-met traces', () => {
     const traces = [
-      makeTrace(1, { syntheticAgentId: undefined, agentId: 'ts-coder' }),
+      makeTrace(1, { syntheticAgentId: undefined, agentId: asPersonaId('ts-coder') }),
       makeTrace(2, { unmetCapabilityIds: [] }),
     ];
 

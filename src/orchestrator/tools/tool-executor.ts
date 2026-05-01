@@ -52,6 +52,22 @@ export class ToolExecutor {
       // forbiddenTools / allowedPaths BEFORE the tool's own validator
       // runs. Top-level tasks pass no token and the check is a pass-
       // through (returns ok: true with tokenId: null).
+      //
+      // Failsafe (A6): if the context says this is a delegated task
+      // (parentTaskId present) but no capabilityToken is wired, fail
+      // closed. buildSubTaskInput always issues a token, so this only
+      // triggers when a future code path constructs a sub-TaskInput
+      // bypassing the router — never silently grant full access.
+      if (context.parentTaskId !== undefined && !context.capabilityToken) {
+        results.push({
+          callId: call.id,
+          tool: call.tool,
+          status: 'denied',
+          error: `capability_token: token_missing — delegated task ${context.parentTaskId} lacks a capability token; refusing tool "${call.tool}"`,
+          durationMs: 0,
+        });
+        continue;
+      }
       const targetPath = typeof call.parameters.path === 'string' ? call.parameters.path : undefined;
       const capCheck = checkCapability({
         token: context.capabilityToken,

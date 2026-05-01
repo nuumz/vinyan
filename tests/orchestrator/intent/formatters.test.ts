@@ -2,6 +2,7 @@
  * Intent formatters — unit tests for formatters.ts (plan commit D4).
  */
 import { describe, expect, it } from 'bun:test';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import {
   buildClarificationRequest,
   formatAgentCatalog,
@@ -29,7 +30,7 @@ function input(goal: string, agentId?: string): TaskInput {
     goal,
     taskType: 'code',
     budget: { maxTokens: 1000, maxDurationMs: 5000, maxRetries: 1 },
-    ...(agentId !== undefined ? { agentId } : {}),
+    ...(agentId !== undefined ? { agentId: asPersonaId(agentId) } : {}),
   };
 }
 
@@ -142,34 +143,34 @@ describe('resolveSelectedAgent', () => {
 
   it('honors user --agent override', () => {
     const result = resolveSelectedAgent(input('x', 'writer'), agents, 'ts-coder');
-    expect(result.agentId).toBe('writer');
+    expect(result.agentId).toBe(asPersonaId('writer'));
     expect(result.agentSelectionReason).toContain('override');
   });
 
   it('ignores unknown user override and falls back', () => {
     const result = resolveSelectedAgent(input('x', 'bogus'), agents, 'ts-coder');
-    expect(result.agentId).toBe('ts-coder');
+    expect(result.agentId).toBe(asPersonaId('ts-coder'));
   });
 
   it('uses classifier pick when valid', () => {
     const result = resolveSelectedAgent(input('x'), agents, 'ts-coder', {
-      agentId: 'reviewer',
+      agentId: asPersonaId('reviewer'),
       agentSelectionReason: 'wants review',
     });
-    expect(result.agentId).toBe('reviewer');
+    expect(result.agentId).toBe(asPersonaId('reviewer'));
     expect(result.agentSelectionReason).toBe('wants review');
   });
 
   it('falls back to default agent when classifier pick is unknown', () => {
     const result = resolveSelectedAgent(input('x'), agents, 'ts-coder', {
-      agentId: 'nonexistent',
+      agentId: asPersonaId('nonexistent'),
     });
-    expect(result.agentId).toBe('ts-coder');
+    expect(result.agentId).toBe(asPersonaId('ts-coder'));
   });
 
   it('falls back to first agent when default is unknown', () => {
     const result = resolveSelectedAgent(input('x'), agents, 'missing-default');
-    expect(result.agentId).toBe('ts-coder'); // first in roster
+    expect(result.agentId).toBe(asPersonaId('ts-coder')); // first in roster, branded at registry boundary
   });
 });
 

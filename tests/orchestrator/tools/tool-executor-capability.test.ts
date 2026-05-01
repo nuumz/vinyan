@@ -78,4 +78,35 @@ describe('R4 ToolExecutor — capability token enforcement', () => {
     expect(results[0]?.status).toBe('denied');
     expect(results[0]?.error).toContain('token_expired');
   });
+
+  // Failsafe: delegated context (parentTaskId set) MUST carry a token —
+  // a future code path that constructs a sub-TaskInput bypassing
+  // buildSubTaskInput must not be silently granted full access.
+  test('delegated context (parentTaskId set) without a token denies all tools', async () => {
+    const exec = new ToolExecutor();
+    const calls: ToolCall[] = [
+      { id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } },
+    ];
+    const results = await exec.executeProposedTools(
+      calls,
+      baseContext({ parentTaskId: 'parent-123' }),
+    );
+    expect(results.length).toBe(1);
+    expect(results[0]?.status).toBe('denied');
+    expect(results[0]?.error).toContain('capability_token');
+    expect(results[0]?.error).toContain('token_missing');
+    expect(results[0]?.error).toContain('parent-123');
+  });
+
+  test('top-level context (no parentTaskId, no token) is unchanged pass-through', async () => {
+    const exec = new ToolExecutor();
+    const calls: ToolCall[] = [
+      { id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } },
+    ];
+    const results = await exec.executeProposedTools(calls, baseContext());
+    expect(results.length).toBe(1);
+    // file_read may succeed or fail for unrelated reasons (file missing
+    // etc.), but it MUST NOT be a capability_token denial.
+    expect(results[0]?.error ?? '').not.toContain('capability_token');
+  });
 });

@@ -69,6 +69,16 @@ export type MultiAgentSubtaskErrorKind =
   | 'contract_violation'
   | 'dependency_failed'
   | 'subtask_failed'
+  /**
+   * Q1 — the delegate could not even attempt because the orchestrator's
+   * delegate dispatch path is missing required infrastructure (e.g.
+   * `executeTask` not wired, agent registry empty, sub-task subprocess
+   * channel down). Permanent: retrying the same step with the same
+   * config produces the same failure, and falling back to a generic
+   * llm-reasoning step would silently swap the requested persona for
+   * a generic LLM (A2 honesty violation). Surface and stop.
+   */
+  | 'infrastructure_unavailable'
   | 'unknown';
 
 export interface MultiAgentSubtask {

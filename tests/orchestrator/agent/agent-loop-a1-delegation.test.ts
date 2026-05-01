@@ -8,6 +8,7 @@
  * `targetAgentId`) and emit `delegation:a1_verifier_routed`.
  */
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -111,7 +112,7 @@ describe('Item 4 — handleDelegation A1 verifier routing', () => {
       const result = await handleDelegation(request, makeParent(), makeBudget(), makeRouting(), h.deps);
       expect(result.status).toBe('success');
       expect(h.capturedSubInputs).toHaveLength(1);
-      expect(h.capturedSubInputs[0]!.agentId).toBe('reviewer');
+      expect(h.capturedSubInputs[0]!.agentId).toBe(asPersonaId('reviewer'));
       expect(h.events).toHaveLength(1);
       const ev = h.events[0]!.payload as { verifierAgentId: string; parentAgentId: string | null };
       expect(ev.verifierAgentId).toBe('reviewer');
@@ -127,10 +128,10 @@ describe('Item 4 — handleDelegation A1 verifier routing', () => {
         goal: 'audit the patch',
         targetFiles: ['src/foo.ts'],
         requestedTokens: 5000,
-        targetAgentId: 'developer',
+        targetAgentId: asPersonaId('developer'),
       };
       await handleDelegation(request, makeParent(), makeBudget(), makeRouting(), h.deps);
-      expect(h.capturedSubInputs[0]!.agentId).toBe('reviewer');
+      expect(h.capturedSubInputs[0]!.agentId).toBe(asPersonaId('reviewer'));
       const ev = h.events[0]!.payload as { requestedTargetAgentId: string | null };
       expect(ev.requestedTargetAgentId).toBe('developer');
     } finally {
@@ -186,7 +187,7 @@ describe('Item 4 — handleDelegation A1 verifier routing', () => {
       };
       await handleDelegation(
         request,
-        makeParent({ agentId: 'reviewer' }),
+        makeParent({ agentId: asPersonaId('reviewer') }),
         makeBudget(),
         makeRouting(),
         h.deps,
@@ -212,6 +213,81 @@ describe('Item 4 — handleDelegation A1 verifier routing', () => {
       await handleDelegation(request, makeParent(), makeBudget(), makeRouting(), depsNoRegistry);
       expect(h.capturedSubInputs[0]!.agentId).toBeUndefined();
       expect(h.events).toHaveLength(0);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+describe('R4 — delegation:capability_token_issued bus event', () => {
+  test('every delegated sub-task emits a token-issuance event with policy details', async () => {
+    const h = makeHarness();
+    const tokenEvents: Array<{
+      parentTaskId: string;
+      childTaskId: string;
+      tokenId: string;
+      subagentType: 'explore' | 'plan' | 'general-purpose';
+      allowedTools: readonly string[];
+      forbiddenTools: readonly string[];
+      allowedPaths: readonly string[];
+      issuedAt: number;
+      expiresAt: number;
+    }> = [];
+    h.bus.on('delegation:capability_token_issued', (p) => tokenEvents.push(p));
+    try {
+      const request: DelegationRequest = {
+        goal: 'extract a helper function',
+        targetFiles: ['src/foo.ts'],
+        subagentType: 'general-purpose',
+        requiredTools: ['file_read', 'file_edit'],
+        requestedTokens: 5000,
+      };
+      await handleDelegation(request, makeParent(), makeBudget(), makeRouting(), h.deps);
+      expect(tokenEvents).toHaveLength(1);
+      const ev = tokenEvents[0]!;
+      expect(ev.parentTaskId).toBe('parent-a1');
+      expect(ev.childTaskId).toMatch(/^parent-a1-child-/);
+      expect(ev.tokenId).toMatch(/^capability-token:[0-9a-f]{16}$/);
+      expect(ev.subagentType).toBe('general-purpose');
+      expect(ev.allowedTools).toEqual(['file_read', 'file_edit']);
+      // general-purpose floor forbids shell_exec + delegate_task.
+      expect(ev.forbiddenTools).toContain('shell_exec');
+      expect(ev.forbiddenTools).toContain('delegate_task');
+      expect(ev.allowedPaths).toEqual(['src/foo.ts']);
+      expect(ev.expiresAt).toBeGreaterThan(ev.issuedAt);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('explore role emits a read-only token (no path scoping, all mutations forbidden)', async () => {
+    const h = makeHarness();
+    const tokenEvents: Array<{
+      subagentType: 'explore' | 'plan' | 'general-purpose';
+      allowedPaths: readonly string[];
+      forbiddenTools: readonly string[];
+    }> = [];
+    h.bus.on('delegation:capability_token_issued', (p) =>
+      tokenEvents.push({
+        subagentType: p.subagentType,
+        allowedPaths: p.allowedPaths,
+        forbiddenTools: p.forbiddenTools,
+      }),
+    );
+    try {
+      const request: DelegationRequest = {
+        goal: 'survey imports',
+        targetFiles: ['src/foo.ts'],
+        subagentType: 'explore',
+        requestedTokens: 5000,
+      };
+      await handleDelegation(request, makeParent(), makeBudget(), makeRouting(), h.deps);
+      expect(tokenEvents).toHaveLength(1);
+      expect(tokenEvents[0]!.subagentType).toBe('explore');
+      expect(tokenEvents[0]!.allowedPaths).toEqual([]);
+      expect(tokenEvents[0]!.forbiddenTools).toContain('file_write');
+      expect(tokenEvents[0]!.forbiddenTools).toContain('file_edit');
+      expect(tokenEvents[0]!.forbiddenTools).toContain('shell_exec');
     } finally {
       h.cleanup();
     }

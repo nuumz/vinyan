@@ -9,6 +9,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 
 import { SkillOutcomeStore } from '../../../src/db/skill-outcome-store.ts';
 import {
@@ -44,7 +45,7 @@ const codeReviewInput: TaskInput = {
   id: 'task-1',
   goal: 'review code',
   taskType: 'code',
-  agentId: 'developer',
+  agentId: asPersonaId('developer'),
 } as unknown as TaskInput;
 
 const completedResult: TaskResult = {
@@ -106,7 +107,7 @@ describe('recordSimpleSkillOutcomes', () => {
   });
 
   test('missing agentId → no-op', () => {
-    const noPersona: TaskInput = { ...codeReviewInput, agentId: undefined as unknown as string };
+    const noPersona: TaskInput = { ...codeReviewInput, agentId: undefined };
     const result = recordSimpleSkillOutcomes(
       noPersona,
       completedResult,

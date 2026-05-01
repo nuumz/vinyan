@@ -13,6 +13,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { loadAgentRegistry } from '../../../src/orchestrator/agents/registry.ts';
 import type { TaskInput, TaskResult, TaskType } from '../../../src/orchestrator/types.ts';
 import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
@@ -90,10 +91,10 @@ describe('Phase-13 A1 verifier routing in delegate-sub-agent', () => {
       });
       expect(result.status).toBe('completed');
       expect(captured).toHaveLength(1);
-      expect(captured[0]!.agentId).toBe('reviewer');
+      expect(captured[0]!.agentId).toBe(asPersonaId('reviewer'));
       const a1Events = events.filter((e) => e.event === 'workflow:a1_verifier_routed');
       expect(a1Events).toHaveLength(1);
-      expect((a1Events[0]!.payload as { verifierAgentId: string }).verifierAgentId).toBe('reviewer');
+      expect((a1Events[0]!.payload as { verifierAgentId: string }).verifierAgentId).toBe(asPersonaId('reviewer'));
     } finally {
       cleanup();
     }
@@ -156,7 +157,7 @@ describe('Phase-13 A1 verifier routing in delegate-sub-agent', () => {
       const captured: TaskInput[] = [];
       const events: Array<{ event: string; payload: unknown }> = [];
       const parent = makeInput('audit code', 'code');
-      parent.agentId = 'reviewer';
+      parent.agentId = asPersonaId('reviewer');
       await executeWorkflow(parent, {
         llmRegistry: makePlannerProvider(planJSON('verify the patch')) as any,
         agentRegistry: reg,
@@ -188,7 +189,7 @@ describe('Phase-13 A1 verifier routing in delegate-sub-agent', () => {
             return mockResult(subInput.id);
           },
         });
-        expect(captured[0]!.agentId).toBe('reviewer');
+        expect(captured[0]!.agentId).toBe(asPersonaId('reviewer'));
       } finally {
         cleanup();
       }

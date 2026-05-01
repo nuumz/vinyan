@@ -14,6 +14,7 @@
 import { attachCLIProgressListener } from '../bus/cli-progress-listener.ts';
 import type { TraceTelemetry } from '../bus/trace-listener.ts';
 import { attachTraceListener } from '../bus/trace-listener.ts';
+import { tryAsPersonaId } from '../core/agent-vocabulary.ts';
 import { createBus } from '../core/bus.ts';
 import { createOrchestrator } from '../orchestrator/factory.ts';
 import { CommandApprovalGate } from '../orchestrator/tools/command-approval-gate.ts';
@@ -49,7 +50,20 @@ export async function runAgentTask(argv: string[], opts: RunAgentTaskOptions = {
   }
 
   const files = parseArrayFlag(argv, '--file');
-  const agentIdOverride = parseSingleFlag(argv, '--agent');
+  const agentIdRaw = parseSingleFlag(argv, '--agent');
+  // Validate at the CLI ingest boundary. A malformed `--agent` value
+  // (uppercase, special chars, leading digit) is rejected with a
+  // human-readable error rather than silently becoming a hallucinated
+  // persona downstream. agent-router still does a registry membership
+  // check after this brand pass.
+  let agentIdOverride = tryAsPersonaId(agentIdRaw);
+  if (agentIdRaw && !agentIdOverride) {
+    console.error(
+      `vinyan run: invalid --agent value "${agentIdRaw}". ` +
+        `Persona ids must be lowercase ASCII slugs (e.g., 'developer', 'reviewer', 'ts-coder').`,
+    );
+    process.exit(2);
+  }
   const budgetRaw = parseInt(parseSingleFlag(argv, '--budget') ?? '50000', 10);
   const retriesRaw = parseInt(parseSingleFlag(argv, '--retries') ?? '3', 10);
   const timeoutRaw = parseInt(parseSingleFlag(argv, '--timeout') ?? '60000', 10);

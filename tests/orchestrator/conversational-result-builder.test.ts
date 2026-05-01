@@ -13,6 +13,7 @@
  * "competition rule proposals" in place of actual answers.
  */
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import { buildConversationalResult } from '../../src/orchestrator/conversational-result-builder.ts';
 import type { DerivedCapabilities } from '../../src/orchestrator/agents/derive-persona-capabilities.ts';
 import type { SkillMdRecord } from '../../src/skills/skill-md/index.ts';
@@ -190,7 +191,7 @@ describe('buildConversationalResult — persona resolution priority', () => {
     const workerIdSink: string[] = [];
     const deps = makeDeps({ capturedSystemPrompt, workerIdSink });
     const result = await buildConversationalResult(
-      makeInput({ agentId: 'author' }),
+      makeInput({ agentId: asPersonaId('author') }),
       intent(), // intent.agentId is undefined
       deps,
     );
@@ -210,8 +211,8 @@ describe('buildConversationalResult — persona resolution priority', () => {
     const workerIdSink: string[] = [];
     const deps = makeDeps({ capturedSystemPrompt, workerIdSink });
     await buildConversationalResult(
-      makeInput({ agentId: 'coordinator' }),
-      intent({ agentId: 'author' } as Partial<IntentResolution>),
+      makeInput({ agentId: asPersonaId('coordinator') }),
+      intent({ agentId: asPersonaId('author') } as Partial<IntentResolution>),
       deps,
     );
     expect(workerIdSink[0]).toBe('author');
@@ -275,7 +276,7 @@ describe('buildConversationalResult — sub-agent soul + skill loading', () => {
       soulMap: { author: 'AUTHOR_SOUL_SENTINEL_X9K' },
     });
     await buildConversationalResult(
-      makeInput({ agentId: 'author', parentTaskId: 'parent-1' }),
+      makeInput({ agentId: asPersonaId('author'), parentTaskId: 'parent-1' }),
       intent(),
       deps,
     );
@@ -324,7 +325,7 @@ describe('buildConversationalResult — sub-agent soul + skill loading', () => {
       },
     });
     await buildConversationalResult(
-      makeInput({ agentId: 'researcher', parentTaskId: 'parent-1' }),
+      makeInput({ agentId: asPersonaId('researcher'), parentTaskId: 'parent-1' }),
       intent(),
       deps,
     );
@@ -342,7 +343,7 @@ describe('buildConversationalResult — sub-agent soul + skill loading', () => {
     // The optional-chained guard must skip skill lookup entirely.
     const deps = makeDeps({ capturedSystemPrompt, workerIdSink });
     const outcome = await buildConversationalResult(
-      makeInput({ agentId: 'author', parentTaskId: 'parent-1' }),
+      makeInput({ agentId: asPersonaId('author'), parentTaskId: 'parent-1' }),
       intent(),
       deps,
     );
@@ -365,7 +366,7 @@ describe('buildConversationalResult — sub-task isolation', () => {
       roster: [COORDINATOR_FOR_PEERS, AUTHOR, MENTOR, RESEARCHER],
     });
     await buildConversationalResult(
-      makeInput({ agentId: 'mentor', parentTaskId: 'parent-1' }),
+      makeInput({ agentId: asPersonaId('mentor'), parentTaskId: 'parent-1' }),
       intent(),
       deps,
     );
@@ -398,7 +399,7 @@ describe('buildConversationalResult — sub-task isolation', () => {
       capturedMessages,
     });
     await buildConversationalResult(
-      makeInput({ agentId: 'author', parentTaskId: 'parent-1', sessionId: 'sess-1' }),
+      makeInput({ agentId: asPersonaId('author'), parentTaskId: 'parent-1', sessionId: 'sess-1' }),
       intent(),
       subDeps,
     );
@@ -412,7 +413,7 @@ describe('buildConversationalResult — sub-task isolation', () => {
       capturedMessages,
     });
     await buildConversationalResult(
-      makeInput({ agentId: 'author', sessionId: 'sess-1' }),
+      makeInput({ agentId: asPersonaId('author'), sessionId: 'sess-1' }),
       intent(),
       standaloneDeps,
     );
@@ -428,7 +429,7 @@ describe('buildConversationalResult — sub-task isolation', () => {
     const subPrompts: string[] = [];
     const subDeps = makeDeps({ capturedSystemPrompt: subPrompts, workerIdSink: [] });
     await buildConversationalResult(
-      makeInput({ agentId: 'author', parentTaskId: 'parent-1' }),
+      makeInput({ agentId: asPersonaId('author'), parentTaskId: 'parent-1' }),
       intent(),
       subDeps,
     );
@@ -443,7 +444,7 @@ describe('buildConversationalResult — sub-task isolation', () => {
       capturedSystemPrompt: standalonePrompts,
       workerIdSink: [],
     });
-    await buildConversationalResult(makeInput({ agentId: 'author' }), intent(), standaloneDeps);
+    await buildConversationalResult(makeInput({ agentId: asPersonaId('author') }), intent(), standaloneDeps);
     expect(standalonePrompts[0]).not.toContain('[SUB-TASK CONTRACT]');
     // Escape protocol present on standalone path (regression guard).
     expect(standalonePrompts[0]).toContain('[ESCAPE PROTOCOL]');

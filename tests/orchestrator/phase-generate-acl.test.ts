@@ -7,6 +7,7 @@
  *   - assistant has writeAny:false → denies file_write
  */
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,7 +48,7 @@ describe('phase-generate ACL overlay (integration via createContract)', () => {
         allowedTools: author!.allowedTools,
         capabilityOverrides: author!.capabilityOverrides,
       };
-      const contract = createContract(makeTask({ agentId: 'author' }), makeRouting(2), acl);
+      const contract = createContract(makeTask({ agentId: asPersonaId('author') }), makeRouting(2), acl);
 
       expect(contract.capabilities.some((c) => c.type === 'shell_exec')).toBe(false);
       expect(contract.capabilities.some((c) => c.type === 'shell_read')).toBe(false);
@@ -66,7 +67,7 @@ describe('phase-generate ACL overlay (integration via createContract)', () => {
         developer?.capabilityOverrides || developer?.allowedTools
           ? { allowedTools: developer!.allowedTools, capabilityOverrides: developer!.capabilityOverrides }
           : undefined;
-      const contract = createContract(makeTask({ agentId: 'developer' }), makeRouting(2), acl);
+      const contract = createContract(makeTask({ agentId: asPersonaId('developer') }), makeRouting(2), acl);
 
       expect(contract.capabilities.some((c) => c.type === 'shell_exec')).toBe(true);
       expect(contract.capabilities.some((c) => c.type === 'file_write')).toBe(true);
@@ -91,7 +92,7 @@ describe('phase-generate ACL overlay (integration via createContract)', () => {
         allowedTools: assistant!.allowedTools,
         capabilityOverrides: assistant!.capabilityOverrides,
       };
-      const contract = createContract(makeTask({ agentId: 'assistant' }), makeRouting(2), acl);
+      const contract = createContract(makeTask({ agentId: asPersonaId('assistant') }), makeRouting(2), acl);
 
       expect(contract.capabilities.some((c) => c.type === 'file_write')).toBe(false);
       // Reads still allowed

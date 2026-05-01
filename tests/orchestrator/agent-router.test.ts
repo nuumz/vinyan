@@ -15,6 +15,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import { createAgentRouter } from '../../src/orchestrator/agent-router.ts';
 import { loadAgentRegistry } from '../../src/orchestrator/agents/registry.ts';
 import type { TaskInput } from '../../src/orchestrator/types.ts';
@@ -41,8 +42,8 @@ describe('AgentRouter', () => {
   test('CLI override short-circuits with reason=override', () => {
     const { router, cleanup } = setupRouter();
     try {
-      const decision = router.route(makeInput({ agentId: 'author' }));
-      expect(decision.agentId).toBe('author');
+      const decision = router.route(makeInput({ agentId: asPersonaId('author') }));
+      expect(decision.agentId).toBe(asPersonaId('author'));
       expect(decision.reason).toBe('override');
     } finally {
       cleanup();
@@ -52,7 +53,7 @@ describe('AgentRouter', () => {
   test('unknown agentId in override falls through to rule/default path', () => {
     const { router, cleanup } = setupRouter();
     try {
-      const decision = router.route(makeInput({ agentId: 'nonexistent', targetFiles: ['a.ts'] }));
+      const decision = router.route(makeInput({ agentId: asPersonaId('nonexistent'), targetFiles: ['a.ts'] }));
       // Should NOT return 'nonexistent' — registry.has returns false
       expect(decision.agentId).not.toBe('nonexistent');
       expect(decision.reason).not.toBe('override');
@@ -73,7 +74,7 @@ describe('AgentRouter', () => {
         // deterministic signal even without skill packs in Phase 1.
         [{ id: 'code.mutation', weight: 1, source: 'fingerprint' }],
       );
-      expect(decision.agentId).toBe('developer');
+      expect(decision.agentId).toBe(asPersonaId('developer'));
       expect(decision.reason).toBe('rule-match');
       expect(decision.score).toBeGreaterThan(0.4);
       expect(decision.capabilityAnalysis?.candidates[0]?.profileId).toBe('developer');
@@ -89,7 +90,7 @@ describe('AgentRouter', () => {
       const decision = router.route(makeInput({ taskType: 'code', targetFiles: ['README.md'] }), undefined, undefined, [
         { id: 'writing.prose', weight: 1, source: 'fingerprint' },
       ]);
-      expect(decision.agentId).toBe('author');
+      expect(decision.agentId).toBe(asPersonaId('author'));
       expect(decision.reason).toBe('rule-match');
     } finally {
       cleanup();
@@ -118,7 +119,7 @@ describe('AgentRouter', () => {
         undefined,
         [{ id: 'review.code', weight: 1, source: 'llm-extract' }],
       );
-      expect(decision.agentId).toBe('reviewer');
+      expect(decision.agentId).toBe(asPersonaId('reviewer'));
       expect(decision.reason).toBe('rule-match');
     } finally {
       cleanup();

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 import { buildSubTaskInput, DelegationRouter } from '../../src/orchestrator/delegation-router.ts';
 import type { AgentBudget, DelegationRequest } from '../../src/orchestrator/protocol.ts';
@@ -369,14 +370,117 @@ describe('buildSubTaskInput', () => {
     const request: DelegationRequest = {
       goal: 'Architect-only task',
       targetFiles: [],
-      targetAgentId: 'architect',
+      targetAgentId: asPersonaId('architect'),
     };
     const result = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
-    expect(result.agentId).toBe('architect');
+    expect(result.agentId).toBe(asPersonaId('architect'));
   });
 
   it('omits agentId when no targetAgentId requested (fall through to default routing)', () => {
     const result = buildSubTaskInput(makeRequest(), makeParent(), makeRouting(), makeBudget());
     expect(result.agentId).toBeUndefined();
+  });
+
+  // R4 — capability token issuance (closes the runtime delegation gap).
+  describe('capability token issuance', () => {
+    it("explore: token forbids mutation tools, allowedPaths empty (read-only walks freely)", () => {
+      const request: DelegationRequest = {
+        goal: 'Survey imports',
+        targetFiles: ['src/foo.ts', 'src/bar.ts'],
+        subagentType: 'explore',
+      };
+      const parent = makeParent({ id: 'task-explore-parent' });
+      const childBudget = makeBudget({ maxDurationMs: 30_000 });
+
+      const result = buildSubTaskInput(request, parent, makeRouting(), childBudget);
+
+      expect(result.capabilityToken).toBeDefined();
+      const token = result.capabilityToken!;
+      expect(token.subagentType).toBe('explore');
+      expect(token.parentTaskId).toBe('task-explore-parent');
+      // Default policy: explore forbids every mutation tool.
+      expect(token.forbiddenTools).toContain('file_write');
+      expect(token.forbiddenTools).toContain('file_edit');
+      expect(token.forbiddenTools).toContain('shell_exec');
+      expect(token.forbiddenTools).toContain('delegate_task');
+      // Path scoping is intentionally absent for read-only roles.
+      expect(token.allowedPaths).toEqual([]);
+      // TTL aligned to child wall-clock budget (A9 + A10 grounding).
+      expect(token.expiresAt - token.issuedAt).toBe(30_000);
+    });
+
+    it('plan: same forbid policy as explore', () => {
+      const request: DelegationRequest = {
+        goal: 'Plan migration',
+        targetFiles: ['src/foo.ts'],
+        subagentType: 'plan',
+      };
+      const result = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
+      expect(result.capabilityToken!.subagentType).toBe('plan');
+      expect(result.capabilityToken!.forbiddenTools).toContain('file_write');
+      expect(result.capabilityToken!.allowedPaths).toEqual([]);
+    });
+
+    it('general-purpose: allowedPaths matches request.targetFiles, mutation forbids relaxed', () => {
+      const request: DelegationRequest = {
+        goal: 'Implement helper',
+        targetFiles: ['src/foo.ts', 'src/bar.ts'],
+        subagentType: 'general-purpose',
+        requiredTools: ['file_read', 'file_write', 'file_edit'],
+      };
+      const result = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
+
+      const token = result.capabilityToken!;
+      expect(token.subagentType).toBe('general-purpose');
+      expect(token.allowedTools).toEqual(['file_read', 'file_write', 'file_edit']);
+      expect(token.allowedPaths).toEqual(['src/foo.ts', 'src/bar.ts']);
+      // general-purpose still forbids shell_exec + delegate_task by default
+      // (the floor policy in issueCapabilityToken).
+      expect(token.forbiddenTools).toContain('shell_exec');
+      expect(token.forbiddenTools).toContain('delegate_task');
+      // ...but does NOT forbid file_write — this role can mutate.
+      expect(token.forbiddenTools).not.toContain('file_write');
+    });
+
+    it("provenance carries the delegation rationale for replay (A8)", () => {
+      const request: DelegationRequest = {
+        goal: 'Refactor helper module',
+        targetFiles: ['src/foo.ts'],
+        subagentType: 'general-purpose',
+        requiredTools: ['file_edit'],
+        requestedTokens: 5000,
+        context: 'Resolved clarifications: keep alias=no',
+      };
+      const parent = makeParent({ id: 'parent-XYZ' });
+      const result = buildSubTaskInput(request, parent, makeRouting(), makeBudget());
+
+      const prov = result.capabilityToken!.provenance as Record<string, unknown>;
+      expect(prov).toBeDefined();
+      expect(prov.reason).toBe('sub-task-delegation');
+      expect(prov.parentTaskId).toBe('parent-XYZ');
+      expect(prov.subagentType).toBe('general-purpose');
+      expect(prov.goal).toBe('Refactor helper module');
+      expect(prov.requiredTools).toEqual(['file_edit']);
+      expect(prov.targetFiles).toEqual(['src/foo.ts']);
+      expect(prov.requestedTokens).toBe(5000);
+      expect(prov.context).toBe('Resolved clarifications: keep alias=no');
+    });
+
+    it('issuedBy identifies the router for audit attribution', () => {
+      const result = buildSubTaskInput(makeRequest(), makeParent(), makeRouting(), makeBudget());
+      expect(result.capabilityToken!.issuedBy).toBe('delegation-router');
+    });
+
+    it('always issues a token (no silent undefined on the delegated path)', () => {
+      // Even with the most minimal request, a token must be produced —
+      // missing token on the delegated path is forbidden by spec.
+      const result = buildSubTaskInput(
+        { goal: 'noop', targetFiles: [] },
+        makeParent(),
+        makeRouting(),
+        makeBudget(),
+      );
+      expect(result.capabilityToken).toBeDefined();
+    });
   });
 });

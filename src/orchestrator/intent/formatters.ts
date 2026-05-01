@@ -14,6 +14,7 @@
  * Pure: no I/O, no module-level state.
  */
 
+import { asPersonaId, type PersonaId } from '../../core/agent-vocabulary.ts';
 import type {
   AgentSpec,
   ContentBlock,
@@ -125,20 +126,28 @@ export function resolveSelectedAgent(
   defaultAgentId: string | undefined,
   parsedAgent?: { agentId?: string; agentSelectionReason?: string },
   fallbackReason = 'registry default (no confident pick)',
-): { agentId?: string; agentSelectionReason?: string } {
+): { agentId?: PersonaId; agentSelectionReason?: string } {
   if (!agents || agents.length === 0) return {};
   const known = new Set(agents.map((a) => a.id));
+  // Brand at the registry boundary — every survivor is a member of
+  // `known`, which is built from registered AgentSpec ids that are
+  // PersonaId-shaped by registry contract. `asPersonaId` throws on
+  // contract violation rather than letting a malformed id flow into
+  // TaskInput / IntentResolution downstream.
   if (input.agentId && known.has(input.agentId)) {
-    return { agentId: input.agentId, agentSelectionReason: 'user override via --agent flag' };
+    return { agentId: asPersonaId(input.agentId), agentSelectionReason: 'user override via --agent flag' };
   }
   if (parsedAgent?.agentId && known.has(parsedAgent.agentId)) {
     return {
-      agentId: parsedAgent.agentId,
+      agentId: asPersonaId(parsedAgent.agentId),
       agentSelectionReason: parsedAgent.agentSelectionReason ?? 'classifier selection',
     };
   }
   const fallback = defaultAgentId && known.has(defaultAgentId) ? defaultAgentId : agents[0]?.id;
-  return { agentId: fallback, agentSelectionReason: fallbackReason };
+  return {
+    ...(fallback ? { agentId: asPersonaId(fallback) } : {}),
+    agentSelectionReason: fallbackReason,
+  };
 }
 
 /**

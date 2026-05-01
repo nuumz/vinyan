@@ -9,6 +9,7 @@
  * function and asserts a runtime side-effect.
  */
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import { promoteCapabilityClaims } from '../../src/sleep-cycle/promotion.ts';
 import type {
   AgentSpec,
@@ -100,7 +101,7 @@ describe('promoteCapabilityClaims', () => {
 
     const traces: ExecutionTrace[] = Array.from({ length: 30 }, () =>
       makeTrace({
-        agentId: 'ts-coder',
+        agentId: asPersonaId('ts-coder'),
         taskTypeSignature: 'review::ts',
         capabilityRequirements: reqs,
         outcome: 'success',
@@ -130,7 +131,7 @@ describe('promoteCapabilityClaims', () => {
 
     const traces: ExecutionTrace[] = Array.from({ length: 29 }, () =>
       makeTrace({
-        agentId: 'ts-coder',
+        agentId: asPersonaId('ts-coder'),
         taskTypeSignature: 'review::ts',
         capabilityRequirements: reqs,
         outcome: 'success',
@@ -151,7 +152,7 @@ describe('promoteCapabilityClaims', () => {
     // 30 traces, 50% pass — Wilson LB on 15/30 ≈ 0.32, below 0.6.
     const traces: ExecutionTrace[] = Array.from({ length: 30 }, (_, i) =>
       makeTrace({
-        agentId: 'ts-coder',
+        agentId: asPersonaId('ts-coder'),
         taskTypeSignature: 'review::ts',
         capabilityRequirements: reqs,
         outcome: i % 2 === 0 ? 'success' : 'failure',
@@ -174,14 +175,14 @@ describe('promoteCapabilityClaims', () => {
     const traces: ExecutionTrace[] = [
       ...Array.from({ length: 27 }, () =>
         makeTrace({
-          agentId: 'ts-coder',
+          agentId: asPersonaId('ts-coder'),
           taskTypeSignature: 'refactor::ts',
           capabilityRequirements: common,
         }),
       ),
       ...Array.from({ length: 3 }, () =>
         makeTrace({
-          agentId: 'ts-coder',
+          agentId: asPersonaId('ts-coder'),
           taskTypeSignature: 'refactor::ts',
           capabilityRequirements: rare,
         }),
@@ -207,7 +208,7 @@ describe('promoteCapabilityClaims', () => {
 
     const traces: ExecutionTrace[] = Array.from({ length: 30 }, () =>
       makeTrace({
-        agentId: 'synthetic-abc12345',
+        agentId: asPersonaId('synthetic-abc12345'),
         taskTypeSignature: 'research::any',
         capabilityRequirements: reqs,
         outcome: 'success',
@@ -252,14 +253,14 @@ describe('promoteCapabilityClaims', () => {
     const traces: ExecutionTrace[] = [
       ...Array.from({ length: 30 }, () =>
         makeTrace({
-          agentId: 'ts-coder',
+          agentId: asPersonaId('ts-coder'),
           taskTypeSignature: 'review::ts',
           capabilityRequirements: tsReqs,
         }),
       ),
       ...Array.from({ length: 30 }, () =>
         makeTrace({
-          agentId: 'writer',
+          agentId: asPersonaId('writer'),
           taskTypeSignature: 'write::md',
           capabilityRequirements: writerReqs,
         }),
@@ -278,7 +279,7 @@ describe('promoteCapabilityClaims', () => {
     const reqs = [makeRequirement('code.review.ts')];
     const traces: ExecutionTrace[] = Array.from({ length: 30 }, () =>
       makeTrace({
-        agentId: 'ts-coder',
+        agentId: asPersonaId('ts-coder'),
         taskTypeSignature: 'review::ts',
         capabilityRequirements: reqs,
       }),
@@ -318,7 +319,7 @@ describe('promoteCapabilityClaims', () => {
     const reqs = [makeRequirement('code.review.ts')];
     const traces: ExecutionTrace[] = Array.from({ length: 30 }, () =>
       makeTrace({
-        agentId: 'ts-coder',
+        agentId: asPersonaId('ts-coder'),
         taskTypeSignature: 'review::ts',
         capabilityRequirements: reqs,
       }),
@@ -343,7 +344,7 @@ describe('promoteCapabilityClaims', () => {
     ];
     const traces: ExecutionTrace[] = Array.from({ length: 30 }, () =>
       makeTrace({
-        agentId: 'ts-coder',
+        agentId: asPersonaId('ts-coder'),
         taskTypeSignature: 'review::ts',
         capabilityRequirements: reqs,
       }),

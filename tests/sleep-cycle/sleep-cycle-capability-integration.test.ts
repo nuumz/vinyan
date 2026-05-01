@@ -7,6 +7,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import type { VinyanBus } from '../../src/core/bus.ts';
 import { PATTERN_SCHEMA_SQL } from '../../src/db/pattern-schema.ts';
 import { PatternStore } from '../../src/db/pattern-store.ts';
@@ -96,7 +97,7 @@ function insertCapabilityPromotionWindow(traceStore: TraceStore): void {
         id: `cap-${i}`,
         sessionId: `s-${i % 5}`,
         timestamp: 1000 + i,
-        agentId: 'ts-coder',
+        agentId: asPersonaId('ts-coder'),
         taskTypeSignature: 'review::ts',
         capabilityRequirements: reqs,
         outcome: 'success',

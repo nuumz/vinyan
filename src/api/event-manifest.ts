@@ -145,6 +145,13 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'workflow:step_start', sse: true, record: true, scope: 'task' },
   { event: 'workflow:step_complete', sse: true, record: true, scope: 'task' },
   { event: 'workflow:step_fallback', sse: true, record: true, scope: 'task' },
+  // Q1 — step-level retry attempt. Recorded so audit replay shows the
+  // full retry envelope, not just the final attempt's outcome.
+  { event: 'workflow:step_retry', sse: true, record: true, scope: 'task' },
+  // Q1 — retry was eligible but vetoed by the parent task's wall-clock
+  // budget. Recorded so an audit can tell apart "no more retries left"
+  // from "no more clock left".
+  { event: 'workflow:step_retry_skipped', sse: true, record: true, scope: 'task' },
   { event: 'workflow:delegate_dispatched', sse: true, record: true, scope: 'task' },
   { event: 'workflow:delegate_completed', sse: true, record: true, scope: 'task' },
   { event: 'workflow:delegate_timeout', sse: true, record: true, scope: 'task' },

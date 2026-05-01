@@ -42,6 +42,7 @@ import { migration030 } from './030_parameter_ledger.ts';
 import { migration031 } from './031_skill_autogen_state.ts';
 import { migration032 } from './032_skill_proposal_revisions.ts';
 import { migration033 } from './033_approval_ledger.ts';
+import { migration034 } from './034_skill_proposal_revisions_rebackfill.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -78,4 +79,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration031,
   migration032,
   migration033,
+  migration034,
 ];

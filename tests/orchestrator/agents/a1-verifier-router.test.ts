@@ -10,6 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import {
   selectVerifierForDelegation,
   VERIFY_DESCRIPTION_PATTERN,
@@ -52,7 +53,7 @@ describe('selectVerifierForDelegation', () => {
         { description: 'review the implementation', parentTaskType: 'code', parentAgentId: 'developer' },
         reg,
       );
-      expect(result).toBe('reviewer');
+      expect(result).toBe(asPersonaId('reviewer'));
     } finally {
       cleanup();
     }
@@ -117,7 +118,7 @@ describe('selectVerifierForDelegation', () => {
         { description: 'audit code', parentTaskType: 'code', parentAgentId: undefined },
         reg,
       );
-      expect(result).toBe('reviewer');
+      expect(result).toBe(asPersonaId('reviewer'));
     } finally {
       cleanup();
     }
@@ -155,7 +156,7 @@ describe('selectVerifierForDelegation', () => {
         },
         reg,
       );
-      expect(result).toBe('reviewer');
+      expect(result).toBe(asPersonaId('reviewer'));
     } finally {
       cleanup();
     }
@@ -173,7 +174,7 @@ describe('selectVerifierForDelegation', () => {
         },
         reg,
       );
-      expect(result).toBe('reviewer');
+      expect(result).toBe(asPersonaId('reviewer'));
     } finally {
       cleanup();
     }
@@ -194,7 +195,7 @@ describe('selectVerifierForDelegation', () => {
         },
         reg,
       );
-      expect(result).toBe('reviewer');
+      expect(result).toBe(asPersonaId('reviewer'));
     } finally {
       cleanup();
     }

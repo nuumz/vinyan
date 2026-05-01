@@ -47,6 +47,20 @@ export function asPersonaId(value: string): PersonaId {
   return value as PersonaId;
 }
 
+/**
+ * Non-throwing PersonaId constructor for read boundaries (DB
+ * deserialization, IPC). Returns `undefined` for `null`/`undefined`/
+ * shape mismatch, so a legacy row carrying a malformed agent_id
+ * surfaces as "missing" rather than as a typed `string` masquerading
+ * as a PersonaId. Bounded degradation (A9) without silent fallback to
+ * bare string.
+ */
+export function tryAsPersonaId(value: string | null | undefined): PersonaId | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isPersonaIdShape(value)) return undefined;
+  return value as PersonaId;
+}
+
 /** Validate + brand a worker id. Lowercase ASCII slug or worker-NNN style. */
 export function asWorkerId(value: string): WorkerId {
   if (!isWorkerIdShape(value)) {

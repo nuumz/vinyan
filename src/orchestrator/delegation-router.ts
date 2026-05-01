@@ -11,6 +11,7 @@
  *
  * Axioms: A3 (deterministic governance), A6 (zero-trust execution)
  */
+import { issueCapabilityToken } from '../core/capability-token.ts';
 import type { AgentBudget, DelegationRequest } from './protocol.ts';
 import type { RoutingDecision, TaskInput } from './types.ts';
 import type { AgentBudgetTracker } from './agent/agent-budget.ts';
@@ -114,6 +115,33 @@ export function buildSubTaskInput(
   const isReadOnlyRole = subagentType === 'explore' || subagentType === 'plan';
   const taskType = isReadOnlyRole ? 'reasoning' : request.targetFiles?.length ? 'code' : 'reasoning';
 
+  // R4 — issue a scoped capability token bound to this delegation.
+  // The factory auto-prepends mutation-tool forbids for explore/plan and
+  // shell_exec/delegate_task forbids for general-purpose, so we pass
+  // only the explicit allow-list and let the policy floor handle the
+  // rest. Path scoping is applied to general-purpose only — explore/plan
+  // are read-only and walk freely (they cannot mutate anyway).
+  // TTL aligned to childBudget.maxDurationMs so token expiry tracks the
+  // child's wall-clock budget (A9 bounded failure, A10 time grounding).
+  const capabilityToken = issueCapabilityToken({
+    parentTaskId: parent.id,
+    subagentType,
+    allowedTools: request.requiredTools ?? [],
+    ...(isReadOnlyRole ? {} : { allowedPaths: request.targetFiles ?? [] }),
+    ttlMs: childBudget.maxDurationMs,
+    issuedBy: 'delegation-router',
+    provenance: {
+      reason: 'sub-task-delegation',
+      parentTaskId: parent.id,
+      subagentType,
+      goal: request.goal,
+      requiredTools: request.requiredTools ?? [],
+      targetFiles: request.targetFiles ?? [],
+      ...(request.requestedTokens !== undefined ? { requestedTokens: request.requestedTokens } : {}),
+      ...(request.context !== undefined ? { context: request.context } : {}),
+    },
+  });
+
   // Agent Conversation: propagate parent-provided context (e.g., resolved
   // clarifications from a prior delegation round) into the child's
   // constraints so the understanding pipeline sees them as first-class
@@ -156,5 +184,6 @@ export function buildSubTaskInput(
     // so multi-agent dispatch via delegate_task was silently broken.
     ...(request.targetAgentId ? { agentId: request.targetAgentId } : {}),
     ...(contextConstraint ? { constraints: [contextConstraint] } : {}),
+    capabilityToken,
   };
 }

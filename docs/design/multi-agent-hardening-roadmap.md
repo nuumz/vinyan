@@ -365,3 +365,98 @@ tests + 1 new bus event.
    green.
 5. Ship; update this doc's "Last updated" + cross out the row in the
    prioritization matrix.
+
+## Axiom promotion gates — data prerequisites (A11 / A12 / A14)
+
+> Last updated: 2026-05-01.
+>
+> The proposed extension axioms below remain RFC stubs. Each has a
+> concrete data gate that MUST be satisfied before promotion to an
+> official axiom. Faking the gate (e.g. inventing telemetry, lowering
+> the threshold to "what we observe today") would defeat the purpose
+> of the gate. Do not promote until the listed query passes on real
+> production traffic.
+
+### A11 — Capability Escalation
+
+**RFC stub location**: `src/orchestrator/worker/artifact-commit.ts:98-110`
+emits `commit:capability_escalation_evaluated` post-preflight, pre-write.
+Today the verdict is always `decision: 'allow'` — no enforcement.
+
+**Telemetry**: Yes. Event is wired in `src/core/bus.ts:807` and emitted
+unconditionally when `opts.bus + taskId + actor` are present. Schema:
+`{ taskId, actor, targets: string[], decision: 'allow' | 'deny',
+reason: string }`. Coverage test:
+`tests/axiom-invariants/a11-capability-escalation.test.ts`.
+
+**Promotion gate** — ALL must hold before A11 is promoted:
+
+- ≥ 2 weeks of continuous production telemetry on
+  `commit:capability_escalation_evaluated`.
+- Per-actor mutation success rate computed from the trace store joined
+  with this event:
+  `wilson_lb(success_count, total_count) ≥ 0.99` over `total_count ≥
+  1000` traces of the same `mutation-class` (taxonomy must be defined
+  first — see below).
+- Mutation-class taxonomy DEFINED. Today `targets` is a flat
+  `string[]`; A11 promotion needs each commit classified by mutation
+  kind (e.g. `code/test/config/doc/migration`) so Wilson-LB can be
+  computed per class. Adding a `class: string` field to the event is a
+  prerequisite, NOT covered by the current stub.
+- Revocation telemetry DEFINED. A `commit:capability_revoked` companion
+  event with reason classification must exist so the promotion can
+  prove revocation closes the loop on errors. Not yet wired.
+
+**Verification query (placeholder — will need refinement once mutation
+class is wired)**:
+
+```sql
+SELECT actor,
+       mutation_class,
+       COUNT(*) AS n,
+       SUM(CASE WHEN trace_outcome = 'success' THEN 1 ELSE 0 END) AS k,
+       wilson_lb_99(SUM(CASE WHEN trace_outcome = 'success' THEN 1 ELSE 0 END),
+                    COUNT(*)) AS wilson_lb
+  FROM capability_escalation_evaluated_event AS ev
+  JOIN execution_traces AS t ON t.task_id = ev.task_id
+ WHERE ev.event_ts > strftime('%s','now') - 86400 * 14
+ GROUP BY actor, mutation_class
+HAVING n >= 1000 AND wilson_lb >= 0.99;
+```
+
+**Do not promote A11** until the query above returns ≥ 1 actor / class
+combination AND the revocation event ledger shows `0 unrevoked errors`
+in the same window.
+
+### A12 — (RFC stub, not promoted)
+
+**Status**: Proposed. Concept defined in `docs/foundation/concept.md`
+RFC section. No runtime telemetry exists yet.
+
+**Promotion gate**: define the telemetry contract first; emit it for ≥
+2 weeks; agree on a Wilson-LB or coverage threshold; THEN re-evaluate.
+Do not add a config flag claiming readiness in the meantime.
+
+### A14 — (RFC stub, not promoted)
+
+**Status**: Proposed. Same posture as A12 — telemetry contract is the
+prerequisite, and that contract has not been written. Do not promote.
+
+## Other deferred items — data-gated, not faked
+
+The items below were called out alongside A11 in the implementation
+plan that landed the capability-token wiring (2026-05-01). Each is
+intentionally deferred until real evidence exists; the section is
+recorded here so a future contributor can find them when the
+underlying preconditions change.
+
+| Item | Data prerequisite | Why deferred |
+|---|---|---|
+| Adaptive coefficient retuning (`parameter-registry`) | ≥ 2 weeks of `parameter_adaptations` ledger entries spanning ≥ 5 task types and ≥ 100 traces per type | Tuning without that volume produces unstable ceilings; sleep-cycle's existing adaptation already moves them within bounds |
+| Eventual-consistency row-level locking on remote DB targets | A2A peer running against a non-SQLite primary database (e.g. PostgreSQL replica). No such target exists in the current deployment matrix. | SQLite's single-writer semantics already serialize writes; the design only matters when the DB target supports concurrent writers |
+| Optimistic-lock 412 localStorage draft preservation in vinyan-ui | Product evidence that the 412-on-stale-edit UX is a frequent user complaint (e.g. ≥ 3 reports / week on the editor surface) | Today's 412 is rare and the editor's own dirty-state tracking is sufficient. Do not add localStorage rehydration speculatively |
+
+When any prerequisite above flips to "satisfied", open a focused
+sub-task in this roadmap with: (a) which prerequisite triggered, (b)
+the query / metric proving it, (c) the smallest implementation slice
+that closes the gap.

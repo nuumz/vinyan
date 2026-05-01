@@ -13,6 +13,7 @@
  *
  * Pure: no IO, no LLM, no clock. A3 compliant — deterministic governance.
  */
+import { asPersonaId, type PersonaId } from '../../core/agent-vocabulary.ts';
 import type { TaskDomain } from '../types.ts';
 import type { AgentRegistry } from './registry.ts';
 
@@ -59,7 +60,7 @@ export interface A1VerifierRoutingInput {
 export function selectVerifierForDelegation(
   routing: A1VerifierRoutingInput,
   registry: AgentRegistry,
-): string | null {
+): PersonaId | null {
   if (routing.parentTaskType !== 'code') return null;
   // Phase-15 Item 3: read-only code reasoning produces no artifact, so
   // there's nothing for a Verifier to verify — skip the override.
@@ -68,5 +69,9 @@ export function selectVerifierForDelegation(
   const verifier = registry.findCanonicalVerifier();
   if (!verifier) return null;
   if (routing.parentAgentId && routing.parentAgentId === verifier.id) return null;
-  return verifier.id;
+  // Brand at the registry boundary. The registry contract guarantees
+  // verifier.id is PersonaId-shaped; if a future bug violates that, the
+  // throw surfaces it deterministically (A3) rather than letting a
+  // malformed id drift through workflow + trace surfaces.
+  return asPersonaId(verifier.id);
 }

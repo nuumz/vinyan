@@ -7,6 +7,7 @@
  * Source of truth: spec/tdd.md §11 (Worker IPC), §16.3 (Worker lifecycle)
  */
 import { z } from 'zod/v4';
+import { isPersonaIdShape, type PersonaId } from '../core/agent-vocabulary.ts';
 import { EvidenceSchema } from '../oracle/protocol.ts';
 import { SkillCardViewSchema } from './agents/derive-persona-capabilities.ts';
 import type { InstructionMemory } from './llm/instruction-hierarchy.ts';
@@ -707,8 +708,16 @@ export const DelegationRequestSchema = z.object({
    * (e.g., 'architect', 'author'). The child inherits that peer's
    * persona, ACL, and skills. Governance rules (depth, budget, scope) are
    * unchanged — this only selects which specialist does the work.
+   *
+   * Branded `PersonaId` post-validation so an LLM-hallucinated id with
+   * the wrong shape is rejected at the Zod boundary rather than
+   * silently flowing into TaskInput.agentId.
    */
-  targetAgentId: z.string().optional(),
+  targetAgentId: z
+    .string()
+    .refine(isPersonaIdShape, 'invalid PersonaId shape — must match /^[a-z][a-z0-9-]{0,63}$/')
+    .transform((v) => v as PersonaId)
+    .optional(),
 });
 export type DelegationRequest = z.infer<typeof DelegationRequestSchema>;
 

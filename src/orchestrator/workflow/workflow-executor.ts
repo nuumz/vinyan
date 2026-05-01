@@ -31,7 +31,15 @@ import {
   type WorkflowStageManifest,
   type WorkflowTodoStatus,
 } from './stage-manifest.ts';
-import type { WorkflowPlan, WorkflowResult, WorkflowStep, WorkflowStepResult, WorkflowStepStrategy } from './types.ts';
+import {
+  DEFAULT_DELEGATE_RETRY_BUDGET,
+  MAX_STEP_RETRY_BUDGET,
+  type WorkflowPlan,
+  type WorkflowResult,
+  type WorkflowStep,
+  type WorkflowStepResult,
+  type WorkflowStepStrategy,
+} from './types.ts';
 import { planWorkflow, type WorkflowPlannerDeps } from './workflow-planner.ts';
 
 /**
@@ -239,6 +247,15 @@ function classifyDelegateError(
 ): MultiAgentSubtaskErrorKind {
   if (ctx.timeoutKind) return 'timeout';
   const msg = errorMessage.toLowerCase();
+  // Infrastructure-level failures — the delegate dispatch path itself is
+  // not wired. Order matters: this branch must come BEFORE the generic
+  // `subtask_failed` catch-all so "executeTask not available" doesn't
+  // get downgraded to a retryable failure.
+  if (
+    /executetask not available|not configured|not wired|registry not available|agent registry empty/.test(msg)
+  ) {
+    return 'infrastructure_unavailable';
+  }
   if (/quota|rate.?limit|429|too.many.requests/.test(msg)) return 'provider_quota';
   if (/timeout|timed out/.test(msg)) return 'timeout';
   if (/empty|no output|no content/.test(msg)) return 'empty_response';
@@ -247,6 +264,101 @@ function classifyDelegateError(
   if (/dependency.failed|depends on/.test(msg)) return 'dependency_failed';
   if (msg.length > 0) return 'subtask_failed';
   return 'unknown';
+}
+
+/**
+ * Q1 — deterministic retryability rule. A6/A9: Vinyan retries TRANSIENT
+ * failures (timeout, provider quota / rate-limit, generic subtask errors
+ * that may be transport-level) and refuses to retry PERMANENT failures
+ * where re-running the same input is guaranteed to fail again.
+ *
+ * Permanent (returns false):
+ *   - `contract_violation` — guardrail / injection: re-running the same
+ *     prompt produces the same violation. Don't waste budget.
+ *   - `dependency_failed` — a parent step skipped this one; retrying
+ *     this step alone won't fix the failed dependency upstream.
+ *   - `parse_error` — the model produced invalid JSON; expecting valid
+ *     JSON on retry without changing the prompt is wishful thinking.
+ *   - `empty_response` — provider returned cleanly with no content; the
+ *     persona / prompt itself is broken, not the transport.
+ *   - `unknown` (empty error message) — when we can't classify, default
+ *     to NOT retrying so we never burn budget on a misclassified
+ *     permanent failure. Operators can still set retryBudget on a
+ *     specific step if they have evidence it's transient.
+ *
+ * Transient (returns true):
+ *   - `timeout` — both idle and ceiling-kind. Caller-side retry is the
+ *     existing recovery hint embedded in `useRetryTask`.
+ *   - `provider_quota` — 429 / rate-limit. The retry will bounce off
+ *     the provider's cooldown via `llm/retry.ts` heartbeat behaviour;
+ *     wrapping it at the step level adds one more chance before the
+ *     fallback / gate.
+ *   - `subtask_failed` — generic non-classified failure that DID emit
+ *     an error string. Conservative retry once; permanent failures
+ *     above are screened out before this branch.
+ */
+function isRetryableDelegateFailure(kind: MultiAgentSubtaskErrorKind): boolean {
+  switch (kind) {
+    // Tightened on the risk-reduction pass: only failures with a
+    // defensible chance of clearing on re-run with the same input
+    // qualify. Both LLM provider 429s and watchdog idle/ceiling kills
+    // can be flakes; everything else either has a structural cause
+    // (contract violation, parse error) or carries no signal of
+    // transience (the catch-all `subtask_failed`, `unknown`). Falling
+    // through to fallback is the right rung of the degradation ladder
+    // when we can't justify another attempt.
+    case 'timeout':
+    case 'provider_quota':
+      return true;
+    case 'subtask_failed':
+    case 'contract_violation':
+    case 'dependency_failed':
+    case 'parse_error':
+    case 'empty_response':
+    case 'infrastructure_unavailable':
+    case 'unknown':
+      return false;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Some failure classes must skip the fallback path too — auto-fallback
+ * exists to recover from transient delegate quality issues, not to mask
+ * configuration mistakes. When the delegate dispatch infrastructure is
+ * unavailable, silently swapping to `llm-reasoning` would attribute a
+ * generic LLM's answer to the requested persona (A2 honesty violation).
+ *
+ * Currently only `infrastructure_unavailable` qualifies. Expand as new
+ * permanent failure modes are added to the taxonomy.
+ */
+function shouldSuppressFallback(kind: MultiAgentSubtaskErrorKind): boolean {
+  return kind === 'infrastructure_unavailable';
+}
+
+/**
+ * Q1 — clamp the configured retry budget for a step into the allowed
+ * range. Centralised so both the planner-output normalizer and the
+ * executor agree on how to interpret missing / out-of-range values.
+ *
+ * Rules:
+ *   - undefined → default 1 for delegate-sub-agent, 0 for everything
+ *     else (preserves legacy single-attempt behaviour).
+ *   - negative or NaN → 0.
+ *   - > MAX_STEP_RETRY_BUDGET → clamped to the cap (Zod also rejects
+ *     these at parse time, but we clamp here for runtime sources that
+ *     might bypass the schema).
+ */
+function resolveStepRetryBudget(step: WorkflowStep): number {
+  const raw = step.retryBudget;
+  const max = MAX_STEP_RETRY_BUDGET;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+    return step.strategy === 'delegate-sub-agent' ? DEFAULT_DELEGATE_RETRY_BUDGET : 0;
+  }
+  if (raw < 0) return 0;
+  if (raw > max) return max;
+  return Math.floor(raw);
 }
 
 function emitWorkflowTextDelta(deps: WorkflowExecutorDeps, taskId: string, text: string): void {
@@ -708,7 +820,11 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
     emitPlanUpdate();
 
     // Execute ready steps in parallel
-    const results = await Promise.all(ready.map((step) => executeStep(step, plan, stepResults, input, depsWithStage)));
+    const results = await Promise.all(
+      ready.map((step) =>
+        executeStep(step, plan, stepResults, input, depsWithStage, { parentStartedAt: startTime }),
+      ),
+    );
 
     for (const result of results) {
       stepResults.set(result.stepId, result);
@@ -863,6 +979,7 @@ async function executeStep(
   priorResults: Map<string, WorkflowStepResult>,
   input: TaskInput,
   deps: WorkflowExecutorDeps,
+  parentTiming?: { parentStartedAt: number },
 ): Promise<WorkflowStepResult> {
   const stepStart = performance.now();
 
@@ -877,19 +994,116 @@ async function executeStep(
   // Interpolate inputs from prior step results
   const interpolatedInputs = interpolateInputs(step.inputs, priorResults);
 
+  // Q1 — bounded step-level retry. Only applies when the failure is
+  // classified as transient (see `isRetryableDelegateFailure`); permanent
+  // failures (contract violation, parse error, dependency failed) skip
+  // the loop and fall straight through to fallback / gate.
+  //
+  // Budget honesty: each retry is gated on the parent task's
+  // `budget.maxDurationMs`. Retrying after the wall-clock has already
+  // burned past the budget would just queue another timeout and waste
+  // a slot on the user-decision ladder. We project the next attempt's
+  // cost from the duration of the attempt that just failed (no
+  // estimation guesswork) and skip retry when it wouldn't fit.
+  const retryBudget = resolveStepRetryBudget(step);
+  const maxAttempts = retryBudget + 1; // +1 for the primary attempt
+  const parentBudgetMs = input.budget.maxDurationMs;
+  const parentStartedAt = parentTiming?.parentStartedAt ?? stepStart;
+  let attemptStartedAt = performance.now();
   let result = await dispatchStrategy(step.strategy, step, plan, interpolatedInputs, input, deps);
-
-  // Fallback on failure
-  if (result.status === 'failed' && step.fallbackStrategy) {
-    deps.bus?.emit('workflow:step_fallback', {
+  let attemptIndex = 0;
+  while (result.status === 'failed' && attemptIndex < retryBudget) {
+    const failureKind =
+      step.strategy === 'delegate-sub-agent'
+        ? classifyDelegateError(result.output, { timeoutKind: null })
+        : 'subtask_failed';
+    if (!isRetryableDelegateFailure(failureKind)) break;
+    const lastAttemptDurationMs = Math.max(0, performance.now() - attemptStartedAt);
+    const elapsedSoFarMs = Math.max(0, performance.now() - parentStartedAt);
+    const remainingBudgetMs = Math.max(0, parentBudgetMs - elapsedSoFarMs);
+    if (lastAttemptDurationMs > remainingBudgetMs) {
+      deps.bus?.emit('workflow:step_retry_skipped', {
+        taskId: input.id,
+        sessionId: input.sessionId,
+        stepId: step.id,
+        strategy: step.strategy,
+        errorClass: failureKind,
+        reason: 'budget_exhausted',
+        attemptsUsed: attemptIndex + 1,
+        maxAttempts,
+        lastAttemptDurationMs: Math.round(lastAttemptDurationMs),
+        remainingBudgetMs: Math.round(remainingBudgetMs),
+      });
+      break;
+    }
+    attemptIndex += 1;
+    deps.bus?.emit('workflow:step_retry', {
       taskId: input.id,
       sessionId: input.sessionId,
       stepId: step.id,
-      primaryStrategy: step.strategy,
-      fallbackStrategy: step.fallbackStrategy,
+      strategy: step.strategy,
+      attempt: attemptIndex,
+      maxAttempts,
+      errorClass: failureKind,
+      reason: result.output.slice(0, 240),
     });
-    result = await dispatchStrategy(step.fallbackStrategy, step, plan, interpolatedInputs, input, deps);
-    result.strategyUsed = step.fallbackStrategy;
+    attemptStartedAt = performance.now();
+    result = await dispatchStrategy(step.strategy, step, plan, interpolatedInputs, input, deps);
+  }
+
+  // Fallback on failure — only after retries are exhausted. Carries the
+  // origin (`planner` vs `auto-normalizer`) for A8 provenance plus the
+  // last failure reason so dashboards can show "fallback fired because
+  // <classification>".
+  //
+  // A2 honesty: skip fallback when the failure is infrastructure-level
+  // (executeTask not wired, registry empty). Switching to llm-reasoning
+  // would silently attribute a generic LLM's answer to the requested
+  // persona — surface the configuration error instead.
+  if (result.status === 'failed' && step.fallbackStrategy) {
+    const fallbackKind =
+      step.strategy === 'delegate-sub-agent'
+        ? classifyDelegateError(result.output, { timeoutKind: null })
+        : 'subtask_failed';
+    if (!shouldSuppressFallback(fallbackKind)) {
+      deps.bus?.emit('workflow:step_fallback', {
+        taskId: input.id,
+        sessionId: input.sessionId,
+        stepId: step.id,
+        primaryStrategy: step.strategy,
+        fallbackStrategy: step.fallbackStrategy,
+        ...(step.fallbackOrigin ? { fallbackOrigin: step.fallbackOrigin } : {}),
+        reason: `${fallbackKind}: ${result.output.slice(0, 200)}`,
+      });
+      result = await dispatchStrategy(step.fallbackStrategy, step, plan, interpolatedInputs, input, deps);
+      result.strategyUsed = step.fallbackStrategy;
+      // Honest attribution (A2): the planner asked for a specific
+      // persona, but the fallback ran a different (and typically
+      // generic) strategy. Clear the resolved persona on the result
+      // and stamp the fallback marker so downstream readers
+      // (deterministic aggregator, partial-preview, chat UI) cannot
+      // mistake the fallback's output for the requested persona's
+      // voice. We only do this when the primary strategy was
+      // delegate-sub-agent — for non-delegate primaries there was no
+      // persona attribution to lose in the first place.
+      if (step.strategy === 'delegate-sub-agent') {
+        result.fallbackUsed = true;
+        result.agentId = undefined;
+        // Stamp an honest preamble onto the result body so downstream
+        // synthesizer paths that pass `result.output` through verbatim
+        // (the single-delegate short-circuit at `allResults.length === 1`
+        // is the canonical example) cannot accidentally attribute the
+        // fallback's content to the requested persona. The deterministic
+        // aggregator + partial-preview ALSO read `fallbackUsed` for
+        // structured rendering — this preamble is the floor that catches
+        // any path neither of those covers.
+        const requestedPersona = step.agentId ?? 'requested agent';
+        const preamble =
+          `*[Note: ${requestedPersona} was unavailable; this response was produced by the ` +
+          `${step.fallbackStrategy} fallback strategy, not the persona's voice.]*\n\n`;
+        result.output = `${preamble}${result.output}`;
+      }
+    }
   }
 
   const durationMs = Math.round(performance.now() - stepStart);
@@ -2012,7 +2226,19 @@ function buildDeterministicDelegateAggregation(
   for (const step of plan.steps) {
     if (!delegateStepIds.has(step.id)) continue;
     const result = stepResults.get(step.id);
-    const agentLabel = step.agentId ?? 'agent';
+    // A2 honesty: when the executor ran a fallback strategy in place
+    // of the requested delegate persona, `result.agentId` is cleared
+    // and `result.fallbackUsed` is set. We MUST NOT label the section
+    // with `step.agentId` in that case. The result body has already
+    // been stamped with an honest preamble inside `executeStep`, so
+    // we only need to neutralize the section header here — no double
+    // preamble.
+    const fallbackUsed = result?.fallbackUsed === true;
+    const resolvedPersona = result?.agentId;
+    const requestedPersona = step.agentId;
+    const agentLabel = fallbackUsed
+      ? `fallback for ${requestedPersona ?? 'agent'}`
+      : (resolvedPersona ?? requestedPersona ?? 'agent');
     const headerLine = isSingleDelegate ? '' : `### ${agentLabel} — ${step.description}`;
     const headerPrefix = isSingleDelegate ? '' : `${headerLine}\n\n`;
     if (!result) {
@@ -2143,7 +2369,15 @@ function buildPartialPreview(
     const result = stepResults.get(step.id);
     if (!result || result.status !== 'completed') continue;
     if (result.output.trim().length === 0) continue;
-    const persona = step.agentId ?? step.id;
+    // A2 honesty mirror of the deterministic aggregator: never label
+    // a fallback's output with the requested persona's name. The
+    // partial-failure preview is the user's first chance to judge
+    // whether the partial is acceptable — attribution must be
+    // accurate or the gate's "ship vs abort" choice is misleading.
+    const fallbackUsed = result.fallbackUsed === true;
+    const persona = fallbackUsed
+      ? `fallback for ${step.agentId ?? step.id}`
+      : (result.agentId ?? step.agentId ?? step.id);
     const body = result.output.trim();
     sections.push(`**${persona}**: ${body}`);
     // Stop early once we've accumulated enough; truncated output gets a

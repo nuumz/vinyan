@@ -716,7 +716,7 @@ export async function handleDelegation(
   // so both dispatch surfaces stay in lockstep. Resolution priority:
   // A1 verifier override > request.targetAgentId > inheritance/default.
   // Skip silently when registry isn't wired (legacy / minimal setups).
-  let a1VerifierAgentId: string | null = null;
+  let a1VerifierAgentId: import('../../core/agent-vocabulary.ts').PersonaId | null = null;
   if (deps.agentRegistry) {
     // Phase-15 Item 3: duck-type taskDomain; falls through to undefined
     // until TaskInput carries it. See workflow-executor for the rationale.
@@ -741,6 +741,24 @@ export async function handleDelegation(
       parentAgentId: parent.agentId ?? null,
       verifierAgentId: a1VerifierAgentId,
       requestedTargetAgentId: request.targetAgentId ?? null,
+    });
+  }
+  // R4 audit hook — record token issuance on the bus so observability
+  // can reconstruct delegated tool scope without parsing the token's
+  // `provenance` JSON from each child trace. Token is unconditional in
+  // buildSubTaskInput, so this assertion is a defensive narrow.
+  if (subInput.capabilityToken) {
+    const tok = subInput.capabilityToken;
+    deps.bus?.emit('delegation:capability_token_issued', {
+      parentTaskId: parent.id,
+      childTaskId: subInput.id,
+      tokenId: tok.id,
+      subagentType: tok.subagentType,
+      allowedTools: tok.allowedTools,
+      forbiddenTools: tok.forbiddenTools,
+      allowedPaths: tok.allowedPaths,
+      issuedAt: tok.issuedAt,
+      expiresAt: tok.expiresAt,
     });
   }
 
@@ -996,6 +1014,12 @@ export async function runAgentLoop(
     workspace: deps.workspace,
     overlayDir: overlay.dir,
     taskId: input.id,
+    // R4 — propagate the capability token issued by buildSubTaskInput
+    // (or undefined for top-level tasks). parentTaskId is paired so
+    // tool-executor can fail closed on a delegated context that somehow
+    // lacks a token (e.g. a future code path bypassing buildSubTaskInput).
+    ...(input.capabilityToken ? { capabilityToken: input.capabilityToken } : {}),
+    ...(input.parentTaskId ? { parentTaskId: input.parentTaskId } : {}),
     onDelegate:
       routing.level >= 2 && deps.delegationRouter && deps.executeTask
         ? (params: any) => handleDelegation(params as DelegationRequest, input, budget, routing, deps)

@@ -53,6 +53,14 @@ export interface ToolContext {
    */
   taskId?: string;
   /**
+   * R4 fail-closed input. When this task is delegated (i.e. has a
+   * `parentTaskId`), tool-executor refuses tool calls if no
+   * `capabilityToken` is present — silent grant of full access on a
+   * delegated path is forbidden. Top-level tasks leave this undefined
+   * and the failsafe is inert.
+   */
+  parentTaskId?: string;
+  /**
    * R4 — runtime capability token issued by `delegation-router` when the
    * task is a delegated sub-task. When present, the executor consults
    * `checkCapability(...)` before running mutation-class tools so the

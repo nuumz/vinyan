@@ -2,6 +2,7 @@
  * Tests for the workflow approval gate (Phase E).
  */
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { createBus } from '../../../src/core/bus.ts';
 import {
   approvalTimeoutMs,
@@ -241,9 +242,9 @@ describe('evaluateAutoApproval', () => {
     // workflow is exactly this shape and must not be auto-rejected.
     const verdict = evaluateAutoApproval(
       plan([
-        step({ id: 's1', strategy: 'delegate-sub-agent', agentId: 'researcher' }),
-        step({ id: 's2', strategy: 'delegate-sub-agent', agentId: 'author' }),
-        step({ id: 's3', strategy: 'delegate-sub-agent', agentId: 'mentor' }),
+        step({ id: 's1', strategy: 'delegate-sub-agent', agentId: asPersonaId('researcher') }),
+        step({ id: 's2', strategy: 'delegate-sub-agent', agentId: asPersonaId('author') }),
+        step({ id: 's3', strategy: 'delegate-sub-agent', agentId: asPersonaId('mentor') }),
         step({ id: 's4', strategy: 'llm-reasoning', dependencies: ['s1', 's2', 's3'] }),
       ]),
     );

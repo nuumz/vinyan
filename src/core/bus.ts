@@ -1657,6 +1657,31 @@ export interface VinyanBusEvents {
     requestedTargetAgentId: string | null;
   };
 
+  /**
+   * R4 — capability token issued for a delegated sub-task. Emitted by
+   * the agent-loop's `handleDelegation` immediately after
+   * `buildSubTaskInput` mints the token. Lets the audit ledger /
+   * observability dashboards reconstruct *which* tool scope each child
+   * ran under without parsing the trace store's `provenance` JSON.
+   *
+   * `tokenId` is the SHA-256-derived id from `issueCapabilityToken`
+   * (16 hex chars, prefixed `capability-token:`). It chains for replay.
+   * `parentTaskId` is the issuing parent; `childTaskId` is the resulting
+   * sub-task id. `subagentType` records which policy floor applied.
+   * `expiresAt` is epoch-ms (aligned to the child's wall-clock budget).
+   */
+  'delegation:capability_token_issued': {
+    parentTaskId: string;
+    childTaskId: string;
+    tokenId: string;
+    subagentType: 'explore' | 'plan' | 'general-purpose';
+    allowedTools: readonly string[];
+    forbiddenTools: readonly string[];
+    allowedPaths: readonly string[];
+    issuedAt: number;
+    expiresAt: number;
+  };
+
   // Crash Recovery: task checkpoint events
   'task:recovered': { taskId: string; input: TaskInput; abandoned: boolean };
 
@@ -1928,6 +1953,60 @@ export interface VinyanBusEvents {
     stepId: string;
     primaryStrategy: string;
     fallbackStrategy: string;
+    /**
+     * Q2 — provenance of the fallback. `'planner'` when the LLM planner
+     * emitted `fallbackStrategy` directly; `'auto-normalizer'` when the
+     * deterministic post-parse normalizer (`normalizeWorkflowPlan`) added
+     * it because the original step was a single delegate-sub-agent with
+     * no fallback. Optional so legacy callers compile.
+     */
+    fallbackOrigin?: 'planner' | 'auto-normalizer';
+    reason?: string;
+  };
+  /**
+   * Q1 — step-level retry attempt. Emitted before the executor re-runs
+   * the SAME `step.strategy` after a transient failure (timeout, provider
+   * quota, retryable subtask failure). `attempt` is 1-indexed: the
+   * primary attempt is implicit; the first retry is `attempt: 1`.
+   *
+   * Provenance for A8: `errorClass` carries the classifier verdict so
+   * replay can tell why a retry happened (timeout vs provider_quota vs
+   * subtask_failed). `maxAttempts` echoes the configured budget so a
+   * single trace row reveals the full retry envelope.
+   */
+  'workflow:step_retry': {
+    taskId: string;
+    sessionId?: string;
+    stepId: string;
+    strategy: string;
+    attempt: number;
+    maxAttempts: number;
+    errorClass: string;
+    reason: string;
+  };
+  /**
+   * Q1 — bounded retry was eligible (failure was retryable, budget
+   * still had attempts left) but the executor refused to retry
+   * because doing so would have overrun the parent task's wall-clock
+   * budget. Emitted once per veto (one per step) so audit replay can
+   * tell apart "we ran out of attempts" from "we ran out of clock".
+   *
+   * `lastAttemptDurationMs` is the duration the most recent attempt
+   * took — the executor uses that as the projection for the would-be
+   * next attempt rather than guessing. `remainingBudgetMs` is what
+   * was left when the veto fired.
+   */
+  'workflow:step_retry_skipped': {
+    taskId: string;
+    sessionId?: string;
+    stepId: string;
+    strategy: string;
+    errorClass: string;
+    reason: 'budget_exhausted';
+    attemptsUsed: number;
+    maxAttempts: number;
+    lastAttemptDurationMs: number;
+    remainingBudgetMs: number;
   };
   'workflow:research_injected': { goal: string; reason: string };
   'workflow:complete': { goal: string; status: string; stepsCompleted: number; totalSteps: number };

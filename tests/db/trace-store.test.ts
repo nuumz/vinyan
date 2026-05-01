@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import type { QualityScore } from '../../src/core/types.ts';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
@@ -81,7 +82,7 @@ describe('TraceStore', () => {
 
   test('capability-first metadata roundtrips for sleep-cycle promotion', () => {
     const trace = makeTrace({
-      agentId: 'ts-coder',
+      agentId: asPersonaId('ts-coder'),
       taskTypeSignature: 'review::ts',
       capabilityRequirements: [
         {

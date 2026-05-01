@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import {
   deriveCapabilityTraceAudit,
   deriveGovernanceTraceAudit,
@@ -19,14 +20,14 @@ describe('deriveCapabilityTraceAudit', () => {
   test('records selected profile provenance, fit score, and unmet capabilities', () => {
     const audit = deriveCapabilityTraceAudit(
       makeIntentResolution({
-        agentId: 'ts-coder',
+        agentId: asPersonaId('ts-coder'),
         agentSelectionReason: 'capability-router override (score 0.86)',
         capabilityAnalysis: {
           taskId: 'task-1',
           required: [{ id: 'code.audit.jwt', weight: 1, source: 'llm-extract' }],
           candidates: [
             {
-              agentId: 'writer',
+              agentId: asPersonaId('writer'),
               profileId: 'writer',
               profileSource: 'registry',
               trustTier: 'deterministic',
@@ -35,7 +36,7 @@ describe('deriveCapabilityTraceAudit', () => {
               gap: [{ id: 'code.audit.jwt', weight: 1 }],
             },
             {
-              agentId: 'ts-coder',
+              agentId: asPersonaId('ts-coder'),
               profileId: 'ts-coder',
               profileSource: 'registry',
               trustTier: 'deterministic',
@@ -61,7 +62,7 @@ describe('deriveCapabilityTraceAudit', () => {
   test('marks synthesized task-scoped agents as probabilistic synthetic profiles', () => {
     const audit = deriveCapabilityTraceAudit(
       makeIntentResolution({
-        agentId: 'synthetic-task-1',
+        agentId: asPersonaId('synthetic-task-1'),
         syntheticAgentId: 'synthetic-task-1',
         agentSelectionReason: 'synthesized task-scoped agent',
         capabilityAnalysis: {
@@ -69,7 +70,7 @@ describe('deriveCapabilityTraceAudit', () => {
           required: [{ id: 'code.audit.jwt', weight: 1, source: 'llm-extract' }],
           candidates: [
             {
-              agentId: 'ts-coder',
+              agentId: asPersonaId('ts-coder'),
               profileId: 'ts-coder',
               profileSource: 'registry',
               trustTier: 'deterministic',

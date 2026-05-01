@@ -5,6 +5,7 @@
  * the prompt fragments + the comprehension block's routing-rule injection.
  */
 import { describe, expect, it } from 'bun:test';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import {
   buildClassifierUserPrompt,
   buildComprehensionBlock,
@@ -196,7 +197,7 @@ describe('buildClassifierUserPrompt', () => {
 
   it('appends agent override notice when input.agentId matches a known agent', () => {
     const prompt = buildClassifierUserPrompt(
-      input({ agentId: 'writer' }),
+      input({ agentId: asPersonaId('writer') }),
       deps({ agents: [{ id: 'writer', name: 'writer', description: 'ideation' }] }),
       null,
     );

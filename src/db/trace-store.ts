@@ -5,6 +5,7 @@
  * JSON-serializes complex fields (oracle_verdicts, affected_files, prediction_error).
  */
 import type { Database } from 'bun:sqlite';
+import { tryAsPersonaId } from '../core/agent-vocabulary.ts';
 import type { ExecutionTrace, ShadowValidationResult } from '../orchestrator/types.ts';
 import {
   GOVERNANCE_QUERY_DEFAULT_LIMIT,
@@ -398,12 +399,20 @@ function rowToTrace(row: any): ExecutionTrace {
   if (!validated.success) {
     console.warn('[vinyan] TraceStore: row failed Zod validation, using fallback', validated.error.message);
   }
+  // Brand the agent_id at the read boundary. A malformed legacy row
+  // (e.g. uppercase letters from a pre-branded era) deserializes as
+  // `undefined` rather than retaining a bare string — A9 bounded
+  // degradation, not silent fallback to bare string.
+  const agentId = tryAsPersonaId(row.agent_id ?? undefined);
+  if (row.agent_id !== null && row.agent_id !== undefined && agentId === undefined) {
+    console.warn(`[vinyan] TraceStore: row ${row.id} has invalid agent_id "${row.agent_id}" — dropping field`);
+  }
   return {
     id: row.id,
     taskId: row.task_id,
     sessionId: row.session_id ?? undefined,
     workerId: row.worker_id ?? undefined,
-    agentId: row.agent_id ?? undefined,
+    agentId,
     timestamp: row.timestamp,
     routingLevel: row.routing_level,
     taskTypeSignature: row.task_type_signature ?? undefined,

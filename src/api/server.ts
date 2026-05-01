@@ -137,6 +137,16 @@ export interface APIServerDeps {
   /** Capability model — per-worker capability scores for /engines deepen. */
   capabilityModel?: import('../orchestrator/fleet/capability-model.ts').CapabilityModel;
   /**
+   * Durable agent-cron store — exposed when the gateway scheduler is
+   * wired. Powers the `/api/v1/scheduler/jobs` operations console.
+   */
+  gatewayScheduleStore?: import('../db/gateway-schedule-store.ts').GatewayScheduleStore;
+  /**
+   * Skill proposal quarantine store. Backs `/api/v1/skill-proposals/*`.
+   * Constructed by the factory whenever a DB handle is available.
+   */
+  skillProposalStore?: import('../db/skill-proposal-store.ts').SkillProposalStore;
+  /**
    * Default profile name for this server instance. Requests that omit
    * both the `X-Vinyan-Profile` header and `body.profile` fall back to
    * this value. Defaults to `'default'` when not set.
@@ -385,7 +395,7 @@ export class VinyanAPIServer {
 
     // ── Tasks ─────────────────────────────────────────────
     if (method === 'GET' && path === '/api/v1/tasks') {
-      return this.handleListTasks();
+      return this.handleListTasks(req);
     }
 
     if (method === 'POST' && path === '/api/v1/tasks') {
@@ -410,6 +420,20 @@ export class VinyanAPIServer {
     if (method === 'POST' && path.match(/^\/api\/v1\/tasks\/[^/]+\/retry$/)) {
       const taskId = path.split('/')[4]!;
       return this.handleRetryTask(taskId, req);
+    }
+
+    // ── Operations console: archive / unarchive / export ──
+    if (method === 'POST' && path.match(/^\/api\/v1\/tasks\/[^/]+\/archive$/)) {
+      const taskId = path.split('/')[4]!;
+      return this.handleArchiveTask(taskId);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/tasks\/[^/]+\/unarchive$/)) {
+      const taskId = path.split('/')[4]!;
+      return this.handleUnarchiveTask(taskId);
+    }
+    if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+\/export$/)) {
+      const taskId = path.split('/')[4]!;
+      return this.handleExportTask(taskId);
     }
 
     // ── Task Approval (A6) ──────────────────────────────────
@@ -703,6 +727,73 @@ export class VinyanAPIServer {
 
     if (method === 'POST' && path === '/api/v1/memory/reject') {
       return this.handleMemoryReject(req);
+    }
+
+    // ── Scheduler — durable agent cron CRUD ────────────────────────────
+    // Operations console for `gateway_schedules`. Recursion guard: every
+    // mutation handler rejects requests whose body carries
+    // `originSource === 'gateway-cron'` so a scheduled task cannot
+    // bootstrap into rewriting its own schedule via the public API. See
+    // §recursion-guard in the design note.
+    if (method === 'GET' && path === '/api/v1/scheduler/jobs') {
+      return this.handleListScheduledJobs(req);
+    }
+    if (method === 'POST' && path === '/api/v1/scheduler/jobs') {
+      return this.handleCreateScheduledJob(req);
+    }
+    if (method === 'GET' && path.match(/^\/api\/v1\/scheduler\/jobs\/[^/]+$/)) {
+      const id = path.split('/').pop()!;
+      return this.handleGetScheduledJob(id, req);
+    }
+    if (method === 'PATCH' && path.match(/^\/api\/v1\/scheduler\/jobs\/[^/]+$/)) {
+      const id = path.split('/').pop()!;
+      return this.handleUpdateScheduledJob(id, req);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/scheduler\/jobs\/[^/]+\/pause$/)) {
+      const id = path.split('/')[5]!;
+      return this.handlePauseScheduledJob(id, req);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/scheduler\/jobs\/[^/]+\/resume$/)) {
+      const id = path.split('/')[5]!;
+      return this.handleResumeScheduledJob(id, req);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/scheduler\/jobs\/[^/]+\/run$/)) {
+      const id = path.split('/')[5]!;
+      return this.handleRunScheduledJobNow(id, req);
+    }
+    if (method === 'DELETE' && path.match(/^\/api\/v1\/scheduler\/jobs\/[^/]+$/)) {
+      const id = path.split('/').pop()!;
+      return this.handleDeleteScheduledJob(id, req);
+    }
+
+    // ── Skill proposals — agent-managed procedural memory ─────────────
+    // Quarantined-by-default. No path here ever auto-activates a
+    // proposal; approve still requires a human-attributed decision.
+    if (method === 'GET' && path === '/api/v1/skill-proposals') {
+      return this.handleListSkillProposals(req);
+    }
+    if (method === 'POST' && path === '/api/v1/skill-proposals') {
+      return this.handleCreateSkillProposal(req);
+    }
+    if (method === 'GET' && path.match(/^\/api\/v1\/skill-proposals\/[^/]+$/)) {
+      const id = path.split('/').pop()!;
+      return this.handleGetSkillProposal(id, req);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/skill-proposals\/[^/]+\/approve$/)) {
+      const id = path.split('/')[4]!;
+      return this.handleApproveSkillProposal(id, req);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/skill-proposals\/[^/]+\/reject$/)) {
+      const id = path.split('/')[4]!;
+      return this.handleRejectSkillProposal(id, req);
+    }
+    if (method === 'POST' && path.match(/^\/api\/v1\/skill-proposals\/[^/]+\/trust-tier$/)) {
+      const id = path.split('/')[4]!;
+      return this.handleSetSkillProposalTrustTier(id, req);
+    }
+    if (method === 'DELETE' && path.match(/^\/api\/v1\/skill-proposals\/[^/]+$/)) {
+      const id = path.split('/').pop()!;
+      return this.handleDeleteSkillProposal(id, req);
     }
 
     if (method === 'GET' && path === '/api/v1/predictions/calibration') {
@@ -1118,63 +1209,306 @@ export class VinyanAPIServer {
     return jsonResponse({ taskId: input.id, status: 'accepted' }, 202);
   }
 
-  private handleListTasks(): Response {
-    // Merge in-memory async results with session-persisted tasks.
-    // Session store is the source of truth for session-based tasks (Chat).
-    const allSessionTasks = this.deps.sessionManager.listAllTasks(200);
-    const seenIds = new Set<string>();
+  private handleListTasks(req?: Request): Response {
+    const url = req ? new URL(req.url) : null;
+    const params = url?.searchParams ?? new URLSearchParams();
 
-    const tasks: Array<{
+    const limitRaw = params.get('limit');
+    const offsetRaw = params.get('offset');
+    const limit = limitRaw ? Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 0)) : 50;
+    const offset = offsetRaw ? Math.max(0, parseInt(offsetRaw, 10) || 0) : 0;
+    const sessionId = params.get('sessionId') ?? undefined;
+    const search = params.get('search') ?? undefined;
+    // Hermes session-storage lesson: substring LIKE doesn't scale.
+    // Opt-in `?searchMode=fts` runs against `session_tasks_fts` (mig 028)
+    // for multi-token AND queries with BM25 ranking. Default stays `like`
+    // so historical clients see no behaviour change.
+    const searchModeParam = params.get('searchMode');
+    const searchMode: 'like' | 'fts' = searchModeParam === 'fts' ? 'fts' : 'like';
+    const sourceFilter = params.get('source') ?? undefined; // 'ui' | 'api' | 'all' | undefined
+    const visibility = (() => {
+      const v = params.get('visibility') ?? params.get('archived');
+      if (v === 'archived' || v === 'true') return 'archived' as const;
+      if (v === 'all') return 'all' as const;
+      return 'active' as const;
+    })();
+    const sortParam = params.get('sort');
+    const sort: 'created-desc' | 'created-asc' | 'updated-desc' | 'updated-asc' =
+      sortParam === 'created-asc' ||
+      sortParam === 'updated-desc' ||
+      sortParam === 'updated-asc'
+        ? sortParam
+        : 'created-desc';
+    const fromRaw = params.get('from');
+    const toRaw = params.get('to');
+    const from = fromRaw ? Math.max(0, parseInt(fromRaw, 10)) : undefined;
+    const to = toRaw ? Math.max(0, parseInt(toRaw, 10)) : undefined;
+
+    // Status filter — backend stores a small enum on `session_tasks.status`.
+    // The UI filter ("partial", "escalated", "input-required", "timeout",
+    // …) maps onto either the db status (`completed`/`failed`/`cancelled`)
+    // or the projected result status. We post-filter on the projected
+    // status so the rich tones remain queryable.
+    const statusFilters = parseStatusFilter(params);
+    const needsActionFilter = params.get('needsAction'); // type or "any"
+    const routingLevelRaw = params.get('routingLevel');
+    const routingLevelFilter = routingLevelRaw !== null ? parseInt(routingLevelRaw, 10) : undefined;
+    const approachFilter = params.get('approach') ?? params.get('strategy') ?? undefined;
+    const hasErrorFilter = params.get('hasError') === 'true';
+
+    const sessionManager = this.deps.sessionManager;
+    // Pull a generous slice and filter/page in memory so the projected
+    // status / needs-action filters are honoured. The DB-side filter
+    // narrows by visibility/sessionId/search/from/to/sort; the in-memory
+    // pass adds the post-projection facets the operator cares about.
+    const dbResult = sessionManager.listTasksFiltered({
+      visibility,
+      sessionId,
+      search,
+      searchMode,
+      from,
+      to,
+      sort,
+      // Pull more rows when post-filtering kicks in so the page is full
+      // even after rejection.
+      limit: 1000,
+      offset: 0,
+    });
+    const counts = sessionManager.countTasksByStatus();
+
+    type TaskSummary = {
       taskId: string;
       sessionId?: string;
-      status: string;
+      parentTaskId?: string;
       goal?: string;
+      status: string;
+      dbStatus?: string;
+      createdAt: number;
+      updatedAt: number;
+      durationMs?: number;
+      routingLevel?: number;
+      approach?: string;
+      modelUsed?: string;
+      workerId?: string | null;
+      tokensConsumed?: number;
+      qualityScore?: number;
+      affectedFiles?: string[];
+      errorSummary?: string;
+      resultStatus?: string;
+      needsAction: boolean;
+      needsActionType: string;
+      retryOf?: string;
+      retryChildren?: string[];
+      hasEventHistory: boolean;
+      sessionSource?: string;
+      archivedAt?: number | null;
       result?: unknown;
-    }> = [];
+    };
 
-    // In-flight tasks (running right now)
-    for (const [id] of this.inFlightTasks) {
-      seenIds.add(id);
-      const sessionTask = allSessionTasks.find((t) => t.taskId === id);
-      tasks.push({
-        taskId: id,
-        sessionId: sessionTask?.sessionId,
-        status: 'running',
-        goal: sessionTask?.goal,
-      });
-    }
+    const summaries: TaskSummary[] = [];
+    const seen = new Set<string>();
+    const sessionSourceCache = new Map<string, string | undefined>();
+    const lookupSessionSource = (id: string | undefined): string | undefined => {
+      if (!id) return undefined;
+      if (sessionSourceCache.has(id)) return sessionSourceCache.get(id);
+      try {
+        const session = sessionManager.get(id);
+        const src = session?.source;
+        sessionSourceCache.set(id, src);
+        return src;
+      } catch {
+        sessionSourceCache.set(id, undefined);
+        return undefined;
+      }
+    };
+    const taskEventStore = this.deps.taskEventStore;
+    const pendingApprovalIds = new Set(
+      (this.deps.approvalGate?.getPending() ?? []).map((p) => p.taskId),
+    );
 
-    // Async API results (not from session). Pass through the orchestrator's
-    // TaskResult.status verbatim so the UI can distinguish escalated /
-    // uncertain / partial from completed and failed (the StatusBadge has
-    // dedicated tones for each — collapsing them here loses observability).
-    for (const [id, result] of this.asyncResults) {
-      if (seenIds.has(id)) continue;
-      seenIds.add(id);
-      const sessionTask = allSessionTasks.find((t) => t.taskId === id);
-      tasks.push({
-        taskId: id,
-        sessionId: sessionTask?.sessionId,
-        status: result.status,
-        goal: sessionTask?.goal,
+    const enrich = (
+      base: {
+        taskId: string;
+        sessionId?: string;
+        status: string;
+        dbStatus?: string;
+        goal?: string;
+        result?: unknown;
+        taskInput?: TaskInput;
+        createdAt: number;
+        updatedAt: number;
+        archivedAt?: number | null;
+      },
+      isInFlight: boolean,
+    ): TaskSummary => {
+      const result = base.result as TaskResult | undefined;
+      const trace = result?.trace;
+      const status = isInFlight ? 'running' : base.status;
+      const needsActionType = classifyNeedsAction({
+        status,
         result,
+        pendingApprovals: pendingApprovalIds,
+        taskId: base.taskId,
+        isInFlight,
+        createdAt: base.createdAt,
+        updatedAt: base.updatedAt,
       });
+      const sessionSource = lookupSessionSource(base.sessionId);
+      const retryOf = base.taskInput?.parentTaskId;
+      const errorSummary = (() => {
+        if (status === 'cancelled') {
+          const r = result as { cancelReason?: unknown } | undefined;
+          return typeof r?.cancelReason === 'string' ? r.cancelReason : undefined;
+        }
+        if (trace?.failureReason) return trace.failureReason;
+        if (typeof result?.escalationReason === 'string') return result.escalationReason;
+        if (status === 'failed' || status === 'escalated' || status === 'timeout') {
+          return result?.answer;
+        }
+        return undefined;
+      })();
+
+      return {
+        taskId: base.taskId,
+        sessionId: base.sessionId,
+        ...(retryOf ? { parentTaskId: retryOf, retryOf } : {}),
+        goal: base.goal,
+        status,
+        dbStatus: base.dbStatus,
+        createdAt: base.createdAt,
+        updatedAt: base.updatedAt,
+        ...(typeof trace?.durationMs === 'number' ? { durationMs: trace.durationMs } : {}),
+        ...(typeof trace?.routingLevel === 'number' ? { routingLevel: trace.routingLevel } : {}),
+        ...(trace?.approach ? { approach: trace.approach } : {}),
+        ...(trace?.modelUsed ? { modelUsed: trace.modelUsed } : {}),
+        ...(trace?.workerId !== undefined ? { workerId: trace.workerId } : {}),
+        ...(typeof trace?.tokensConsumed === 'number'
+          ? { tokensConsumed: trace.tokensConsumed }
+          : {}),
+        ...(typeof result?.qualityScore?.composite === 'number'
+          ? { qualityScore: result.qualityScore.composite }
+          : {}),
+        ...(Array.isArray(trace?.affectedFiles) ? { affectedFiles: trace.affectedFiles } : {}),
+        ...(errorSummary ? { errorSummary } : {}),
+        ...(result?.status ? { resultStatus: result.status } : {}),
+        needsAction: needsActionType !== 'none',
+        needsActionType,
+        hasEventHistory: !!taskEventStore,
+        ...(sessionSource ? { sessionSource } : {}),
+        ...(base.archivedAt !== undefined ? { archivedAt: base.archivedAt } : {}),
+        ...(result ? { result } : {}),
+      };
+    };
+
+    // 1. In-flight wins on status — even if a stale row in db says
+    //    'pending', the in-memory map says it's running right now.
+    if (visibility !== 'archived') {
+      for (const id of this.inFlightTasks.keys()) {
+        const dbRow = dbResult.tasks.find((t) => t.taskId === id);
+        const base = dbRow ?? {
+          taskId: id,
+          sessionId: undefined,
+          status: 'running',
+          dbStatus: 'running',
+          goal: undefined,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          archivedAt: null,
+        };
+        seen.add(id);
+        summaries.push(enrich({ ...base, status: 'running' }, true));
+      }
     }
 
-    // Session-persisted tasks (from Chat)
-    for (const st of allSessionTasks) {
-      if (seenIds.has(st.taskId)) continue;
-      seenIds.add(st.taskId);
-      tasks.push({
-        taskId: st.taskId,
-        sessionId: st.sessionId,
-        status: st.status,
-        goal: st.goal,
-        result: st.result,
-      });
+    // 2. Pure async results (no session row) — keep the rich result
+    //    status; "failed" was historically over-projected to mask the
+    //    real reason, the operations console wants the truth.
+    if (visibility !== 'archived') {
+      for (const [id, result] of this.asyncResults) {
+        if (seen.has(id)) continue;
+        const dbRow = dbResult.tasks.find((t) => t.taskId === id);
+        if (dbRow) continue; // db row will be projected below
+        seen.add(id);
+        summaries.push(
+          enrich(
+            {
+              taskId: id,
+              sessionId: undefined,
+              status: result.status,
+              goal: undefined,
+              result,
+              createdAt: result.trace?.timestamp ?? Date.now(),
+              updatedAt: result.trace?.timestamp ?? Date.now(),
+              archivedAt: null,
+            },
+            false,
+          ),
+        );
+      }
     }
 
-    return jsonResponse({ tasks });
+    // 3. Session-persisted rows (rich status preserved).
+    for (const t of dbResult.tasks) {
+      if (seen.has(t.taskId)) continue;
+      seen.add(t.taskId);
+      summaries.push(enrich(t, false));
+    }
+
+    // ── Post-projection filters (in memory) ─────────────────────────
+    let filtered = summaries;
+    if (statusFilters && statusFilters.length > 0) {
+      const allow = new Set(statusFilters);
+      filtered = filtered.filter((t) => allow.has(t.status));
+    }
+    if (needsActionFilter) {
+      if (needsActionFilter === 'any') {
+        filtered = filtered.filter((t) => t.needsAction);
+      } else {
+        filtered = filtered.filter((t) => t.needsActionType === needsActionFilter);
+      }
+    }
+    if (typeof routingLevelFilter === 'number' && Number.isFinite(routingLevelFilter)) {
+      filtered = filtered.filter((t) => t.routingLevel === routingLevelFilter);
+    }
+    if (approachFilter) {
+      filtered = filtered.filter((t) => t.approach === approachFilter);
+    }
+    if (hasErrorFilter) {
+      filtered = filtered.filter((t) => !!t.errorSummary);
+    }
+    if (sourceFilter && sourceFilter !== 'all') {
+      filtered = filtered.filter((t) => t.sessionSource === sourceFilter);
+    }
+
+    // Compute aggregate counts after filtering by source + visibility, but
+    // BEFORE pagination — these drive the summary strip.
+    const countsByStatus: Record<string, number> = {};
+    let needsActionTotal = 0;
+    const countsByNeedsAction: Record<string, number> = {};
+    for (const t of filtered) {
+      countsByStatus[t.status] = (countsByStatus[t.status] ?? 0) + 1;
+      if (t.needsAction) needsActionTotal++;
+      countsByNeedsAction[t.needsActionType] = (countsByNeedsAction[t.needsActionType] ?? 0) + 1;
+    }
+
+    const total = filtered.length;
+    const page = filtered.slice(offset, offset + limit);
+
+    return jsonResponse({
+      tasks: page,
+      total,
+      limit,
+      offset,
+      counts: {
+        // Active / archived totals come from the db-level breakdown so
+        // the summary strip can advertise the archived count even when
+        // the user is currently looking at the active view.
+        byDbStatus: counts,
+        byStatus: countsByStatus,
+        byNeedsAction: countsByNeedsAction,
+        needsActionTotal,
+      },
+    });
   }
 
   private handleListSessions(req: Request): Response {
@@ -1229,41 +1563,267 @@ export class VinyanAPIServer {
   // Dashboard removed — migrated to vinyan-ui (separate React project).
 
   private handleGetTask(taskId: string): Response {
-    // Check completed results (async API tasks)
-    const result = this.asyncResults.get(taskId);
-    if (result) {
-      return jsonResponse({ taskId, status: 'completed', result });
+    const inFlight = this.inFlightTasks.has(taskId);
+    const sessionDetail = this.deps.sessionManager.getTaskDetail(taskId);
+    const asyncResult = this.asyncResults.get(taskId);
+
+    if (!inFlight && !sessionDetail && !asyncResult) {
+      return jsonResponse({ error: 'Task not found' }, 404);
     }
 
-    // Check in-flight
-    if (this.inFlightTasks.has(taskId)) {
-      return jsonResponse({ taskId, status: 'running' });
+    // Status priority: in-flight wins, then session detail (which honours
+    // rich result.status preservation), then async result.
+    const status = inFlight
+      ? 'running'
+      : sessionDetail
+        ? sessionDetail.status
+        : (asyncResult?.status ?? 'completed');
+    const result = sessionDetail?.result ?? asyncResult ?? undefined;
+    const trace = result?.trace;
+    const taskInput = sessionDetail?.taskInput;
+
+    // Pending approval lookup (A6 gate). The gate is in-memory; surface
+    // the full pending entry so the drawer can render the inline approve
+    // / reject card without a second fetch.
+    const pendingApprovals = this.deps.approvalGate?.getPending() ?? [];
+    const pendingApproval = pendingApprovals.find((p) => p.taskId === taskId);
+
+    // Retry lineage: parent comes from taskInput.retryOf if the planner
+    // attached one when the row was created.
+    const parentTaskId = taskInput?.parentTaskId;
+
+    // Children: scan recent rows for any whose taskInput.retryOf matches.
+    const childTaskIds: string[] = [];
+    try {
+      const recent = this.deps.sessionManager.listAllTasks(500);
+      for (const t of recent) {
+        const childInput = (t.result?.id ? null : null);
+        // We don't have the raw input here, so re-read via getTaskDetail
+        // for each candidate is too expensive. Instead, lean on the
+        // lineage event (`task:retry_requested`) when a recorder is
+        // wired — see below.
+        void childInput;
+      }
+    } catch {
+      /* best effort */
+    }
+    if (this.deps.taskEventStore) {
+      try {
+        const events = this.deps.taskEventStore.listForTask(taskId, { limit: 1000 });
+        for (const ev of events) {
+          if (ev.eventType === 'task:retry_requested') {
+            // emitted with parentTaskId === this taskId; payload.taskId is the child
+            const payload = ev.payload as { taskId?: unknown; parentTaskId?: unknown };
+            if (
+              typeof payload?.taskId === 'string' &&
+              payload.parentTaskId === taskId &&
+              !childTaskIds.includes(payload.taskId)
+            ) {
+              childTaskIds.push(payload.taskId);
+            }
+          }
+        }
+      } catch {
+        /* best effort */
+      }
     }
 
-    // Check session-persisted tasks (Chat-originated)
-    const allTasks = this.deps.sessionManager.listAllTasks(500);
-    const sessionTask = allTasks.find((t) => t.taskId === taskId);
-    if (sessionTask) {
-      return jsonResponse({
-        taskId: sessionTask.taskId,
-        sessionId: sessionTask.sessionId,
-        status: sessionTask.status,
-        goal: sessionTask.goal,
-        result: sessionTask.result,
-      });
-    }
+    const eventCount = (() => {
+      if (!this.deps.taskEventStore) return undefined;
+      try {
+        return this.deps.taskEventStore.listForTask(taskId, { limit: 5000 }).length;
+      } catch {
+        return undefined;
+      }
+    })();
 
-    return jsonResponse({ error: 'Task not found' }, 404);
+    const sessionSource = (() => {
+      const sid = sessionDetail?.sessionId;
+      if (!sid) return undefined;
+      try {
+        return this.deps.sessionManager.get(sid)?.source;
+      } catch {
+        return undefined;
+      }
+    })();
+
+    // Coding-CLI summary (best-effort): one row per session linked to this task.
+    const codingCli = (() => {
+      const store = this.deps.codingCliStore;
+      if (!store) return undefined;
+      try {
+        const rows = (store as unknown as {
+          listSessionsForTask?: (id: string) => unknown[];
+        }).listSessionsForTask?.(taskId);
+        if (Array.isArray(rows) && rows.length > 0) return rows;
+        return undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+
+    return jsonResponse({
+      taskId,
+      sessionId: sessionDetail?.sessionId,
+      status,
+      ...(result?.status ? { resultStatus: result.status } : {}),
+      goal: sessionDetail?.goal ?? taskInput?.goal,
+      taskInput: taskInput
+        ? {
+            id: taskInput.id,
+            goal: taskInput.goal,
+            taskType: taskInput.taskType,
+            targetFiles: taskInput.targetFiles,
+            constraints: taskInput.constraints,
+            budget: taskInput.budget,
+            ...(parentTaskId ? { parentTaskId } : {}),
+          }
+        : undefined,
+      result,
+      ...(trace
+        ? {
+            trace: {
+              id: trace.id,
+              taskId: trace.taskId,
+              routingLevel: trace.routingLevel,
+              approach: trace.approach,
+              outcome: trace.outcome,
+              tokensConsumed: trace.tokensConsumed,
+              durationMs: trace.durationMs,
+              modelUsed: trace.modelUsed,
+              workerId: trace.workerId,
+              affectedFiles: trace.affectedFiles ?? [],
+              oracleVerdicts: trace.oracleVerdicts,
+              qualityScore: trace.qualityScore,
+              failureReason: trace.failureReason,
+            },
+          }
+        : {}),
+      mutations: result?.mutations ?? [],
+      qualityScore: result?.qualityScore,
+      lifecycle: {
+        createdAt: sessionDetail?.createdAt,
+        updatedAt: sessionDetail?.updatedAt,
+        archivedAt: sessionDetail?.archivedAt ?? null,
+      },
+      lineage: {
+        parentTaskId,
+        retryChildren: childTaskIds,
+      },
+      ...(pendingApproval
+        ? {
+            pendingApproval: {
+              riskScore: pendingApproval.riskScore,
+              reason: pendingApproval.reason,
+              requestedAt: pendingApproval.requestedAt,
+            },
+          }
+        : {}),
+      ...(codingCli ? { codingCli } : {}),
+      eventHistory: {
+        recorder: !!this.deps.taskEventStore,
+        eventCount,
+      },
+      ...(sessionSource ? { sessionSource } : {}),
+    });
   }
 
   private handleCancelTask(taskId: string): Response {
     const inFlight = this.inFlightTasks.get(taskId);
+    const sessionDetail = this.deps.sessionManager.getTaskDetail(taskId);
+    const reason = 'Cancelled by operator';
+    const cancelledAt = Date.now();
+
+    let cancelled = false;
+
     if (inFlight) {
       inFlight.cancel?.();
       this.inFlightTasks.delete(taskId);
-      return jsonResponse({ taskId, status: 'cancelled' });
+      cancelled = true;
     }
-    return jsonResponse({ error: 'Task not found or already completed' }, 404);
+
+    if (sessionDetail) {
+      const persisted = this.deps.sessionManager.cancelTask(
+        sessionDetail.sessionId,
+        taskId,
+        reason,
+      );
+      if (persisted) cancelled = true;
+    }
+
+    if (!cancelled) {
+      return jsonResponse({ error: 'Task not found or already completed' }, 404);
+    }
+
+    // Durable lifecycle event for ops console replay. Fires AFTER db
+    // persistence so a refresh during cancel sees the row as cancelled
+    // and the persisted event log carries the matching breadcrumb.
+    this.deps.bus?.emit('task:cancelled', {
+      taskId,
+      sessionId: sessionDetail?.sessionId,
+      reason,
+      cancelledAt,
+      source: 'human',
+    });
+
+    return jsonResponse({ taskId, status: 'cancelled' });
+  }
+
+  /** Soft-hide a task row from the active operations console list. */
+  private handleArchiveTask(taskId: string): Response {
+    const ok = this.deps.sessionManager.archiveTask(taskId);
+    if (!ok) {
+      return jsonResponse({ error: 'Task not found or already archived' }, 404);
+    }
+    return jsonResponse({ taskId, archived: true });
+  }
+
+  private handleUnarchiveTask(taskId: string): Response {
+    const ok = this.deps.sessionManager.unarchiveTask(taskId);
+    if (!ok) {
+      return jsonResponse({ error: 'Task not found or not archived' }, 404);
+    }
+    return jsonResponse({ taskId, archived: false });
+  }
+
+  /**
+   * Bundled export — task summary + result + persisted event log. Used
+   * by the operations console drawer's "Export" action so an operator
+   * can take a JSON snapshot for sharing / debugging without scraping
+   * three endpoints. Shape mirrors the live SSE payload so a saved
+   * export can be re-played by the same reducer.
+   */
+  private handleExportTask(taskId: string): Response {
+    const detail = this.deps.sessionManager.getTaskDetail(taskId);
+    const asyncResult = this.asyncResults.get(taskId);
+    if (!detail && !asyncResult) {
+      return jsonResponse({ error: 'Task not found' }, 404);
+    }
+    let events: unknown[] = [];
+    if (this.deps.taskEventStore) {
+      try {
+        events = this.deps.taskEventStore.listForTask(taskId, { limit: 5000 });
+      } catch {
+        events = [];
+      }
+    }
+    return jsonResponse({
+      exportedAt: Date.now(),
+      taskId,
+      sessionId: detail?.sessionId,
+      goal: detail?.goal,
+      status: detail?.status ?? asyncResult?.status,
+      taskInput: detail?.taskInput,
+      result: detail?.result ?? asyncResult,
+      lifecycle: detail
+        ? {
+            createdAt: detail.createdAt,
+            updatedAt: detail.updatedAt,
+            archivedAt: detail.archivedAt,
+          }
+        : undefined,
+      events,
+    });
   }
 
   /**
@@ -1316,6 +1876,12 @@ export class VinyanAPIServer {
       goal,
       ...(constraints && constraints.length > 0 ? { constraints } : {}),
       budget,
+      // Preserve parent linkage so the operations console drawer can
+      // render the retry chain without reading the bus event log. The
+      // recorded `task:retry_requested` is the same lineage signal —
+      // having both means a refresh sees the chain even if the recorder
+      // was disabled when the parent ran.
+      parentTaskId,
     };
 
     // Track parent linkage on the bus so observability surfaces the chain.
@@ -2500,6 +3066,646 @@ export class VinyanAPIServer {
     }
   }
 
+  // ── Scheduler — durable agent cron handlers ─────────────────────────
+
+  /**
+   * Recursion guard for `/api/v1/scheduler/jobs/*` writes.
+   *
+   * The primary defense is structural: no `scheduler` tool is registered
+   * for agents (verified by tests), so an LLM running inside a
+   * `gateway-cron`-sourced task literally cannot reach this surface
+   * through the normal tool path.
+   *
+   * The check below is the belt-and-braces — if a future tool were
+   * added that proxied HTTP, the request body or header would surface
+   * the calling task's source and we reject. The block is recorded so
+   * an operator sees the attempt in the event log (A8 traceability).
+   */
+  private rejectIfRecursiveSchedulerWrite(
+    req: Request,
+    body: unknown,
+    scheduleId: string | null,
+    profile: string,
+  ): Response | null {
+    const headerOrigin = req.headers.get('X-Vinyan-Origin');
+    const bodyOrigin =
+      body && typeof body === 'object' ? (body as { originSource?: unknown }).originSource : undefined;
+    const isRecursive =
+      headerOrigin === 'gateway-cron' || bodyOrigin === 'gateway-cron';
+    if (!isRecursive) return null;
+    this.deps.bus.emit('scheduler:recursion_blocked', {
+      scheduleId: scheduleId ?? 'unknown',
+      profile,
+      blockedPath: new URL(req.url).pathname,
+    });
+    return jsonResponse(
+      { error: 'Scheduled tasks may not mutate scheduler state', code: 'recursion-blocked' },
+      423,
+    );
+  }
+
+  private handleListScheduledJobs(req: Request): Response {
+    const store = this.deps.gatewayScheduleStore;
+    if (!store) return jsonResponse({ error: 'scheduler not configured' }, 503);
+    const url = new URL(req.url);
+    const profileResolved = resolveRequestProfile(req, {}, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const wantsAll = url.searchParams.get('profile') === '*';
+    const profileScope = wantsAll ? '*' : profileResolved.profile;
+    const limitRaw = url.searchParams.get('limit');
+    const limit = limitRaw ? Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 0)) : 100;
+    const statusParam = url.searchParams.get('status');
+    const status =
+      statusParam === 'active' ||
+      statusParam === 'paused' ||
+      statusParam === 'expired' ||
+      statusParam === 'failed-circuit'
+        ? statusParam
+        : undefined;
+    const jobs = store.listAll(profileScope, { limit, ...(status ? { status } : {}) });
+    return jsonResponse({
+      jobs: jobs.map((j) => projectScheduleJob(j)),
+      total: jobs.length,
+      profile: profileScope,
+    });
+  }
+
+  private async handleCreateScheduledJob(req: Request): Promise<Response> {
+    const store = this.deps.gatewayScheduleStore;
+    if (!store) return jsonResponse({ error: 'scheduler not configured' }, 503);
+    let body: {
+      goal?: unknown;
+      cron?: unknown;
+      timezone?: unknown;
+      nl?: unknown;
+      constraints?: unknown;
+      profile?: unknown;
+    };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+    const profileResolved = resolveRequestProfile(req, body as Record<string, unknown>, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const guard = this.rejectIfRecursiveSchedulerWrite(req, body, null, profileResolved.profile);
+    if (guard) return guard;
+
+    if (typeof body.goal !== 'string' || body.goal.trim().length === 0) {
+      return jsonResponse({ error: 'goal is required' }, 400);
+    }
+
+    let cron: string | undefined;
+    let timezone: string;
+    let nlOriginal: string;
+    if (typeof body.cron === 'string' && body.cron.trim().length > 0) {
+      cron = body.cron.trim();
+      timezone = typeof body.timezone === 'string' && body.timezone.length > 0 ? body.timezone : 'UTC';
+      nlOriginal = typeof body.nl === 'string' ? body.nl : `cron:${cron}`;
+      // Validate cron is parseable.
+      try {
+        const { parseCronFields } = await import('../gateway/scheduling/cron-parser.ts');
+        parseCronFields(cron);
+      } catch (err) {
+        return jsonResponse(
+          { error: `invalid cron: ${err instanceof Error ? err.message : String(err)}` },
+          400,
+        );
+      }
+    } else if (typeof body.nl === 'string' && body.nl.trim().length > 0) {
+      const { parseCron } = await import('../gateway/scheduling/cron-parser.ts');
+      const fallbackTz =
+        typeof body.timezone === 'string' && body.timezone.length > 0 ? body.timezone : 'UTC';
+      const parsed = parseCron(body.nl, { defaultTimezone: fallbackTz });
+      if (!parsed.ok) {
+        return jsonResponse({ error: `cannot parse natural-language schedule: ${parsed.detail}` }, 400);
+      }
+      cron = parsed.cron;
+      timezone = parsed.timezone;
+      nlOriginal = body.nl;
+    } else {
+      return jsonResponse({ error: 'either cron or nl (natural language) is required' }, 400);
+    }
+
+    const constraints =
+      body.constraints && typeof body.constraints === 'object'
+        ? (body.constraints as Record<string, unknown>)
+        : {};
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const { nextFireAt: nextFireAtFn } = await import('../gateway/scheduling/cron-parser.ts');
+    let nextFireAt: number | null = null;
+    try {
+      nextFireAt = nextFireAtFn(cron, timezone, now);
+    } catch {
+      // Cron grammatically valid but unsatisfiable — leave nextFireAt null
+      // (operator can still see the row, just won't fire).
+    }
+
+    const tuple: import('../gateway/scheduling/types.ts').ScheduledHypothesisTuple = {
+      id,
+      profile: profileResolved.profile,
+      createdAt: now,
+      createdByHermesUserId: null,
+      origin: { platform: 'cli', chatId: null },
+      cron,
+      timezone,
+      nlOriginal,
+      goal: body.goal,
+      constraints,
+      confidenceAtCreation: 1,
+      evidenceHash: '',
+      status: 'active',
+      failureStreak: 0,
+      nextFireAt,
+      runHistory: [],
+    };
+    store.save(tuple);
+    this.deps.bus.emit('scheduler:job_created', {
+      scheduleId: id,
+      profile: profileResolved.profile,
+      cron,
+      timezone,
+      goal: body.goal,
+    });
+    return jsonResponse({ job: projectScheduleJob(tuple) }, 201);
+  }
+
+  private handleGetScheduledJob(id: string, req: Request): Response {
+    const store = this.deps.gatewayScheduleStore;
+    if (!store) return jsonResponse({ error: 'scheduler not configured' }, 503);
+    const profileResolved = resolveRequestProfile(req, {}, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const job = store.get(id, profileResolved.profile);
+    if (!job) return jsonResponse({ error: 'schedule not found' }, 404);
+    return jsonResponse({ job: projectScheduleJob(job) });
+  }
+
+  private async handleUpdateScheduledJob(id: string, req: Request): Promise<Response> {
+    const store = this.deps.gatewayScheduleStore;
+    if (!store) return jsonResponse({ error: 'scheduler not configured' }, 503);
+    let body: { goal?: unknown; cron?: unknown; timezone?: unknown; constraints?: unknown };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+    const profileResolved = resolveRequestProfile(req, body as Record<string, unknown>, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const guard = this.rejectIfRecursiveSchedulerWrite(req, body, id, profileResolved.profile);
+    if (guard) return guard;
+
+    const existing = store.get(id, profileResolved.profile);
+    if (!existing) return jsonResponse({ error: 'schedule not found' }, 404);
+
+    const fields: Array<'cron' | 'timezone' | 'goal' | 'status' | 'constraints'> = [];
+    let nextCron = existing.cron;
+    let nextTimezone = existing.timezone;
+    let nextGoal = existing.goal;
+    let nextConstraints = existing.constraints;
+    if (typeof body.cron === 'string' && body.cron.trim().length > 0 && body.cron !== existing.cron) {
+      try {
+        const { parseCronFields } = await import('../gateway/scheduling/cron-parser.ts');
+        parseCronFields(body.cron);
+      } catch (err) {
+        return jsonResponse(
+          { error: `invalid cron: ${err instanceof Error ? err.message : String(err)}` },
+          400,
+        );
+      }
+      nextCron = body.cron;
+      fields.push('cron');
+    }
+    if (
+      typeof body.timezone === 'string' &&
+      body.timezone.length > 0 &&
+      body.timezone !== existing.timezone
+    ) {
+      nextTimezone = body.timezone;
+      fields.push('timezone');
+    }
+    if (typeof body.goal === 'string' && body.goal.trim().length > 0 && body.goal !== existing.goal) {
+      nextGoal = body.goal;
+      fields.push('goal');
+    }
+    if (body.constraints && typeof body.constraints === 'object') {
+      nextConstraints = body.constraints as Record<string, unknown>;
+      fields.push('constraints');
+    }
+
+    if (fields.length === 0) {
+      return jsonResponse({ job: projectScheduleJob(existing), unchanged: true });
+    }
+
+    let nextFireAt: number | null = existing.nextFireAt;
+    if (fields.includes('cron') || fields.includes('timezone')) {
+      try {
+        const { nextFireAt: nextFireAtFn } = await import('../gateway/scheduling/cron-parser.ts');
+        nextFireAt = nextFireAtFn(nextCron, nextTimezone, Date.now());
+      } catch {
+        nextFireAt = null;
+      }
+    }
+    const updated = {
+      ...existing,
+      cron: nextCron,
+      timezone: nextTimezone,
+      goal: nextGoal,
+      constraints: nextConstraints,
+      nextFireAt,
+    };
+    store.save(updated);
+    this.deps.bus.emit('scheduler:job_updated', {
+      scheduleId: id,
+      profile: profileResolved.profile,
+      fields,
+    });
+    return jsonResponse({ job: projectScheduleJob(updated) });
+  }
+
+  private async handlePauseScheduledJob(id: string, req: Request): Promise<Response> {
+    const store = this.deps.gatewayScheduleStore;
+    if (!store) return jsonResponse({ error: 'scheduler not configured' }, 503);
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await req.json()) as Record<string, unknown>;
+    } catch {
+      /* empty body is fine */
+    }
+    const profileResolved = resolveRequestProfile(req, body, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const guard = this.rejectIfRecursiveSchedulerWrite(req, body, id, profileResolved.profile);
+    if (guard) return guard;
+    const existing = store.get(id, profileResolved.profile);
+    if (!existing) return jsonResponse({ error: 'schedule not found' }, 404);
+    if (existing.status === 'paused') {
+      return jsonResponse({ job: projectScheduleJob(existing), unchanged: true });
+    }
+    store.setStatus(id, profileResolved.profile, 'paused');
+    store.setNextFire(id, profileResolved.profile, null);
+    const refreshed = store.get(id, profileResolved.profile);
+    this.deps.bus.emit('scheduler:job_paused', { scheduleId: id, profile: profileResolved.profile });
+    return jsonResponse({ job: refreshed ? projectScheduleJob(refreshed) : null });
+  }
+
+  private async handleResumeScheduledJob(id: string, req: Request): Promise<Response> {
+    const store = this.deps.gatewayScheduleStore;
+    if (!store) return jsonResponse({ error: 'scheduler not configured' }, 503);
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await req.json()) as Record<string, unknown>;
+    } catch {
+      /* empty body is fine */
+    }
+    const profileResolved = resolveRequestProfile(req, body, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const guard = this.rejectIfRecursiveSchedulerWrite(req, body, id, profileResolved.profile);
+    if (guard) return guard;
+    const existing = store.get(id, profileResolved.profile);
+    if (!existing) return jsonResponse({ error: 'schedule not found' }, 404);
+    if (existing.status === 'active' && existing.nextFireAt !== null) {
+      return jsonResponse({ job: projectScheduleJob(existing), unchanged: true });
+    }
+    let nextFireAt: number | null = null;
+    try {
+      const { nextFireAt: nextFireAtFn } = await import('../gateway/scheduling/cron-parser.ts');
+      nextFireAt = nextFireAtFn(existing.cron, existing.timezone, Date.now());
+    } catch {
+      nextFireAt = null;
+    }
+    store.setStatus(id, profileResolved.profile, 'active');
+    store.setNextFire(id, profileResolved.profile, nextFireAt);
+    store.setFailureStreak(id, profileResolved.profile, 0);
+    const refreshed = store.get(id, profileResolved.profile);
+    this.deps.bus.emit('scheduler:job_resumed', {
+      scheduleId: id,
+      profile: profileResolved.profile,
+      nextFireAt,
+    });
+    return jsonResponse({ job: refreshed ? projectScheduleJob(refreshed) : null });
+  }
+
+  private async handleRunScheduledJobNow(id: string, req: Request): Promise<Response> {
+    const store = this.deps.gatewayScheduleStore;
+    if (!store) return jsonResponse({ error: 'scheduler not configured' }, 503);
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await req.json()) as Record<string, unknown>;
+    } catch {
+      /* empty body is fine */
+    }
+    const profileResolved = resolveRequestProfile(req, body, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const guard = this.rejectIfRecursiveSchedulerWrite(req, body, id, profileResolved.profile);
+    if (guard) return guard;
+    const schedule = store.get(id, profileResolved.profile);
+    if (!schedule) return jsonResponse({ error: 'schedule not found' }, 404);
+
+    const taskId = crypto.randomUUID();
+    const now = Date.now();
+    const input: TaskInput = {
+      id: taskId,
+      source: 'gateway-cron',
+      goal: schedule.goal,
+      taskType: 'reasoning',
+      profile: schedule.profile,
+      originEnvelope: schedule,
+      priority: 'background',
+      constraints: Object.keys(schedule.constraints ?? {}).map(
+        (k) => `${k}=${String((schedule.constraints as Record<string, unknown>)[k])}`,
+      ),
+      budget: { maxTokens: 4_000, maxDurationMs: 60_000, maxRetries: 1 },
+    };
+
+    this.deps.bus.emit('scheduler:job_due', {
+      scheduleId: id,
+      profile: profileResolved.profile,
+      nextFireAt: now,
+    });
+    this.deps.bus.emit('scheduler:job_started', {
+      scheduleId: id,
+      profile: profileResolved.profile,
+      taskId,
+    });
+
+    const startedAt = now;
+    const promise = this.deps.executeTask(input);
+    this.inFlightTasks.set(taskId, { promise });
+    promise
+      .then((result) => {
+        this.asyncResults.set(taskId, result);
+        this.scheduleAsyncResultEviction(taskId);
+        this.inFlightTasks.delete(taskId);
+        store.updateRunHistory(id, profileResolved.profile, {
+          ranAt: Date.now(),
+          taskId,
+          outcome: result.status,
+        });
+        this.deps.bus.emit('scheduler:job_completed', {
+          scheduleId: id,
+          profile: profileResolved.profile,
+          taskId,
+          outcome: result.status,
+          durationMs: Date.now() - startedAt,
+        });
+      })
+      .catch((err) => {
+        this.inFlightTasks.delete(taskId);
+        const reason = err instanceof Error ? err.message : String(err);
+        store.updateRunHistory(id, profileResolved.profile, {
+          ranAt: Date.now(),
+          taskId,
+          outcome: `threw:${reason.slice(0, 100)}`,
+        });
+        this.deps.bus.emit('scheduler:job_failed', {
+          scheduleId: id,
+          profile: profileResolved.profile,
+          taskId,
+          reason,
+          failureStreak: schedule.failureStreak + 1,
+        });
+      });
+
+    return jsonResponse({ scheduleId: id, taskId, status: 'started' }, 202);
+  }
+
+  private async handleDeleteScheduledJob(id: string, req: Request): Promise<Response> {
+    const store = this.deps.gatewayScheduleStore;
+    if (!store) return jsonResponse({ error: 'scheduler not configured' }, 503);
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await req.json()) as Record<string, unknown>;
+    } catch {
+      /* empty body is fine */
+    }
+    const profileResolved = resolveRequestProfile(req, body, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const guard = this.rejectIfRecursiveSchedulerWrite(req, body, id, profileResolved.profile);
+    if (guard) return guard;
+    const existing = store.get(id, profileResolved.profile);
+    if (!existing) return jsonResponse({ error: 'schedule not found' }, 404);
+    const ok = store.delete(id, profileResolved.profile);
+    if (ok) {
+      this.deps.bus.emit('scheduler:job_deleted', { scheduleId: id, profile: profileResolved.profile });
+    }
+    return jsonResponse({ deleted: ok, scheduleId: id });
+  }
+
+  // ── Skill proposal handlers ─────────────────────────────────────────
+
+  private handleListSkillProposals(req: Request): Response {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    const profileResolved = resolveRequestProfile(req, {}, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const url = new URL(req.url);
+    const statusParam = url.searchParams.get('status');
+    const status =
+      statusParam === 'pending' ||
+      statusParam === 'approved' ||
+      statusParam === 'rejected' ||
+      statusParam === 'quarantined'
+        ? statusParam
+        : undefined;
+    const limitRaw = url.searchParams.get('limit');
+    const limit = limitRaw ? Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 0)) : 200;
+    const proposals = store.list(profileResolved.profile, { ...(status ? { status } : {}), limit });
+    return jsonResponse({ proposals, total: proposals.length, profile: profileResolved.profile });
+  }
+
+  private async handleCreateSkillProposal(req: Request): Promise<Response> {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    let body: {
+      proposedName?: unknown;
+      proposedCategory?: unknown;
+      skillMd?: unknown;
+      capabilityTags?: unknown;
+      toolsRequired?: unknown;
+      sourceTaskIds?: unknown;
+      evidenceEventIds?: unknown;
+      successCount?: unknown;
+      profile?: unknown;
+    };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+    const profileResolved = resolveRequestProfile(req, body as Record<string, unknown>, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+
+    if (typeof body.proposedName !== 'string' || !/^[a-z][a-z0-9-]*$/.test(body.proposedName)) {
+      return jsonResponse({ error: 'proposedName must match /^[a-z][a-z0-9-]*$/' }, 400);
+    }
+    if (typeof body.proposedCategory !== 'string' || body.proposedCategory.trim().length === 0) {
+      return jsonResponse({ error: 'proposedCategory is required' }, 400);
+    }
+    if (typeof body.skillMd !== 'string' || body.skillMd.trim().length === 0) {
+      return jsonResponse({ error: 'skillMd is required' }, 400);
+    }
+
+    const proposal = store.create({
+      profile: profileResolved.profile,
+      proposedName: body.proposedName,
+      proposedCategory: body.proposedCategory,
+      skillMd: body.skillMd,
+      capabilityTags: Array.isArray(body.capabilityTags) ? body.capabilityTags.map(String) : [],
+      toolsRequired: Array.isArray(body.toolsRequired) ? body.toolsRequired.map(String) : [],
+      sourceTaskIds: Array.isArray(body.sourceTaskIds) ? body.sourceTaskIds.map(String) : [],
+      evidenceEventIds: Array.isArray(body.evidenceEventIds) ? body.evidenceEventIds.map(String) : [],
+      successCount: typeof body.successCount === 'number' ? body.successCount : 1,
+    });
+    if (proposal.status === 'quarantined') {
+      this.deps.bus.emit('skill:proposal_quarantined', {
+        proposalId: proposal.id,
+        profile: proposal.profile,
+        proposedName: proposal.proposedName,
+        safetyFlags: proposal.safetyFlags,
+      });
+    } else {
+      this.deps.bus.emit('skill:proposed', {
+        proposalId: proposal.id,
+        profile: proposal.profile,
+        proposedName: proposal.proposedName,
+        successCount: proposal.successCount,
+        safetyFlags: proposal.safetyFlags,
+        trustTier: proposal.trustTier,
+      });
+    }
+    return jsonResponse({ proposal }, 201);
+  }
+
+  private handleGetSkillProposal(id: string, req: Request): Response {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    const profileResolved = resolveRequestProfile(req, {}, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const proposal = store.get(id, profileResolved.profile);
+    if (!proposal) return jsonResponse({ error: 'proposal not found' }, 404);
+    return jsonResponse({ proposal });
+  }
+
+  private async handleApproveSkillProposal(id: string, req: Request): Promise<Response> {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    let body: { decidedBy?: unknown; reason?: unknown; profile?: unknown };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+    const profileResolved = resolveRequestProfile(req, body as Record<string, unknown>, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    if (typeof body.decidedBy !== 'string' || body.decidedBy.trim().length === 0) {
+      return jsonResponse({ error: 'decidedBy is required (audit trail must name a human)' }, 400);
+    }
+    const existing = store.get(id, profileResolved.profile);
+    if (!existing) return jsonResponse({ error: 'proposal not found' }, 404);
+    if (existing.status === 'quarantined') {
+      return jsonResponse(
+        {
+          error: 'Quarantined proposals cannot be approved directly. Clear safety flags first.',
+          flags: existing.safetyFlags,
+        },
+        409,
+      );
+    }
+    const reason = typeof body.reason === 'string' ? body.reason : undefined;
+    const proposal = store.approve(id, profileResolved.profile, body.decidedBy, reason);
+    if (!proposal) return jsonResponse({ error: 'approval failed' }, 500);
+    this.deps.bus.emit('skill:proposal_approved', {
+      proposalId: proposal.id,
+      profile: proposal.profile,
+      proposedName: proposal.proposedName,
+      decidedBy: body.decidedBy,
+    });
+    return jsonResponse({ proposal });
+  }
+
+  private async handleRejectSkillProposal(id: string, req: Request): Promise<Response> {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    let body: { decidedBy?: unknown; reason?: unknown; profile?: unknown };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+    const profileResolved = resolveRequestProfile(req, body as Record<string, unknown>, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    if (typeof body.decidedBy !== 'string' || body.decidedBy.trim().length === 0) {
+      return jsonResponse({ error: 'decidedBy is required' }, 400);
+    }
+    if (typeof body.reason !== 'string' || body.reason.trim().length === 0) {
+      return jsonResponse({ error: 'reason is required (rejections must be explained)' }, 400);
+    }
+    const existing = store.get(id, profileResolved.profile);
+    if (!existing) return jsonResponse({ error: 'proposal not found' }, 404);
+    const proposal = store.reject(id, profileResolved.profile, body.decidedBy, body.reason);
+    if (!proposal) return jsonResponse({ error: 'rejection failed' }, 500);
+    this.deps.bus.emit('skill:proposal_rejected', {
+      proposalId: proposal.id,
+      profile: proposal.profile,
+      proposedName: proposal.proposedName,
+      decidedBy: body.decidedBy,
+      reason: body.reason,
+    });
+    return jsonResponse({ proposal });
+  }
+
+  private async handleDeleteSkillProposal(id: string, req: Request): Promise<Response> {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    const profileResolved = resolveRequestProfile(req, {}, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const ok = store.delete(id, profileResolved.profile);
+    return jsonResponse({ deleted: ok, proposalId: id });
+  }
+
+  /**
+   * Promote / demote a proposal's trust tier. Lifecycle status (pending /
+   * approved / rejected / quarantined) is unaffected — the tier is a
+   * separate axis. Tier transitions go quarantined → community →
+   * trusted → official → builtin. The handler does not enforce the
+   * monotonic order — operators may demote, e.g., back to community
+   * after a regression — but every transition is recorded with
+   * `decidedBy`.
+   */
+  private async handleSetSkillProposalTrustTier(id: string, req: Request): Promise<Response> {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    let body: { tier?: unknown; decidedBy?: unknown; profile?: unknown };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+    const profileResolved = resolveRequestProfile(req, body as Record<string, unknown>, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    if (typeof body.decidedBy !== 'string' || body.decidedBy.trim().length === 0) {
+      return jsonResponse({ error: 'decidedBy is required (audit trail must name a human)' }, 400);
+    }
+    const tier = body.tier;
+    if (
+      tier !== 'quarantined' &&
+      tier !== 'community' &&
+      tier !== 'trusted' &&
+      tier !== 'official' &&
+      tier !== 'builtin'
+    ) {
+      return jsonResponse(
+        { error: 'tier must be one of: quarantined, community, trusted, official, builtin' },
+        400,
+      );
+    }
+    const existing = store.get(id, profileResolved.profile);
+    if (!existing) return jsonResponse({ error: 'proposal not found' }, 404);
+    const updated = store.setTrustTier(id, profileResolved.profile, tier);
+    if (!updated) return jsonResponse({ error: 'tier update failed' }, 500);
+    return jsonResponse({ proposal: updated, decidedBy: body.decidedBy });
+  }
+
   private handleCalibration(): Response {
     const ledger = this.deps.predictionLedger;
     if (!ledger) {
@@ -2572,7 +3778,10 @@ export class VinyanAPIServer {
     }
     const deep = new URL(req.url).searchParams.get('deep') === 'true';
     const { runDoctorChecks, summarizeChecks } = await import('../cli/doctor.ts');
-    const checks = await runDoctorChecks(workspace, { deep });
+    const checks = await runDoctorChecks(workspace, {
+      deep,
+      runtime: this.buildDoctorRuntimeProbes(),
+    });
     const summary = summarizeChecks(checks);
     return jsonResponse({
       status: summary.status,
@@ -2581,6 +3790,57 @@ export class VinyanAPIServer {
       summary: { passed: summary.passed, total: summary.total },
       deep,
     });
+  }
+
+  /**
+   * Build runtime probes for `runDoctorChecks`. Each probe is best-
+   * effort: any throw is converted to a `warn`-level check inside the
+   * doctor module. We never leak credentials — the cooldown probe
+   * returns providerId only (no key material), and we count active
+   * schedules without dumping their goals.
+   */
+  private buildDoctorRuntimeProbes(): NonNullable<
+    Parameters<typeof import('../cli/doctor.ts').runDoctorChecks>[1]
+  >['runtime'] {
+    const probes: ReturnType<VinyanAPIServer['buildDoctorRuntimeProbes']> = {
+      recorderActive: !!this.deps.taskEventStore,
+      schedulerActive: !!this.deps.gatewayScheduleStore,
+      skillsActive:
+        !!this.deps.simpleSkillRegistry || !!this.deps.skillArtifactStore,
+      memoryWikiActive: !!this.deps.memoryWiki,
+      inFlightTaskCount: this.inFlightTasks.size,
+    };
+    if (this.deps.gatewayScheduleStore) {
+      try {
+        const profile = this.deps.defaultProfile ?? 'default';
+        probes.activeScheduleCount = this.deps.gatewayScheduleStore.listAll(profile, {
+          status: 'active',
+          limit: 1000,
+        }).length;
+      } catch {
+        // best-effort
+      }
+    }
+    if (this.deps.llmRegistry) {
+      const health = this.deps.llmRegistry.getHealthStore();
+      if (health) {
+        probes.providerCooldowns = () => {
+          const out: Array<{ providerId: string; cooldownUntil: number; reason: string }> = [];
+          for (const provider of this.deps.llmRegistry?.listProviders() ?? []) {
+            const cd = health.getCooldown({ id: provider.id });
+            if (cd && cd.cooldownUntil > Date.now()) {
+              out.push({
+                providerId: provider.id,
+                cooldownUntil: cd.cooldownUntil,
+                reason: cd.lastKind ?? 'cooldown',
+              });
+            }
+          }
+          return out;
+        };
+      }
+    }
+    return probes;
   }
 
   private async handleGetConfig(): Promise<Response> {
@@ -3699,6 +4959,72 @@ function extractTaskId(path: string): string | undefined {
   return match?.[1];
 }
 
+/**
+ * Parse the `?status=…` query into the projected-status filter list.
+ * Accepts repeated keys (`?status=failed&status=timeout`) or a CSV
+ * (`?status=failed,timeout`). Empty / missing → undefined so the caller
+ * applies no filter.
+ */
+function parseStatusFilter(params: URLSearchParams): string[] | undefined {
+  const values: string[] = [];
+  for (const v of params.getAll('status')) {
+    for (const piece of v.split(',')) {
+      const trimmed = piece.trim();
+      if (trimmed.length > 0) values.push(trimmed);
+    }
+  }
+  return values.length > 0 ? values : undefined;
+}
+
+/**
+ * Stale-running heuristic — a task that has been "running" for longer
+ * than this without any persisted update is almost certainly orphaned.
+ * Used by the needs-action classifier so the operator can spot zombies
+ * without waiting for `recoverOrphanedTasks` to fire.
+ */
+const STALE_RUNNING_THRESHOLD_MS = 30 * 60 * 1000;
+
+/**
+ * Deterministic classifier for the operations console "needs action"
+ * column. Only durable signals — db status, result.status, pending
+ * approval map, lifecycle timestamps — are consulted; we deliberately
+ * never inspect display text.
+ */
+function classifyNeedsAction(args: {
+  status: string;
+  result?: TaskResult;
+  pendingApprovals: ReadonlySet<string>;
+  taskId: string;
+  isInFlight: boolean;
+  createdAt: number;
+  updatedAt: number;
+}):
+  | 'none'
+  | 'approval'
+  | 'workflow-human-input'
+  | 'partial-decision'
+  | 'coding-cli-approval'
+  | 'stale-running'
+  | 'failed'
+  | 'timeout' {
+  if (args.pendingApprovals.has(args.taskId)) return 'approval';
+
+  // Workflow / partial-decision / coding-cli signals come from the
+  // result envelope's `clarificationNeeded` / status flags. The full
+  // gate state lives in the durable event log — the console fetches
+  // that on demand from the drawer; the row-level classifier just
+  // needs a coarse "this task wants something" hint.
+  if (args.status === 'input-required') return 'workflow-human-input';
+  if (args.result?.status === 'partial' && args.status !== 'completed') return 'partial-decision';
+
+  if (args.status === 'running' && !args.isInFlight) {
+    if (Date.now() - args.updatedAt > STALE_RUNNING_THRESHOLD_MS) return 'stale-running';
+  }
+  if (args.status === 'failed' || args.status === 'escalated') return 'failed';
+  if (args.status === 'timeout' || args.result?.trace?.outcome === 'timeout') return 'timeout';
+  return 'none';
+}
+
 // ── Simple-skill CRUD body parsing ──────────────────────────────────
 
 type SimpleSkillScope = 'user' | 'project' | 'user-agent' | 'project-agent';
@@ -3797,4 +5123,48 @@ function parseSimpleIdPayload(
     }
   }
   return null;
+}
+
+/**
+ * Project a `ScheduledHypothesisTuple` into the wire shape used by the
+ * scheduler operations console. Drops fields that don't matter for the
+ * UI (evidenceHash, hermes user id, full constraints — surfaces just
+ * the keys) and derives lastRun/nextRun summaries.
+ */
+function projectScheduleJob(
+  tuple: import('../gateway/scheduling/types.ts').ScheduledHypothesisTuple,
+): {
+  id: string;
+  profile: string;
+  cron: string;
+  timezone: string;
+  goal: string;
+  status: string;
+  nextFireAt: number | null;
+  failureStreak: number;
+  createdAt: number;
+  nlOriginal: string;
+  origin: { platform: string; chatId: string | null; threadKey?: string };
+  constraintKeys: string[];
+  runCount: number;
+  lastRun: { ranAt: number; taskId: string; outcome: string } | null;
+} {
+  const constraintKeys = tuple.constraints ? Object.keys(tuple.constraints) : [];
+  const lastRun = tuple.runHistory.length > 0 ? tuple.runHistory[tuple.runHistory.length - 1] : null;
+  return {
+    id: tuple.id,
+    profile: tuple.profile,
+    cron: tuple.cron,
+    timezone: tuple.timezone,
+    goal: tuple.goal,
+    status: tuple.status,
+    nextFireAt: tuple.nextFireAt,
+    failureStreak: tuple.failureStreak,
+    createdAt: tuple.createdAt,
+    nlOriginal: tuple.nlOriginal,
+    origin: tuple.origin,
+    constraintKeys,
+    runCount: tuple.runHistory.length,
+    lastRun: lastRun ? { ranAt: lastRun.ranAt, taskId: lastRun.taskId, outcome: lastRun.outcome } : null,
+  };
 }

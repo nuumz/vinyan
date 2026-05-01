@@ -287,6 +287,24 @@ export interface VinyanBusEvents {
     sessionId?: string;
   };
 
+  /**
+   * Operator-driven cancellation — fired by the API server when a task
+   * row transitions to `cancelled` (DELETE /tasks/:id). Recorded for
+   * historical replay so the operations console drawer can surface the
+   * lifecycle change after refresh, even when SSE was disconnected.
+   *
+   * `source: 'human'`   — operator clicked Cancel
+   * `source: 'shutdown'`— graceful shutdown drained inflight rows
+   * `source: 'auto'`    — orchestrator self-cancelled (timeout, etc.)
+   */
+  'task:cancelled': {
+    taskId: string;
+    sessionId?: string;
+    reason: string;
+    cancelledAt: number;
+    source: 'human' | 'shutdown' | 'auto';
+  };
+
   // TestGenerator observability
   'testgen:error': { taskId: string; error: string };
 
@@ -541,6 +559,81 @@ export interface VinyanBusEvents {
   'session:purged': { sessionId: string };
   'memory:approved': { recordId: string; key?: string };
   'memory:rejected': { recordId: string; key?: string };
+
+  // Scheduler — durable agent cron (gateway_schedules + ScheduleRunner).
+  // Lifecycle events for the operator console; the underlying runner
+  // already exists, these surface its activity.
+  // A3 / A8: every event carries scheduleId + profile so replay can
+  // reconstruct schedule history per-profile.
+  'scheduler:job_created': {
+    scheduleId: string;
+    profile: string;
+    cron: string;
+    timezone: string;
+    goal: string;
+  };
+  'scheduler:job_updated': {
+    scheduleId: string;
+    profile: string;
+    fields: ReadonlyArray<'cron' | 'timezone' | 'goal' | 'status' | 'constraints'>;
+  };
+  'scheduler:job_paused': { scheduleId: string; profile: string };
+  'scheduler:job_resumed': { scheduleId: string; profile: string; nextFireAt: number | null };
+  'scheduler:job_deleted': { scheduleId: string; profile: string };
+  'scheduler:job_due': { scheduleId: string; profile: string; nextFireAt: number };
+  'scheduler:job_started': { scheduleId: string; profile: string; taskId: string };
+  'scheduler:job_completed': {
+    scheduleId: string;
+    profile: string;
+    taskId: string;
+    outcome: string;
+    durationMs: number;
+  };
+  'scheduler:job_failed': {
+    scheduleId: string;
+    profile: string;
+    taskId: string;
+    reason: string;
+    failureStreak: number;
+  };
+  'scheduler:circuit_opened': { scheduleId: string; profile: string; failureStreak: number };
+  'scheduler:recursion_blocked': {
+    scheduleId: string;
+    profile: string;
+    /** API path that the scheduled task tried to mutate. */
+    blockedPath: string;
+  };
+
+  // Skill proposals — agent-managed skill creation as procedural memory
+  // (`skill_proposals` table, mig 029). Every proposal stays quarantined
+  // until a human approves it (A6 / A8 — no auto-activation).
+  'skill:proposed': {
+    proposalId: string;
+    profile: string;
+    proposedName: string;
+    successCount: number;
+    safetyFlags: ReadonlyArray<string>;
+    trustTier: string;
+  };
+  'skill:proposal_approved': {
+    proposalId: string;
+    profile: string;
+    proposedName: string;
+    decidedBy: string;
+  };
+  'skill:proposal_rejected': {
+    proposalId: string;
+    profile: string;
+    proposedName: string;
+    decidedBy: string;
+    reason: string;
+  };
+  'skill:proposal_quarantined': {
+    proposalId: string;
+    profile: string;
+    proposedName: string;
+    safetyFlags: ReadonlyArray<string>;
+  };
 
   // Memory Wiki — second-brain substrate (src/memory/wiki/)
   'memory-wiki:source_ingested': {

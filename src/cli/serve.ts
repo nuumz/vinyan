@@ -330,10 +330,29 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       // is constructed by the factory.
       codingCliController: orchestrator.codingCliController,
       codingCliStore: orchestrator.codingCliStore,
+      gatewayScheduleStore: orchestrator.gatewayScheduleStore,
+      skillProposalStore: orchestrator.skillProposalStore,
       workspace,
       defaultProfile: resolvedProfile.name,
     },
   );
+
+  // ── Skill proposal autogen — wire `skill:outcome` → quarantined
+  //    proposal after N successes per (agentId, taskSignature).
+  //    Best-effort: wiring failure must not block startup.
+  let skillAutogenOff: (() => void) | null = null;
+  if (orchestrator.skillProposalStore) {
+    try {
+      const { wireSkillProposalAutogen } = await import('../skills/proposal-autogen.ts');
+      skillAutogenOff = wireSkillProposalAutogen({
+        bus: orchestrator.bus,
+        store: orchestrator.skillProposalStore,
+        defaultProfile: resolvedProfile.name,
+      });
+    } catch (err) {
+      console.warn('[vinyan] skill-proposal autogen wiring failed:', err);
+    }
+  }
 
   // ── Shutdown machinery ──────────────────────────────────────────
   let shutdownRequested = false;
@@ -354,6 +373,11 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
     }, SHUTDOWN_FORCE_EXIT_MS);
     (forceExit as { unref?: () => void }).unref?.();
 
+    try {
+      skillAutogenOff?.();
+    } catch {
+      /* best-effort */
+    }
     try {
       sessionManager.suspendAll();
     } catch {

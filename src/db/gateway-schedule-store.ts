@@ -142,6 +142,49 @@ export class GatewayScheduleStore {
   }
 
   /**
+   * Bulk read for the operations console — returns every row visible to
+   * the caller's profile (or all rows when `profile === '*'` for
+   * admin-style endpoints). Newest-first by createdAt to match the
+   * Tasks console convention; status/nextFireAt filters live in the
+   * caller for now since the surface is small.
+   */
+  listAll(profile: string, opts: { status?: ScheduleStatus; limit?: number } = {}): ScheduledHypothesisTuple[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (profile !== '*') {
+      where.push('profile = ?');
+      params.push(profile);
+    }
+    if (opts.status) {
+      where.push('status = ?');
+      params.push(opts.status);
+    }
+    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const limitClause = typeof opts.limit === 'number' && opts.limit > 0 ? ` LIMIT ${Math.floor(opts.limit)}` : '';
+    const rows = this.db
+      .prepare(
+        `SELECT id, profile, created_at, cron, timezone, goal,
+                origin_json, status, next_fire_at, run_history_json
+           FROM gateway_schedules
+          ${whereClause}
+          ORDER BY created_at DESC${limitClause}`,
+      )
+      .all(...params) as ScheduleRow[];
+    return rows.map(rowToTuple);
+  }
+
+  /**
+   * Hard remove. Profile-scoped — caller must already have authenticated
+   * and resolved the profile. Returns true when a row actually disappeared.
+   */
+  delete(id: string, profile: string): boolean {
+    const res = this.db
+      .prepare(`DELETE FROM gateway_schedules WHERE id = ? AND profile = ?`)
+      .run(id, profile);
+    return res.changes > 0;
+  }
+
+  /**
    * Persist an updated failure-streak value. Stored inside `origin_json`
    * until a proper column migration ships.
    */

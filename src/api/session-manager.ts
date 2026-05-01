@@ -8,10 +8,12 @@
  */
 import type {
   ListSessionsOptions,
+  ListSessionTasksOptions,
   SessionMetadataPatch,
   SessionRow,
   SessionRowWithCount,
   SessionStore,
+  SessionTaskRow,
 } from '../db/session-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { ContextRetriever } from '../memory/retrieval.ts';
@@ -335,13 +337,16 @@ export class SessionManager {
   }
 
   addTask(sessionId: string, taskInput: TaskInput): void {
+    const now = Date.now();
     this.sessionStore.insertTask({
       session_id: sessionId,
       task_id: taskInput.id,
       task_input_json: JSON.stringify(taskInput),
       status: 'pending',
       result_json: null,
-      created_at: Date.now(),
+      created_at: now,
+      updated_at: now,
+      archived_at: null,
     });
   }
 
@@ -354,6 +359,43 @@ export class SessionManager {
     // we map at this boundary.
     const dbStatus = result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
     this.sessionStore.updateTaskStatus(sessionId, taskId, dbStatus, JSON.stringify(result));
+  }
+
+  /**
+   * Persist a `cancelled` row (operations console / DELETE /tasks/:id).
+   *
+   * Distinct from `completeTask` so callers don't have to fabricate a fake
+   * `TaskResult` envelope for a row that was killed before finishing. The
+   * caller still owns emitting `task:cancelled` on the bus — recording an
+   * event is not this method's responsibility.
+   */
+  cancelTask(sessionId: string, taskId: string, reason?: string): boolean {
+    const existing = this.sessionStore.getTask(sessionId, taskId);
+    if (!existing) return false;
+    // Idempotent: cancelling a row that already terminated is a no-op so
+    // the operator can hit Cancel on a stale row without poisoning state.
+    if (existing.status !== 'pending' && existing.status !== 'running') return false;
+    const reasonText = reason ?? 'Cancelled by operator';
+    const cancelledResult = JSON.stringify({
+      id: taskId,
+      status: 'failed',
+      mutations: [],
+      cancelled: true,
+      cancelReason: reasonText,
+      cancelledAt: Date.now(),
+    });
+    this.sessionStore.updateTaskStatus(sessionId, taskId, 'cancelled', cancelledResult);
+    return true;
+  }
+
+  /** Archive a task row (soft-hide; audit trail preserved). */
+  archiveTask(taskId: string): boolean {
+    return this.sessionStore.archiveTaskRow(taskId);
+  }
+
+  /** Restore an archived task row. */
+  unarchiveTask(taskId: string): boolean {
+    return this.sessionStore.unarchiveTaskRow(taskId);
   }
 
   /**
@@ -421,38 +463,107 @@ export class SessionManager {
     limit = 100,
   ): Array<{ taskId: string; sessionId: string; status: string; goal?: string; result?: TaskResult }> {
     const rows = this.sessionStore.listRecentTasks(limit);
-    return rows.map((row) => {
-      let goal: string | undefined;
-      try {
-        const input = JSON.parse(row.task_input_json);
-        goal = input.goal;
-      } catch {
-        /* best effort */
-      }
+    return rows.map((row) => projectTaskRow(row));
+  }
 
-      let result: TaskResult | undefined;
-      if (row.result_json) {
+  /**
+   * Filtered task list for the operations console. Returns matched rows
+   * along with the unfiltered total (so the UI can paginate) and a per-
+   * status counts breakdown for the summary strip.
+   *
+   * Unlike `listAllTasks`, the projected status PRESERVES the original
+   * `TaskResult.status` (`escalated`, `uncertain`, `partial`, `input-
+   * required`) instead of collapsing everything non-completed to `failed`.
+   * The DB row's CHECK constraint can only hold a small enum, but the
+   * console needs the richer status to render the right badge.
+   */
+  listTasksFiltered(opts: ListSessionTasksOptions = {}): {
+    tasks: Array<{
+      taskId: string;
+      sessionId: string;
+      status: string;
+      dbStatus: SessionTaskRow['status'];
+      goal?: string;
+      result?: TaskResult;
+      taskInput?: TaskInput;
+      createdAt: number;
+      updatedAt: number;
+      archivedAt: number | null;
+    }>;
+    total: number;
+  } {
+    const { rows, total } = this.sessionStore.listTasksFiltered(opts);
+    return {
+      tasks: rows.map((row) => {
+        const projection = projectTaskRow(row);
+        let taskInput: TaskInput | undefined;
         try {
-          result = JSON.parse(row.result_json);
+          taskInput = JSON.parse(row.task_input_json) as TaskInput;
         } catch {
           /* best effort */
         }
-      }
-      const statusFromResult =
-        result && (result.status === 'completed' || result.status === 'input-required')
-          ? 'completed'
-          : result
-            ? 'failed'
-            : row.status;
+        return {
+          taskId: projection.taskId,
+          sessionId: projection.sessionId,
+          status: projection.status,
+          dbStatus: row.status,
+          goal: projection.goal,
+          result: projection.result,
+          taskInput,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at ?? row.created_at,
+          archivedAt: row.archived_at,
+        };
+      }),
+      total,
+    };
+  }
 
-      return {
-        taskId: row.task_id,
-        sessionId: row.session_id,
-        status: statusFromResult,
-        goal,
-        result,
-      };
-    });
+  /** Aggregate counts by db-status for the summary strip. */
+  countTasksByStatus(): Record<string, number> {
+    return this.sessionStore.countTasksByStatus();
+  }
+
+  /**
+   * Rich detail for one task — used by the operations console drawer.
+   * Reads the session_tasks row plus the matching trace summary if a
+   * trace store is wired. Returns `null` when the task is not tracked
+   * in any session (in-memory async tasks fall back to the API server's
+   * own `asyncResults` map).
+   */
+  getTaskDetail(taskId: string): {
+    taskId: string;
+    sessionId: string;
+    status: string;
+    dbStatus: SessionTaskRow['status'];
+    goal?: string;
+    taskInput?: TaskInput;
+    result?: TaskResult;
+    createdAt: number;
+    updatedAt: number;
+    archivedAt: number | null;
+  } | null {
+    const row = this.sessionStore.findTaskRowById(taskId);
+    if (!row) return null;
+    const projection = projectTaskRow(row);
+    let taskInput: TaskInput | undefined;
+    try {
+      taskInput = JSON.parse(row.task_input_json) as TaskInput;
+    } catch {
+      /* best effort */
+    }
+    return {
+      taskId: projection.taskId,
+      sessionId: projection.sessionId,
+      status: projection.status,
+      dbStatus: row.status,
+      goal: projection.goal,
+      taskInput,
+      result: projection.result,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at ?? row.created_at,
+      archivedAt: row.archived_at,
+    };
   }
 
   /**
@@ -987,6 +1098,51 @@ function toTraceSummary(trace: import('../orchestrator/types.ts').ExecutionTrace
     affectedFiles: trace.affectedFiles ?? [],
     ...(trace.workerId ? { workerId: trace.workerId } : {}),
   };
+}
+
+/**
+ * Project a raw `session_tasks` row into the shape the API surface
+ * exposes. Preserves the underlying `TaskResult.status` when present so
+ * the operations console can show `escalated` / `uncertain` / `partial`
+ * / `input-required` instead of seeing every non-`completed` row as
+ * `failed`. Falls back to the db-level lifecycle status when no result
+ * envelope has been written yet (still pending or still running).
+ */
+function projectTaskRow(
+  row: SessionTaskRow,
+): {
+  taskId: string;
+  sessionId: string;
+  status: string;
+  goal?: string;
+  result?: TaskResult;
+} {
+  let goal: string | undefined;
+  try {
+    const input = JSON.parse(row.task_input_json) as { goal?: unknown };
+    if (typeof input.goal === 'string') goal = input.goal;
+  } catch {
+    /* best effort */
+  }
+  let result: TaskResult | undefined;
+  if (row.result_json) {
+    try {
+      result = JSON.parse(row.result_json) as TaskResult;
+    } catch {
+      /* best effort */
+    }
+  }
+  let status: string;
+  if (row.status === 'cancelled') {
+    status = 'cancelled';
+  } else if (result?.status) {
+    // Honour the rich result status (`escalated`, `uncertain`, `partial`,
+    // `input-required`) — collapsing here loses operator visibility.
+    status = result.status;
+  } else {
+    status = row.status;
+  }
+  return { taskId: row.task_id, sessionId: row.session_id, status, goal, result };
 }
 
 function normalizeMetadata(value: string | null | undefined): string | null {

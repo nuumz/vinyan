@@ -35,6 +35,9 @@ import { migration023 } from './023_persona_overclaim.ts';
 import { migration024 } from './024_coding_cli.ts';
 import { migration025 } from './025_task_events_session_backfill.ts';
 import { migration026 } from './026_memory_wiki.ts';
+import { migration027 } from './027_task_archive_metadata.ts';
+import { migration028 } from './028_session_tasks_fts.ts';
+import { migration029 } from './029_skill_proposals.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -64,4 +67,7 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration024,
   migration025,
   migration026,
+  migration027,
+  migration028,
+  migration029,
 ];

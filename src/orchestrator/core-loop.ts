@@ -507,7 +507,7 @@ async function prepareExecution(
   try {
     const { newRuleComprehender } = await import('./comprehension/rule-comprehender.ts');
     const { verifyComprehension } = await import('../oracle/comprehension/index.ts');
-    const { loadAutoMemory } = await import('../memory/auto-memory-loader.ts');
+    const { captureMemorySnapshot } = await import('../memory/snapshot.ts');
     const { detectCorrection } = await import('./comprehension/learning/correction-detector.ts');
     const engine = deps.comprehensionEngine ?? newRuleComprehender();
 
@@ -674,17 +674,19 @@ async function prepareExecution(
       }
     }
 
-    // Load user AutoMemory (`~/.vinyan/memory/<slug>/MEMORY.md` or Claude
-    // Code shared path). Null when absent — engine emits empty
-    // memoryLaneRelevance. Every returned entry is tagged
-    // `trustTier: 'probabilistic'` and passes through `sanitizeForPrompt`
-    // (A5 + Red Team #3 — second-order injection defense).
-    let autoMemory: Awaited<ReturnType<typeof loadAutoMemory>> = null;
-    try {
-      autoMemory = loadAutoMemory({ workspace: deps.workspace ?? process.cwd() });
-    } catch {
-      /* best-effort — null means no memory lane, pipeline proceeds */
-    }
+    // Capture user AutoMemory as a frozen snapshot at task-start. Hermes
+    // contract (`features/memory`): the snapshot does not mutate
+    // mid-task — later memory writes go to disk only and are picked up
+    // on the NEXT task's capture. `captureMemorySnapshot` wraps
+    // `loadAutoMemory`, freezes the entries array, and stamps a
+    // contentHash so prefix-cache stays stable across byte-equal
+    // captures. Null entries here mean either the file is absent or
+    // the load failed (best-effort — pipeline proceeds without memory).
+    const memorySnapshot = captureMemorySnapshot({
+      workspace: deps.workspace ?? process.cwd(),
+      profile: input.profile ?? 'default',
+    });
+    const autoMemory = memorySnapshot.autoMemory;
 
     const generatedAt = Date.now();
     const comprehensionInput = {

@@ -66,6 +66,47 @@ export interface SessionTaskRow {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   result_json: string | null;
   created_at: number;
+  /** Last time the row's status mutated; backfilled from created_at by mig 027. */
+  updated_at: number | null;
+  /** Soft-hide marker for the operations console (NULL = active, non-NULL = archived). */
+  archived_at: number | null;
+}
+
+/**
+ * Filter shape for the Tasks operations console list query. Mirrors the
+ * `GET /api/v1/tasks` query string — see `handleListTasks`. Every field is
+ * optional and AND-combined.
+ */
+export interface ListSessionTasksOptions {
+  /** Visibility filter — defaults to 'active' (archived_at IS NULL). */
+  visibility?: 'active' | 'archived' | 'all';
+  /** Restrict to one or more session_tasks rows by db status. */
+  statuses?: Array<SessionTaskRow['status']>;
+  sessionId?: string;
+  /**
+   * Substring search against task_id, session_id, and the goal embedded in
+   * task_input_json (LIKE on the raw JSON works here because we always
+   * write `goal` as `"goal":"…"`). Case-insensitive.
+   */
+  search?: string;
+  /** Inclusive lower/upper bounds on `created_at` (epoch ms). */
+  from?: number;
+  to?: number;
+  limit?: number;
+  offset?: number;
+  /** Sort order — newest-first by default. */
+  sort?: 'created-desc' | 'created-asc' | 'updated-desc' | 'updated-asc';
+  /**
+   * Search backend.
+   *  - `'like'` (default) — cheap substring match on task_id/session_id/json.
+   *    Matches the legacy operator-console behaviour.
+   *  - `'fts'`            — `session_tasks_fts` MATCH (mig 028). Multi-token
+   *    AND queries, BM25-ranked. Falls back to LIKE if the virtual table is
+   *    not present (e.g. unmigrated DB).
+   *
+   * Ignored when `search` is empty.
+   */
+  searchMode?: 'like' | 'fts';
 }
 
 // A7: SessionMessageRow removed. session_messages table is dropped by
@@ -368,9 +409,18 @@ export class SessionStore {
 
   insertTask(task: SessionTaskRow): void {
     this.db.run(
-      `INSERT INTO session_tasks (session_id, task_id, task_input_json, status, result_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [task.session_id, task.task_id, task.task_input_json, task.status, task.result_json, task.created_at],
+      `INSERT INTO session_tasks (session_id, task_id, task_input_json, status, result_json, created_at, updated_at, archived_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        task.session_id,
+        task.task_id,
+        task.task_input_json,
+        task.status,
+        task.result_json,
+        task.created_at,
+        task.updated_at ?? task.created_at,
+        task.archived_at ?? null,
+      ],
     );
     this.touchSessionUpdatedAt(task.session_id, task.created_at);
   }
@@ -382,16 +432,186 @@ export class SessionStore {
   }
 
   updateTaskStatus(sessionId: string, taskId: string, status: SessionTaskRow['status'], resultJson?: string): void {
-    this.db.run('UPDATE session_tasks SET status = ?, result_json = ? WHERE session_id = ? AND task_id = ?', [
-      status,
-      resultJson ?? null,
-      sessionId,
-      taskId,
-    ]);
+    const now = Date.now();
+    this.db.run(
+      'UPDATE session_tasks SET status = ?, result_json = ?, updated_at = ? WHERE session_id = ? AND task_id = ?',
+      [status, resultJson ?? null, now, sessionId, taskId],
+    );
     // A task transitioning state (running → completed / failed / cancelled)
     // is meaningful activity — the session should rise on the recency list
     // even if the next caller never explicitly bumps `updated_at`.
-    this.touchSessionUpdatedAt(sessionId, Date.now());
+    this.touchSessionUpdatedAt(sessionId, now);
+  }
+
+  /** Operations console — soft-hide a task row without losing audit data. */
+  archiveTaskRow(taskId: string): boolean {
+    const now = Date.now();
+    const res = this.db.run(
+      'UPDATE session_tasks SET archived_at = ?, updated_at = ? WHERE task_id = ? AND archived_at IS NULL',
+      [now, now, taskId],
+    );
+    return res.changes > 0;
+  }
+
+  unarchiveTaskRow(taskId: string): boolean {
+    const now = Date.now();
+    const res = this.db.run(
+      'UPDATE session_tasks SET archived_at = NULL, updated_at = ? WHERE task_id = ? AND archived_at IS NOT NULL',
+      [now, taskId],
+    );
+    return res.changes > 0;
+  }
+
+  /** Cross-session direct lookup by task id — single row or undefined. */
+  findTaskRowById(taskId: string): SessionTaskRow | undefined {
+    return this.db
+      .query('SELECT * FROM session_tasks WHERE task_id = ? LIMIT 1')
+      .get(taskId) as SessionTaskRow | undefined;
+  }
+
+  /**
+   * Probe whether `session_tasks_fts` is present (mig 028 ran). Cheap;
+   * the `sqlite_master` query is a single index lookup. Cached on the
+   * instance because the answer cannot change for the life of the DB
+   * handle and the fast-path `listTasksFiltered` calls hit it on every
+   * search.
+   */
+  private fts5AvailableCache: boolean | undefined;
+  fts5Available(): boolean {
+    if (this.fts5AvailableCache !== undefined) return this.fts5AvailableCache;
+    try {
+      const row = this.db
+        .query("SELECT name FROM sqlite_master WHERE type='table' AND name='session_tasks_fts'")
+        .get() as { name?: string } | undefined;
+      this.fts5AvailableCache = !!row?.name;
+    } catch {
+      this.fts5AvailableCache = false;
+    }
+    return this.fts5AvailableCache;
+  }
+
+  /**
+   * Filtered task list — backs the Tasks operations console
+   * (`GET /api/v1/tasks`). Returns matching rows + total ignoring
+   * limit/offset so the UI can render a real paginator.
+   *
+   * When `searchMode === 'fts'` and `search` is non-empty, the search
+   * runs against `session_tasks_fts` (mig 028) for multi-token AND
+   * queries. Falls back to LIKE when the FTS5 virtual table is not
+   * present (e.g. a fresh DB before the migration runs in tests).
+   */
+  listTasksFiltered(opts: ListSessionTasksOptions = {}): { rows: SessionTaskRow[]; total: number } {
+    const {
+      visibility = 'active',
+      statuses,
+      sessionId,
+      search,
+      from,
+      to,
+      limit,
+      offset,
+      sort = 'created-desc',
+      searchMode = 'like',
+    } = opts;
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (visibility === 'active') where.push('archived_at IS NULL');
+    else if (visibility === 'archived') where.push('archived_at IS NOT NULL');
+    // 'all' adds no clause.
+
+    if (statuses && statuses.length > 0) {
+      const placeholders = statuses.map(() => '?').join(',');
+      where.push(`status IN (${placeholders})`);
+      params.push(...statuses);
+    }
+    if (sessionId) {
+      where.push('session_id = ?');
+      params.push(sessionId);
+    }
+    if (typeof from === 'number') {
+      where.push('created_at >= ?');
+      params.push(from);
+    }
+    if (typeof to === 'number') {
+      where.push('created_at <= ?');
+      params.push(to);
+    }
+    const trimmedSearch = search?.trim() ?? '';
+    if (trimmedSearch.length > 0 && searchMode === 'fts' && this.fts5Available()) {
+      const ftsQuery = sanitizeFts5Query(trimmedSearch);
+      if (ftsQuery.length > 0) {
+        // Restrict to the (task_id, session_id) pairs that match FTS5.
+        // Subquery is faster than IN(...) on a list because the FTS5
+        // virtual table can produce a stream of matching task_ids.
+        where.push(
+          'task_id IN (SELECT task_id FROM session_tasks_fts WHERE session_tasks_fts MATCH ?)',
+        );
+        params.push(ftsQuery);
+      } else {
+        // Sanitiser stripped the query down to nothing — degrade to LIKE
+        // so the operator still gets predictable behaviour instead of
+        // an empty result.
+        const like = `%${trimmedSearch.toLowerCase()}%`;
+        where.push(
+          '(LOWER(task_id) LIKE ? OR LOWER(session_id) LIKE ? OR LOWER(task_input_json) LIKE ?)',
+        );
+        params.push(like, like, like);
+      }
+    } else if (trimmedSearch.length > 0) {
+      const like = `%${trimmedSearch.toLowerCase()}%`;
+      where.push(
+        '(LOWER(task_id) LIKE ? OR LOWER(session_id) LIKE ? OR LOWER(task_input_json) LIKE ?)',
+      );
+      params.push(like, like, like);
+    }
+
+    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const orderClause = (() => {
+      switch (sort) {
+        case 'created-asc':
+          return 'ORDER BY created_at ASC';
+        case 'updated-desc':
+          return 'ORDER BY COALESCE(updated_at, created_at) DESC';
+        case 'updated-asc':
+          return 'ORDER BY COALESCE(updated_at, created_at) ASC';
+        default:
+          return 'ORDER BY created_at DESC';
+      }
+    })();
+    const limitClause = typeof limit === 'number' && limit > 0 ? ` LIMIT ${Math.floor(limit)}` : '';
+    const offsetClause = typeof offset === 'number' && offset > 0 ? ` OFFSET ${Math.floor(offset)}` : '';
+
+    const rows = this.db
+      .query(
+        `SELECT * FROM session_tasks ${whereClause} ${orderClause}${limitClause}${offsetClause}`,
+      )
+      .all(...params) as SessionTaskRow[];
+
+    const totalRow = this.db
+      .query(`SELECT COUNT(*) as count FROM session_tasks ${whereClause}`)
+      .get(...params) as { count: number };
+
+    return { rows, total: totalRow.count };
+  }
+
+  /**
+   * Aggregate counts grouped by db status, ignoring archive filter so the
+   * console's "Archived" tab can show its own row count without a second
+   * round-trip. Returns an empty record when no rows.
+   */
+  countTasksByStatus(): Record<string, number> {
+    const rows = this.db
+      .query(
+        'SELECT status, archived_at IS NULL AS active, COUNT(*) AS count FROM session_tasks GROUP BY status, archived_at IS NULL',
+      )
+      .all() as Array<{ status: string; active: number; count: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) {
+      const key = r.active ? r.status : `archived:${r.status}`;
+      out[key] = (out[key] ?? 0) + r.count;
+    }
+    return out;
   }
 
   listSessionTasks(sessionId: string): SessionTaskRow[] {
@@ -537,6 +757,48 @@ export class SessionStore {
       turnId,
     ]);
   }
+}
+
+/**
+ * Reduce a free-form operator query to a safe FTS5 MATCH expression.
+ *
+ * FTS5 syntax pitfalls we defuse:
+ *   - bare hyphen tokens (`task-id-foo`) — FTS5 treats `-` as NOT, so
+ *     wrap any token containing `-`/`/`/`:` in quotes to make it
+ *     literal.
+ *   - dangling boolean operators (`partial AND`, `OR fail`) — strip
+ *     trailing operators that would error out as syntax.
+ *   - unmatched quotes — any odd-count `"` becomes a parse error;
+ *     drop them entirely and fall back to bare-token AND semantics.
+ *   - empty result — caller should LIKE-fall-back rather than match
+ *     every row.
+ *
+ * The output is an FTS5 MATCH expression with implicit AND between
+ * tokens (FTS5's default), which gives the operator console the
+ * "all words must appear" semantics they expect.
+ */
+export function sanitizeFts5Query(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return '';
+  // If quotes are unbalanced, drop them all and let the tokenizer split
+  // on whitespace. Even-count quotes are passed through.
+  const quoteCount = (trimmed.match(/"/g) ?? []).length;
+  const quotedSafe = quoteCount % 2 === 0 ? trimmed : trimmed.replace(/"/g, '');
+  const tokens = quotedSafe.split(/\s+/).filter((t) => t.length > 0);
+  const cleaned: string[] = [];
+  for (const tok of tokens) {
+    const upper = tok.toUpperCase();
+    // Strip lone boolean operators. They are only valid between terms.
+    if (upper === 'AND' || upper === 'OR' || upper === 'NOT') continue;
+    // Tokens with FTS5-special punctuation must be quoted to avoid
+    // being interpreted as operators or column qualifiers.
+    if (/[-/:()]/.test(tok)) {
+      cleaned.push(`"${tok.replace(/"/g, '')}"`);
+    } else {
+      cleaned.push(tok);
+    }
+  }
+  return cleaned.join(' ');
 }
 
 function rowToTurn(row: SessionTurnRow): Turn {

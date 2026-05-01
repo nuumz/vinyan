@@ -68,7 +68,10 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'task:stage_update', sse: true, record: true, scope: 'task' },
   { event: 'task:approval_required', sse: true, record: false, scope: 'task' },
   { event: 'task:approval_resolved', sse: true, record: false, scope: 'task' },
-  { event: 'task:retry_requested', sse: true, record: false, scope: 'task' },
+  // Lineage / governance: recording this lets the Tasks console drawer
+  // reconstruct retry chains across server restarts.
+  { event: 'task:retry_requested', sse: true, record: true, scope: 'task' },
+  { event: 'task:cancelled', sse: true, record: true, scope: 'task' },
 
   // ── Pipeline timing / grounding ─────────────────────────────────────
   { event: 'phase:timing', sse: true, record: true, scope: 'task' },
@@ -178,6 +181,32 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   // ── Memory review outcomes ──────────────────────────────────────────
   { event: 'memory:approved', sse: true, record: false, scope: 'global', sessionBypass: true },
   { event: 'memory:rejected', sse: true, record: false, scope: 'global', sessionBypass: true },
+
+  // ── Scheduler — durable agent cron ──────────────────────────────────
+  // Global / session-bypass: schedule lifecycle is workspace-wide and
+  // not bound to a single in-flight task. The fire-time event carries
+  // a taskId, so it gets recorded under that task in addition to being
+  // surfaced live. Recursion-blocked is recorded as evidence (A8).
+  { event: 'scheduler:job_created', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'scheduler:job_updated', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'scheduler:job_paused', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'scheduler:job_resumed', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'scheduler:job_deleted', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'scheduler:job_due', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'scheduler:job_started', sse: true, record: true, scope: 'task' },
+  { event: 'scheduler:job_completed', sse: true, record: true, scope: 'task' },
+  { event: 'scheduler:job_failed', sse: true, record: true, scope: 'task' },
+  { event: 'scheduler:circuit_opened', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'scheduler:recursion_blocked', sse: true, record: false, scope: 'global', sessionBypass: true },
+
+  // ── Skill proposals — agent-managed procedural memory ───────────────
+  // Workspace-wide events; no taskId on the wire. Recording disabled
+  // (lifecycle audit lives in `skill_proposals.decided_at` / etc.) but
+  // SSE-forwarded so the proposals tab updates live.
+  { event: 'skill:proposed', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'skill:proposal_approved', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'skill:proposal_rejected', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'skill:proposal_quarantined', sse: true, record: false, scope: 'global', sessionBypass: true },
 
   // ── Memory Wiki — second brain substrate ────────────────────────────
   // Global / session-bypass: wiki ops are workspace-wide knowledge updates,

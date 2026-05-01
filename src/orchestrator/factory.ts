@@ -402,6 +402,19 @@ export interface Orchestrator {
   codingCliStrategy?: import('./external-coding-cli/external-coding-cli-workflow-strategy.ts').CodingCliWorkflowStrategy;
   /** Persistence backing for coding-cli sessions (mirrors `traceStore`). */
   codingCliStore?: import('../db/coding-cli-store.ts').CodingCliStore;
+  /**
+   * Durable agent-cron store. Always-on when a DB handle is available —
+   * the table itself ships in migration 006, so any installation that
+   * has migrated past version 6 can drive the scheduler API without
+   * extra config. Exposing it on the orchestrator lets `cli/serve.ts`
+   * pass it straight through to `APIServerDeps.gatewayScheduleStore`.
+   */
+  gatewayScheduleStore?: import('../db/gateway-schedule-store.ts').GatewayScheduleStore;
+  /**
+   * Skill proposal quarantine store (mig 029). Always-on when a DB
+   * handle is available — backs `/api/v1/skill-proposals/*`.
+   */
+  skillProposalStore?: import('../db/skill-proposal-store.ts').SkillProposalStore;
   getSessionCount(): number;
   /**
    * Release all resources held by the orchestrator. Awaits truly async
@@ -2697,6 +2710,26 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     codingCliController,
     codingCliStrategy,
     codingCliStore: codingCliStoreInstance,
+    // Durable agent cron — table is shipped in mig 006; the store is
+    // a thin wrapper. Construct unconditionally when a DB is available.
+    gatewayScheduleStore: db
+      ? (() => {
+          // Lazy import to keep the gateway/scheduling module out of
+          // load paths that don't touch the API server (e.g. CLI run).
+          const {
+            GatewayScheduleStore: GatewaySchedStoreCtor,
+          } = require('../db/gateway-schedule-store.ts') as typeof import('../db/gateway-schedule-store.ts');
+          return new GatewaySchedStoreCtor(db.getDb());
+        })()
+      : undefined,
+    skillProposalStore: db
+      ? (() => {
+          const {
+            SkillProposalStore: SkillProposalStoreCtor,
+          } = require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
+          return new SkillProposalStoreCtor(db.getDb());
+        })()
+      : undefined,
     // W2: optional plugin subsystem — populated when
     // `config.plugins.enabled` is true. pluginRegistry / messagingLifecycle
     // / pluginWarnings are filled in asynchronously by the init promise,

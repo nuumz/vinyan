@@ -1,12 +1,19 @@
 /**
  * vinyan doctor — workspace health check.
  *
- * Validates: config, database, oracles, LLM providers, economy, sessions.
- * Reports issues with actionable fix suggestions.
+ * Validates: config, database, migrations, oracles, LLM providers,
+ * provider cooldowns, economy, sessions, scheduler, recorder, memory,
+ * skills, profile isolation. Reports issues with actionable fix
+ * suggestions.
  *
  * The check loop is exposed as `runDoctorChecks()` so the HTTP API can
  * reuse the same logic. The CLI entry point (`runDoctor`) wraps it with
  * console rendering and an exit code.
+ *
+ * Hermes lesson: doctor must distinguish "missing optional subsystem
+ * (warn — capability degraded)" from "missing required subsystem
+ * (fail — install / migrate first)". Secrets are NEVER printed —
+ * presence-only signals.
  */
 
 import { existsSync } from 'fs';
@@ -16,11 +23,41 @@ export interface DoctorCheck {
   name: string;
   status: 'ok' | 'warn' | 'fail';
   detail: string;
+  /** Hint the operator can act on. Optional — short remediation only. */
+  remediation?: string;
 }
 
 export interface DoctorOptions {
   /** Include expensive checks (tsc) — off by default when called from a live server. */
   deep?: boolean;
+  /**
+   * Optional runtime probes injected by the HTTP handler so doctor can
+   * report on live state (provider cooldowns, recorder presence,
+   * scheduler health) without re-importing the whole orchestrator.
+   * Each is best-effort: missing → warn, present → check.
+   */
+  runtime?: {
+    /** Provider health snapshot — `null` when no provider is in cooldown. */
+    providerCooldowns?: () => ReadonlyArray<{
+      providerId: string;
+      cooldownUntil: number;
+      reason: string;
+    }>;
+    /** True when `taskEventStore` is wired into the API server. */
+    recorderActive?: boolean;
+    /** True when `gatewayScheduleStore` is wired (durable scheduler). */
+    schedulerActive?: boolean;
+    /** Count of active scheduled jobs. Caller computes profile-scoped count. */
+    activeScheduleCount?: number;
+    /** True when `simpleSkillRegistry` or `skillArtifactStore` is wired. */
+    skillsActive?: boolean;
+    /** True when memory-wiki is wired. */
+    memoryWikiActive?: boolean;
+    /** Total in-flight tasks (zero is healthy). */
+    inFlightTaskCount?: number;
+    /** Number of orphaned tasks recovered at startup (large = degraded). */
+    recoveredOrphanCount?: number;
+  };
 }
 
 /**
@@ -153,6 +190,146 @@ export async function runDoctorChecks(
       });
     } catch {
       checks.push({ name: 'Sessions', status: 'warn', detail: 'Sessions table not yet created' });
+    }
+  }
+
+  // 8. Migrations — surface schema drift early so an old DB doesn't
+  // silently miss FTS5 / scheduler / proposal tables. Compares the
+  // applied version recorded in `schema_migrations` against the highest
+  // version in `ALL_MIGRATIONS`.
+  if (existsSync(dbPath)) {
+    try {
+      const { Database } = await import('bun:sqlite');
+      const { ALL_MIGRATIONS } = await import('../db/migrations/index.ts');
+      const db = new Database(dbPath, { readonly: true });
+      const applied = db
+        .query('SELECT MAX(version) as v FROM schema_version')
+        .get() as { v: number | null } | null;
+      db.close();
+      const codeMax = Math.max(...ALL_MIGRATIONS.map((m) => m.version));
+      const dbMax = applied?.v ?? 0;
+      if (dbMax === codeMax) {
+        checks.push({ name: 'Migrations', status: 'ok', detail: `up to date (v${dbMax})` });
+      } else if (dbMax < codeMax) {
+        checks.push({
+          name: 'Migrations',
+          status: 'warn',
+          detail: `DB at v${dbMax}, code expects v${codeMax}`,
+          remediation: 'Restart `vinyan serve` — migrations run on startup.',
+        });
+      } else {
+        // dbMax > codeMax: someone downgraded code; flag as fail since
+        // the runtime cannot guarantee the schema matches.
+        checks.push({
+          name: 'Migrations',
+          status: 'fail',
+          detail: `DB at v${dbMax} but code only knows up to v${codeMax}`,
+          remediation: 'Upgrade Vinyan code or restore an older DB.',
+        });
+      }
+    } catch (err) {
+      checks.push({
+        name: 'Migrations',
+        status: 'warn',
+        detail: `cannot read schema_version: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  // 9. Runtime probes — injected by the HTTP handler. Without them
+  // doctor still works (warns where applicable) so the CLI path stays
+  // identical to the original behaviour.
+  const rt = options.runtime;
+  if (rt) {
+    if (typeof rt.recorderActive === 'boolean') {
+      checks.push(
+        rt.recorderActive
+          ? { name: 'Event Recorder', status: 'ok', detail: 'task_events recorder wired' }
+          : {
+              name: 'Event Recorder',
+              status: 'warn',
+              detail: 'task_events recorder not wired — historical replay limited',
+              remediation: 'Wire taskEventStore in cli/serve.ts.',
+            },
+      );
+    }
+    if (typeof rt.schedulerActive === 'boolean') {
+      const count = rt.activeScheduleCount ?? 0;
+      checks.push(
+        rt.schedulerActive
+          ? {
+              name: 'Scheduler',
+              status: 'ok',
+              detail: `gatewayScheduleStore wired — ${count} active job${count === 1 ? '' : 's'}`,
+            }
+          : {
+              name: 'Scheduler',
+              status: 'warn',
+              detail: 'scheduler store not wired — /api/v1/scheduler/jobs returns 503',
+              remediation: 'Set gatewayScheduleStore on APIServerDeps.',
+            },
+      );
+    }
+    if (typeof rt.skillsActive === 'boolean') {
+      checks.push(
+        rt.skillsActive
+          ? { name: 'Skills', status: 'ok', detail: 'skill registry wired' }
+          : {
+              name: 'Skills',
+              status: 'warn',
+              detail: 'no skill registry — /api/v1/skills will be empty',
+            },
+      );
+    }
+    if (typeof rt.memoryWikiActive === 'boolean') {
+      checks.push(
+        rt.memoryWikiActive
+          ? { name: 'Memory Wiki', status: 'ok', detail: 'memoryWiki bundle wired' }
+          : { name: 'Memory Wiki', status: 'warn', detail: 'memoryWiki not configured' },
+      );
+    }
+    if (rt.providerCooldowns) {
+      try {
+        const cooldowns = rt.providerCooldowns();
+        if (cooldowns.length === 0) {
+          checks.push({ name: 'Provider Health', status: 'ok', detail: 'no providers in cooldown' });
+        } else {
+          // Don't reveal full provider names if they could be sensitive
+          // — list count + earliest reset only.
+          const earliest = Math.min(...cooldowns.map((c) => c.cooldownUntil));
+          const remainingMs = Math.max(0, earliest - Date.now());
+          checks.push({
+            name: 'Provider Health',
+            status: 'warn',
+            detail: `${cooldowns.length} provider(s) in cooldown, earliest reset in ${Math.round(remainingMs / 1000)}s`,
+            remediation: 'Wait for cooldown or rotate API keys.',
+          });
+        }
+      } catch (err) {
+        checks.push({
+          name: 'Provider Health',
+          status: 'warn',
+          detail: `probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+    if (typeof rt.inFlightTaskCount === 'number') {
+      checks.push({
+        name: 'In-Flight Tasks',
+        status: rt.inFlightTaskCount > 50 ? 'warn' : 'ok',
+        detail: `${rt.inFlightTaskCount} task(s) in flight`,
+        ...(rt.inFlightTaskCount > 50
+          ? { remediation: 'Inspect /api/v1/tasks for stuck or runaway tasks.' }
+          : {}),
+      });
+    }
+    if (typeof rt.recoveredOrphanCount === 'number' && rt.recoveredOrphanCount > 0) {
+      checks.push({
+        name: 'Orphan Recovery',
+        status: 'warn',
+        detail: `${rt.recoveredOrphanCount} task(s) were marked failed at last startup`,
+        remediation: 'Inspect /api/v1/tasks?status=failed for the recovered rows.',
+      });
     }
   }
 

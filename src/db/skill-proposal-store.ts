@@ -76,6 +76,23 @@ interface SkillProposalRow {
   decision_reason: string | null;
 }
 
+export interface SkillProposalRevision {
+  readonly id: number;
+  readonly profile: string;
+  readonly proposalId: string;
+  readonly revision: number;
+  readonly skillMd: string;
+  readonly safetyFlags: ReadonlyArray<string>;
+  readonly actor: string;
+  readonly reason: string | null;
+  readonly createdAt: number;
+}
+
+/** G6: cap on retained revisions per proposal (prevent edit-spam table bloat). */
+export const MAX_REVISIONS_PER_PROPOSAL = 100;
+/** G1: reject draft / scan payloads larger than this — regex-DOS guard. */
+export const MAX_SKILL_MD_BYTES = 100 * 1024;
+
 export class SkillProposalStore {
   constructor(private readonly db: Database) {}
 
@@ -176,9 +193,193 @@ export class SkillProposalStore {
         trustTier,
         now,
       );
+    // Seed revision 1 — the initial create. Lets the UI render a
+    // complete history without a special-case "before any edits" row.
+    this.db
+      .prepare(
+        `INSERT INTO skill_proposal_revisions
+           (profile, proposal_id, revision, skill_md, safety_flags_json,
+            actor, reason, created_at)
+         VALUES (?, ?, 1, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.profile,
+        id,
+        input.skillMd,
+        JSON.stringify(verdict.flags),
+        'auto-generator',
+        'initial create',
+        now,
+      );
     const row = this.get(id, input.profile);
     if (!row) throw new Error('SkillProposalStore: insert failed to round-trip');
     return row;
+  }
+
+  /**
+   * Update the SKILL.md draft for an existing proposal. R2: lets the
+   * operator edit a quarantined proposal and re-scan in place rather
+   * than having to POST a fresh proposal.
+   *
+   * Lifecycle / behaviour:
+   *   - returns `{ kind: 'not-found' }` when the row does not exist.
+   *   - decided proposals (approved / rejected) → `{ kind: 'immutable' }`.
+   *   - **G2 optimistic locking**: when `expectedRevision` is supplied,
+   *     compare against the current latest revision. Mismatch →
+   *     `{ kind: 'precondition-failed', latestRevision }`. Two
+   *     operators editing the same draft can't silently overwrite
+   *     each other's work; the second writer is told to refresh.
+   *   - safety scanner runs on the new bytes. If flags fire, status
+   *     flips to `quarantined`; if flags clear AND the prior status
+   *     was `quarantined`, status flips back to `pending`.
+   *   - a revision row is appended atomically with the update, so the
+   *     audit trail exists even if the post-update read fails.
+   *   - `actor` is required so every revision names a human (A8).
+   *   - **G6 revision cap**: at most `MAX_REVISIONS_PER_PROPOSAL` rows
+   *     are retained per proposal. When exceeded, oldest rows beyond
+   *     the most-recent N (excluding revision 1, which is preserved
+   *     as provenance) are dropped inside the same transaction.
+   */
+  updateDraft(args: {
+    id: string;
+    profile: string;
+    skillMd: string;
+    actor: string;
+    reason?: string;
+    /** G2 optimistic-locking expectation. */
+    expectedRevision?: number;
+  }):
+    | { kind: 'ok'; proposal: SkillProposal; revision: number }
+    | { kind: 'not-found' }
+    | { kind: 'immutable'; status: SkillProposalStatus }
+    | { kind: 'precondition-failed'; latestRevision: number } {
+    const existing = this.get(args.id, args.profile);
+    if (!existing) return { kind: 'not-found' };
+    if (existing.status === 'approved' || existing.status === 'rejected') {
+      return { kind: 'immutable', status: existing.status };
+    }
+    const verdict = memorySafetyVerdict(args.skillMd);
+    const nextStatus: SkillProposalStatus = verdict.safe
+      ? existing.status === 'quarantined'
+        ? 'pending'
+        : existing.status
+      : 'quarantined';
+    const now = Date.now();
+    const tx = this.db.transaction(() => {
+      const latest = (this.db
+        .prepare(
+          `SELECT COALESCE(MAX(revision), 0) AS n FROM skill_proposal_revisions
+            WHERE profile = ? AND proposal_id = ?`,
+        )
+        .get(args.profile, args.id) as { n: number }).n;
+      // G2: short-circuit on stale expectation. The frontend hands
+      // back the revision it was viewing when the operator started
+      // editing. A mismatch means another writer landed in between.
+      if (typeof args.expectedRevision === 'number' && args.expectedRevision !== latest) {
+        return { kind: 'precondition-failed' as const, latestRevision: latest };
+      }
+      this.db
+        .prepare(
+          `UPDATE skill_proposals
+              SET skill_md = ?,
+                  safety_flags = ?,
+                  status = ?
+            WHERE id = ? AND profile = ?`,
+        )
+        .run(
+          args.skillMd,
+          JSON.stringify(verdict.flags),
+          nextStatus,
+          args.id,
+          args.profile,
+        );
+      const nextRevision = latest + 1;
+      this.db
+        .prepare(
+          `INSERT INTO skill_proposal_revisions
+             (profile, proposal_id, revision, skill_md, safety_flags_json,
+              actor, reason, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          args.profile,
+          args.id,
+          nextRevision,
+          args.skillMd,
+          JSON.stringify(verdict.flags),
+          args.actor,
+          args.reason ?? null,
+          now,
+        );
+      // G6: trim history if we exceeded the per-proposal cap. Always
+      // keep revision 1 (initial create) plus the most-recent
+      // (cap - 1) rows. Mid-history rows are the cheapest to evict.
+      this.db
+        .prepare(
+          `DELETE FROM skill_proposal_revisions
+            WHERE profile = ?
+              AND proposal_id = ?
+              AND revision <> 1
+              AND revision NOT IN (
+                SELECT revision FROM skill_proposal_revisions
+                 WHERE profile = ? AND proposal_id = ?
+                 ORDER BY revision DESC
+                 LIMIT ?
+              )`,
+        )
+        .run(
+          args.profile,
+          args.id,
+          args.profile,
+          args.id,
+          MAX_REVISIONS_PER_PROPOSAL - 1,
+        );
+      return { kind: 'ok' as const, revision: nextRevision };
+    });
+    const result = tx() as
+      | { kind: 'ok'; revision: number }
+      | { kind: 'precondition-failed'; latestRevision: number };
+    if (result.kind === 'precondition-failed') {
+      return result;
+    }
+    const after = this.get(args.id, args.profile);
+    if (!after) return { kind: 'not-found' };
+    return { kind: 'ok', proposal: after, revision: result.revision };
+  }
+
+  /** List the most-recent revisions for a proposal, newest first. */
+  listRevisions(profile: string, proposalId: string, limit = 50): SkillProposalRevision[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, profile, proposal_id, revision, skill_md,
+                safety_flags_json, actor, reason, created_at
+           FROM skill_proposal_revisions
+          WHERE profile = ? AND proposal_id = ?
+          ORDER BY revision DESC
+          LIMIT ?`,
+      )
+      .all(profile, proposalId, limit) as Array<{
+      id: number;
+      profile: string;
+      proposal_id: string;
+      revision: number;
+      skill_md: string;
+      safety_flags_json: string;
+      actor: string;
+      reason: string | null;
+      created_at: number;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      profile: r.profile,
+      proposalId: r.proposal_id,
+      revision: r.revision,
+      skillMd: r.skill_md,
+      safetyFlags: safeParseJsonArray(r.safety_flags_json),
+      actor: r.actor,
+      reason: r.reason,
+      createdAt: r.created_at,
+    }));
   }
 
   get(id: string, profile: string): SkillProposal | null {

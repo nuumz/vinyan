@@ -87,6 +87,14 @@ export interface APIServerDeps {
   };
   /** Approval gate for high-risk task approval (A6). */
   approvalGate?: import('../orchestrator/approval-gate.ts').ApprovalGate;
+  /**
+   * R5: durable approval ledger. When wired, `GET /api/v1/approvals`
+   * lists pending approvals from disk (so they survive restart) and
+   * `GET /api/v1/approvals/history?taskId=...` exposes the full
+   * lifecycle audit trail. The in-memory `approvalGate` remains the
+   * authoritative resolver for THIS process.
+   */
+  approvalLedgerStore?: import('../db/approval-ledger-store.ts').ApprovalLedgerStore;
   /** External Coding CLI controller — drives Claude Code / GitHub Copilot. */
   codingCliController?: import('../orchestrator/external-coding-cli/index.ts').ExternalCodingCliController;
   /** Persistence for external coding CLI sessions/events/approvals/decisions. */
@@ -146,6 +154,14 @@ export interface APIServerDeps {
    * Constructed by the factory whenever a DB handle is available.
    */
   skillProposalStore?: import('../db/skill-proposal-store.ts').SkillProposalStore;
+  /**
+   * Restart-safe autogenerator tracker. Used by the policy diagnostics
+   * endpoint and the doctor probe to expose tracker state to operators
+   * (R3 visibility).
+   */
+  skillAutogenStateStore?: import('../skills/autogen-state-store.ts').SkillAutogenStateStore;
+  /** Parameter ledger for adaptive autogen threshold history (R1). */
+  parameterLedger?: import('../orchestrator/adaptive-params/parameter-ledger.ts').ParameterLedger;
   /**
    * Default profile name for this server instance. Requests that omit
    * both the `X-Vinyan-Profile` header and `body.profile` fall back to
@@ -444,6 +460,10 @@ export class VinyanAPIServer {
 
     if (method === 'GET' && path === '/api/v1/approvals') {
       return this.handleListApprovals();
+    }
+    // R5: full lifecycle audit trail for one task's approvals.
+    if (method === 'GET' && path === '/api/v1/approvals/history') {
+      return this.handleApprovalHistory(req);
     }
 
     if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+\/events$/)) {
@@ -769,6 +789,20 @@ export class VinyanAPIServer {
     // ── Skill proposals — agent-managed procedural memory ─────────────
     // Quarantined-by-default. No path here ever auto-activates a
     // proposal; approve still requires a human-attributed decision.
+    if (method === 'GET' && path === '/api/v1/skill-proposals/autogen-policy') {
+      return this.handleAutogenPolicySnapshot(req);
+    }
+    if (method === 'POST' && path === '/api/v1/skill-proposals/scan') {
+      return this.handleSkillProposalScan(req);
+    }
+    if (method === 'PATCH' && path.match(/^\/api\/v1\/skill-proposals\/[^/]+\/draft$/)) {
+      const id = path.split('/')[4]!;
+      return this.handlePatchSkillProposalDraft(id, req);
+    }
+    if (method === 'GET' && path.match(/^\/api\/v1\/skill-proposals\/[^/]+\/revisions$/)) {
+      const id = path.split('/')[4]!;
+      return this.handleListSkillProposalRevisions(id, req);
+    }
     if (method === 'GET' && path === '/api/v1/skill-proposals') {
       return this.handleListSkillProposals(req);
     }
@@ -2007,8 +2041,40 @@ export class VinyanAPIServer {
   }
 
   private handleListApprovals(): Response {
+    // In-memory authoritative source for THIS process.
     const pending = this.deps.approvalGate?.getPending() ?? [];
-    return jsonResponse({ pending });
+    // R5: when a ledger is wired, also surface ledger-only pending rows
+    // (orphans from a prior crashed process) and a flag so operators can
+    // see how many durable rows are NOT tracked by the live gate.
+    const ledger = this.deps.approvalLedgerStore;
+    if (!ledger) {
+      return jsonResponse({ pending, source: 'memory' });
+    }
+    const orphanRows = this.deps.approvalGate?.getOrphanedPending() ?? null;
+    return jsonResponse({
+      pending,
+      orphanedPending: orphanRows ?? [],
+      source: 'memory+ledger',
+    });
+  }
+
+  /**
+   * R5: GET /api/v1/approvals/history?taskId=...
+   * Full lifecycle audit trail for a task's approvals (pending → resolved
+   * | timed_out | shutdown_rejected | superseded). 503 when no ledger.
+   */
+  private handleApprovalHistory(req: Request): Response {
+    const ledger = this.deps.approvalLedgerStore;
+    if (!ledger) {
+      return jsonResponse({ error: 'Approval ledger not configured' }, 503);
+    }
+    const url = new URL(req.url);
+    const taskId = url.searchParams.get('taskId');
+    if (!taskId) {
+      return jsonResponse({ error: 'taskId query param is required' }, 400);
+    }
+    const records = ledger.findByTask(taskId);
+    return jsonResponse({ taskId, records });
   }
 
   // ── Phase D: structured clarification response ────────────
@@ -3663,6 +3729,9 @@ export class VinyanAPIServer {
     if (typeof body.decidedBy !== 'string' || body.decidedBy.trim().length === 0) {
       return jsonResponse({ error: 'decidedBy is required (audit trail must name a human)' }, 400);
     }
+    if (typeof body.reason !== 'string' || body.reason.trim().length === 0) {
+      return jsonResponse({ error: 'reason is required (every approval must be explained)' }, 400);
+    }
     const existing = store.get(id, profileResolved.profile);
     if (!existing) return jsonResponse({ error: 'proposal not found' }, 404);
     if (existing.status === 'quarantined') {
@@ -3674,7 +3743,7 @@ export class VinyanAPIServer {
         409,
       );
     }
-    const reason = typeof body.reason === 'string' ? body.reason : undefined;
+    const reason = body.reason;
     const proposal = store.approve(id, profileResolved.profile, body.decidedBy, reason);
     if (!proposal) return jsonResponse({ error: 'approval failed' }, 500);
     this.deps.bus.emit('skill:proposal_approved', {
@@ -3717,6 +3786,76 @@ export class VinyanAPIServer {
     return jsonResponse({ proposal });
   }
 
+  /**
+   * `GET /api/v1/skill-proposals/autogen-policy` — R1 diagnostics.
+   *
+   * Returns the current adaptive threshold, the signals that drove
+   * it, the ledger history (recent changes), and the durable tracker
+   * snapshot. Read-only — no mutations from this endpoint.
+   */
+  private handleAutogenPolicySnapshot(req: Request): Response {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    const profileResolved = resolveRequestProfile(req, {}, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+
+    let snapshot: ReturnType<typeof import('../skills/autogen-policy.ts').computeAdaptiveThreshold> | null =
+      null;
+    let history: ReturnType<typeof import('../orchestrator/adaptive-params/parameter-ledger.ts').ParameterLedger.prototype.history> = [];
+    try {
+      const { computeAdaptiveThreshold, AUTOGEN_THRESHOLD_PARAM_NAME } = require(
+        '../skills/autogen-policy.ts',
+      ) as typeof import('../skills/autogen-policy.ts');
+      snapshot = computeAdaptiveThreshold(store, profileResolved.profile);
+      if (this.deps.parameterLedger) {
+        history = this.deps.parameterLedger.history(AUTOGEN_THRESHOLD_PARAM_NAME, 50);
+      }
+    } catch (err) {
+      return jsonResponse(
+        { error: 'failed to compute snapshot', detail: err instanceof Error ? err.message : String(err) },
+        500,
+      );
+    }
+
+    let trackerRows: ReturnType<
+      typeof import('../skills/autogen-state-store.ts').SkillAutogenStateStore.prototype.list
+    > = [];
+    if (this.deps.skillAutogenStateStore) {
+      try {
+        trackerRows = this.deps.skillAutogenStateStore.list(profileResolved.profile, 200);
+      } catch {
+        /* best-effort */
+      }
+    }
+    const now = Date.now();
+    const cooldownActive = trackerRows.filter((r) => r.cooldownUntil > now).length;
+
+    return jsonResponse({
+      profile: profileResolved.profile,
+      threshold: snapshot?.threshold ?? null,
+      enabled: snapshot?.enabled ?? false,
+      explanation: snapshot?.explanation ?? null,
+      signals: snapshot?.signals ?? null,
+      computedAt: snapshot?.computedAt ?? Date.now(),
+      ledger: {
+        recentChanges: history.length,
+        history: history.slice(0, 20).map((h) => ({
+          id: h.id,
+          ts: h.ts,
+          oldValue: h.oldValue,
+          newValue: h.newValue,
+          reason: h.reason,
+          ownerModule: h.ownerModule,
+        })),
+      },
+      tracker: {
+        rows: trackerRows.length,
+        cooldownActive,
+        bootId: trackerRows[0]?.bootId ?? null,
+      },
+    });
+  }
+
   private async handleDeleteSkillProposal(id: string, req: Request): Promise<Response> {
     const store = this.deps.skillProposalStore;
     if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
@@ -3738,7 +3877,7 @@ export class VinyanAPIServer {
   private async handleSetSkillProposalTrustTier(id: string, req: Request): Promise<Response> {
     const store = this.deps.skillProposalStore;
     if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
-    let body: { tier?: unknown; decidedBy?: unknown; profile?: unknown };
+    let body: { tier?: unknown; decidedBy?: unknown; reason?: unknown; profile?: unknown };
     try {
       body = (await req.json()) as typeof body;
     } catch {
@@ -3748,6 +3887,9 @@ export class VinyanAPIServer {
     if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
     if (typeof body.decidedBy !== 'string' || body.decidedBy.trim().length === 0) {
       return jsonResponse({ error: 'decidedBy is required (audit trail must name a human)' }, 400);
+    }
+    if (typeof body.reason !== 'string' || body.reason.trim().length === 0) {
+      return jsonResponse({ error: 'reason is required (every tier change must be explained)' }, 400);
     }
     const tier = body.tier;
     if (
@@ -3766,7 +3908,185 @@ export class VinyanAPIServer {
     if (!existing) return jsonResponse({ error: 'proposal not found' }, 404);
     const updated = store.setTrustTier(id, profileResolved.profile, tier);
     if (!updated) return jsonResponse({ error: 'tier update failed' }, 500);
+    // Append a parameter ledger row so the trust-tier transition is
+    // visible in the same audit surface as threshold changes (A8).
+    if (this.deps.parameterLedger) {
+      try {
+        this.deps.parameterLedger.append({
+          paramName: `skill_proposal_trust_tier:${profileResolved.profile}:${id}`,
+          oldValue: existing.trustTier,
+          newValue: tier,
+          reason: `${body.decidedBy}: ${body.reason}`,
+          ownerModule: 'skill-proposals-api',
+        });
+      } catch {
+        /* best-effort */
+      }
+    }
     return jsonResponse({ proposal: updated, decidedBy: body.decidedBy });
+  }
+
+  /**
+   * `POST /api/v1/skill-proposals/scan` — R2 live preview.
+   *
+   * Pure scanner — no DB writes, no proposal lookup. The caller posts
+   * a `skillMd` payload and receives the safety verdict synchronously.
+   * The frontend uses this for the editor's debounced live-scan card.
+   *
+   * **G1 size cap**: payloads larger than `MAX_SKILL_MD_BYTES` are
+   * rejected with 413. The safety scanner runs several regexes against
+   * the full content; without a cap a 10MB body could pin CPU and
+   * starve other requests on the same event loop.
+   */
+  private async handleSkillProposalScan(req: Request): Promise<Response> {
+    let body: { skillMd?: unknown };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+    if (typeof body.skillMd !== 'string') {
+      return jsonResponse({ error: 'skillMd (string) is required' }, 400);
+    }
+    const { MAX_SKILL_MD_BYTES } = require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
+    if (Buffer.byteLength(body.skillMd, 'utf-8') > MAX_SKILL_MD_BYTES) {
+      return jsonResponse(
+        {
+          error: `skillMd exceeds ${MAX_SKILL_MD_BYTES} bytes`,
+          maxBytes: MAX_SKILL_MD_BYTES,
+        },
+        413,
+      );
+    }
+    const { memorySafetyVerdict } = require('../memory/snapshot.ts') as typeof import('../memory/snapshot.ts');
+    const verdict = memorySafetyVerdict(body.skillMd);
+    return jsonResponse({
+      safe: verdict.safe,
+      flags: verdict.flags,
+      scannedAt: Date.now(),
+    });
+  }
+
+  /**
+   * `PATCH /api/v1/skill-proposals/:id/draft` — R2 inline edit.
+   *
+   * Body: `{ skillMd, actor, reason? }`.
+   *   - `actor` is required (no anonymous edits — A8).
+   *   - decided proposals (approved / rejected) reject with 409 — they
+   *     are immutable.
+   *   - server re-runs the safety scanner; status flips to
+   *     `quarantined` when flags fire and back to `pending` when the
+   *     operator clears them.
+   *   - revision row recorded atomically with the update.
+   *
+   * Returns the updated proposal + the revision number that was
+   * created.
+   */
+  private async handlePatchSkillProposalDraft(id: string, req: Request): Promise<Response> {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    let body: {
+      skillMd?: unknown;
+      actor?: unknown;
+      reason?: unknown;
+      profile?: unknown;
+      expectedRevision?: unknown;
+    };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return jsonResponse({ error: 'Request body must be JSON' }, 400);
+    }
+    const profileResolved = resolveRequestProfile(req, body as Record<string, unknown>, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    if (typeof body.skillMd !== 'string' || body.skillMd.trim().length === 0) {
+      return jsonResponse({ error: 'skillMd is required' }, 400);
+    }
+    if (typeof body.actor !== 'string' || body.actor.trim().length === 0) {
+      return jsonResponse({ error: 'actor is required (audit trail must name a human)' }, 400);
+    }
+    // G1 — size cap (regex-DOS guard).
+    const { MAX_SKILL_MD_BYTES } = require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
+    if (Buffer.byteLength(body.skillMd, 'utf-8') > MAX_SKILL_MD_BYTES) {
+      return jsonResponse(
+        { error: `skillMd exceeds ${MAX_SKILL_MD_BYTES} bytes`, maxBytes: MAX_SKILL_MD_BYTES },
+        413,
+      );
+    }
+    // G2 — optimistic locking. `expectedRevision`, when supplied, is
+    // the revision number the operator was viewing when they started
+    // editing. The store rejects with `precondition-failed` when
+    // another writer landed in between.
+    const expectedRevision =
+      typeof body.expectedRevision === 'number' && Number.isInteger(body.expectedRevision)
+        ? body.expectedRevision
+        : undefined;
+    const result = store.updateDraft({
+      id,
+      profile: profileResolved.profile,
+      skillMd: body.skillMd,
+      actor: body.actor,
+      reason: typeof body.reason === 'string' ? body.reason : undefined,
+      ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+    });
+    if (result.kind === 'not-found') {
+      return jsonResponse({ error: 'proposal not found' }, 404);
+    }
+    if (result.kind === 'immutable') {
+      return jsonResponse(
+        {
+          error: 'Decided proposals cannot be edited. Create a new proposal to capture changes.',
+          status: result.status,
+        },
+        409,
+      );
+    }
+    if (result.kind === 'precondition-failed') {
+      return jsonResponse(
+        {
+          error: 'Another operator edited this proposal. Reload to see the latest revision.',
+          code: 'precondition-failed',
+          latestRevision: result.latestRevision,
+        },
+        412,
+      );
+    }
+    // Surface the new state via the appropriate event so SSE listeners
+    // refresh.
+    if (result.proposal.status === 'quarantined') {
+      this.deps.bus.emit('skill:proposal_quarantined', {
+        proposalId: result.proposal.id,
+        profile: result.proposal.profile,
+        proposedName: result.proposal.proposedName,
+        safetyFlags: result.proposal.safetyFlags,
+      });
+    } else {
+      this.deps.bus.emit('skill:proposed', {
+        proposalId: result.proposal.id,
+        profile: result.proposal.profile,
+        proposedName: result.proposal.proposedName,
+        successCount: result.proposal.successCount,
+        safetyFlags: result.proposal.safetyFlags,
+        trustTier: result.proposal.trustTier,
+      });
+    }
+    return jsonResponse({ proposal: result.proposal, revision: result.revision });
+  }
+
+  /**
+   * `GET /api/v1/skill-proposals/:id/revisions` — list edit history
+   * for a proposal. Newest first; bounded to 50 by default.
+   */
+  private handleListSkillProposalRevisions(id: string, req: Request): Response {
+    const store = this.deps.skillProposalStore;
+    if (!store) return jsonResponse({ error: 'skill proposals not configured' }, 503);
+    const profileResolved = resolveRequestProfile(req, {}, this.deps.defaultProfile);
+    if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
+    const url = new URL(req.url);
+    const limitRaw = url.searchParams.get('limit');
+    const limit = limitRaw ? Math.max(1, Math.min(200, parseInt(limitRaw, 10) || 0)) : 50;
+    const revisions = store.listRevisions(profileResolved.profile, id, limit);
+    return jsonResponse({ revisions, total: revisions.length });
   }
 
   private handleCalibration(): Response {
@@ -3902,6 +4222,56 @@ export class VinyanAPIServer {
           return out;
         };
       }
+    }
+    // R1 — autogen policy snapshot. Reads the current threshold +
+    // signals + ledger tail so the doctor surface can show "what is
+    // the autogen doing right now and why."
+    if (this.deps.skillProposalStore) {
+      probes.autogenPolicy = () => {
+        try {
+          const profile = this.deps.defaultProfile ?? 'default';
+          const {
+            computeAdaptiveThreshold,
+            AUTOGEN_THRESHOLD_PARAM_NAME,
+          } = require('../skills/autogen-policy.ts') as typeof import('../skills/autogen-policy.ts');
+          const snap = computeAdaptiveThreshold(this.deps.skillProposalStore!, profile);
+          const recentChanges = this.deps.parameterLedger
+            ? this.deps.parameterLedger.history(AUTOGEN_THRESHOLD_PARAM_NAME, 50).length
+            : 0;
+          return {
+            threshold: snap.threshold,
+            enabled: snap.enabled,
+            explanation: snap.explanation,
+            pendingCount: snap.signals.pendingCount,
+            recentChanges,
+          };
+        } catch {
+          return null;
+        }
+      };
+    }
+    // R3 — autogen tracker state. Reads the durable tracker rows so
+    // the operator can see how many signatures have carryover state,
+    // which are in cooldown, and what the active boot id is.
+    if (this.deps.skillAutogenStateStore) {
+      probes.autogenTrackerState = () => {
+        try {
+          const profile = this.deps.defaultProfile ?? 'default';
+          const rows = this.deps.skillAutogenStateStore!.list(profile, 1000);
+          const now = Date.now();
+          let cooldownActive = 0;
+          let oldestSeen: number | null = null;
+          let bootId: string | null = null;
+          for (const r of rows) {
+            if (r.cooldownUntil > now) cooldownActive += 1;
+            if (oldestSeen === null || r.lastSeen < oldestSeen) oldestSeen = r.lastSeen;
+            if (!bootId && r.bootId) bootId = r.bootId;
+          }
+          return { rows: rows.length, cooldownActive, oldestSeen, bootId };
+        } catch {
+          return null;
+        }
+      };
     }
     return probes;
   }

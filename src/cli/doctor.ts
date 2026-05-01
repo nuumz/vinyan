@@ -57,6 +57,29 @@ export interface DoctorOptions {
     inFlightTaskCount?: number;
     /** Number of orphaned tasks recovered at startup (large = degraded). */
     recoveredOrphanCount?: number;
+    /**
+     * Autogen policy snapshot — current threshold + signals + ledger
+     * tail. Surfaced as a single check entry so an operator sees both
+     * the live threshold and the queue signals that drove it.
+     */
+    autogenPolicy?: () => {
+      readonly threshold: number;
+      readonly enabled: boolean;
+      readonly explanation: string;
+      readonly pendingCount: number;
+      readonly recentChanges: number;
+    } | null;
+    /**
+     * Autogen tracker state — total durable rows, oldest carryover,
+     * cooldown count. R3 visibility so the operator can see whether
+     * the persistent tracker is healthy.
+     */
+    autogenTrackerState?: () => {
+      readonly rows: number;
+      readonly cooldownActive: number;
+      readonly oldestSeen: number | null;
+      readonly bootId: string | null;
+    } | null;
   };
 }
 
@@ -330,6 +353,62 @@ export async function runDoctorChecks(
         detail: `${rt.recoveredOrphanCount} task(s) were marked failed at last startup`,
         remediation: 'Inspect /api/v1/tasks?status=failed for the recovered rows.',
       });
+    }
+    if (rt.autogenPolicy) {
+      try {
+        const snap = rt.autogenPolicy();
+        if (snap) {
+          checks.push({
+            name: 'Autogen Threshold',
+            status: 'ok',
+            detail: snap.enabled
+              ? `threshold=${snap.threshold} (adaptive · ${snap.recentChanges} changes recorded · ${snap.pendingCount} pending)`
+              : `threshold=${snap.threshold} (static — adaptive policy disabled)`,
+          });
+        } else {
+          checks.push({
+            name: 'Autogen Threshold',
+            status: 'warn',
+            detail: 'autogen policy not wired — auto-generated proposals fall back to default',
+          });
+        }
+      } catch (err) {
+        checks.push({
+          name: 'Autogen Threshold',
+          status: 'warn',
+          detail: `policy probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+    if (rt.autogenTrackerState) {
+      try {
+        const state = rt.autogenTrackerState();
+        if (state) {
+          const oldestAge =
+            state.oldestSeen != null ? Math.round((Date.now() - state.oldestSeen) / 60_000) : null;
+          checks.push({
+            name: 'Autogen Tracker',
+            status: 'ok',
+            detail: `${state.rows} signature${state.rows === 1 ? '' : 's'} tracked · ${
+              state.cooldownActive
+            } in cooldown · oldest ${oldestAge !== null ? `${oldestAge}m ago` : '—'} · boot ${
+              state.bootId?.slice(0, 8) ?? '—'
+            }`,
+          });
+        } else {
+          checks.push({
+            name: 'Autogen Tracker',
+            status: 'warn',
+            detail: 'tracker state not wired — restart will reset autogen progress',
+          });
+        }
+      } catch (err) {
+        checks.push({
+          name: 'Autogen Tracker',
+          status: 'warn',
+          detail: `tracker probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     }
   }
 

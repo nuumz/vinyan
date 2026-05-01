@@ -92,6 +92,34 @@ Three additional invariants are under evaluation as core axioms. They are docume
 **Why exactly three.** Adversarial robustness is intentionally NOT a separate axiom — it is a **corollary of A6 + A8 + A9** (zero-trust execution + replayable accountability + graceful degradation under attack). Causal/counterfactual reasoning is intentionally NOT a separate axiom — it is treated as a research-grade extension of **A7** (prediction error → causal attribution), not a near-term invariant.
 
 **Status as of 2026-04**: Documented. A8 persistence MVP has landed (`governanceProvenance` trace envelope + SQLite round-trip), risk-router decisions populate learn-phase traces, routed/short-circuit traces now carry governance provenance where they bypass Learn, goal-loop synthetic escalation traces carry A8-specific provenance, and escalationPath accumulates across re-routes. A9 now has a runtime degradation event contract with metrics for normalized failure classes; provenance-bearing trace persistence failures fail closed instead of silently returning success, tool/drafting failures and broader failure-class events are normalized through the same degradation bridge. A10 now records phase-boundary root-goal and temporal freshness grounding checks into traces for high-risk or long-running tasks; initial enforcement now pauses for goal-drift clarification, downgrades trace confidence on stale or low-confidence temporal facts, uses token-Jaccard drift detection with root/current goal separation, and A10-specific clarification traces carry dedicated governance provenance. Broader A8/A9 enforcement coverage and A10 re-grounding policy coverage are documented as future backlog, not current-plan blockers. The official axiom set remains A1–A7.
+
+### 1.3b Proposed AGI-Path Extensions (A11–A14, RFC)
+
+Four additional invariants are proposed to unblock Vinyan's path to bounded autonomy and self-improvement under the existing 7 guards. Like A8–A10, they are documented here so design work can begin without making them load-bearing yet. Promotion to official requires landing the minimum runtime slice for each.
+
+| # | Proposed Axiom | Principle | Status |
+|:---|:---------------|:----------|:-------|
+| **A11** | **Capability Escalation** | Earned trust → graduated authority. Workers/peers with sustained Wilson-LB ≥ 0.99 over N>1000 traces of task class C may receive direct-mutate permission within C, audited per mutation, revoked on any error. Closes the A6 ↔ A7 loop: A6 says "always zero-trust", A7 says "calibrate from evidence" — A11 lets calibrated trust earn bandwidth. | RFC stub landed at `src/orchestrator/worker/artifact-commit.ts` (post-preflight, pre-write). Event `commit:capability_escalation_evaluated` always returns `decision: 'allow'` today. Promotion gate: define Wilson-LB-threshold + mutation-class taxonomy + revocation telemetry. |
+| **A12** | **Hot-Reload Protocol** | ECP-defined module swap with state migration. Falls back to supervised restart when state migration is impossible. Schema/db-layer changes block reload until migration runs. Closes the core-thesis "evolve without downtime" claim. | RFC stub landed at `src/plugin/loader.ts` (mtime detection). Event `module:hot_reload_candidate` informational only. Activation infrastructure exists today as `vinyan serve --watch` (`src/cli/supervise.ts`); A12 promotion adds state-migration + schema-change gating. |
+| **A13** | **Axiom Self-Test** | Regression suite proving axiom invariants on every commit. A patched Vinyan must pass `tests/axiom-invariants/` before promotion. The suite is itself the bootstrap verifier — A1's "different engine" can include the test runner as the verifier of choice for self-modification. | **Implemented.** `tests/axiom-invariants/a1..a14-*.test.ts` (10 + 3 stubs). CI gate landing in a follow-up PR. |
+| **A14** | **Plateau Adaptation** | When sleep-cycle metrics plateau (no improvement over N cycles), enter "evolution mode" that lowers Wilson-LB / promotion thresholds in a bounded way to admit new candidates, with audit trail. Closes the A7 ↔ A14 loop: A7 ensures statistical rigor, A14 prevents that rigor from becoming permanent stagnation. | RFC stub landed at `src/sleep-cycle/sleep-cycle.ts` (existing sentinel). Event `sleep:plateau_detected` informational. Promotion gate: define bounded-adaptation policy + audit-log shape + revert-on-regression. |
+
+**Why these four specifically:** the `Guard axioms vs Ceiling parameters` distinction (§1.3a) creates the seam that makes A11/A14 meaningful — once ceilings are mutable under audit, A11 can grant graduated authority and A14 can adapt thresholds when evidence justifies it. A12 and A13 close the self-modification loop by making code-change activation safe (A12) and verifiable (A13).
+
+### 1.3a Guard axioms vs Ceiling parameters
+
+Not every numeric constant in the codebase is an axiom. Two distinct categories exist; conflating them blocks Vinyan's path to AGI-grade self-improvement.
+
+| Category | Examples | Mutability |
+|:---|:---|:---|
+| **Guard axioms** | A1 separation, A3 governance, A4 hash-invalidate, A6 zero-trust subprocess gate | **Immutable** — load-bearing for safety. Changing them violates the epistemic contract. |
+| **Ceiling parameters** | Wilson-LB threshold, tier confidence ceiling, intent cache TTL, routing risk-score breakpoints, sleep-cycle pattern minimums, circuit-breaker failure threshold, working-memory eviction caps | **Tunable within a declared range** — calcify capability without being load-bearing for safety. May be adapted by sleep-cycle, operator config, or autonomous tuning under audit. |
+
+Tunable ceilings are read at runtime via the `ParameterStore` (`src/orchestrator/adaptive-params/parameter-store.ts`). Every mutation lands in the `parameter_adaptations` ledger (migration 030) carrying timestamp + actor + reason + old/new value. Sleep-cycle adapts within range; operators override via config; rejection of out-of-range values is rule-based (A3 preserved).
+
+**Why this distinction matters for AGI.** Hardcoded ceilings disguised as axioms create a hidden ceiling on Vinyan's capability — Wilson-LB thresholds, tier confidence clamps, and routing breakpoints prevent the system from ever exceeding hand-coded limits even when overwhelming evidence justifies it. By extracting these into the `ParameterStore` we draw a clean boundary: guards are immutable, ceilings are adaptive. Sleep-cycle (A7) and the proposed A14 (Plateau Adaptation) become the legitimate path to lift ceilings under audit, while A1/A3/A4/A6 stay rigid as the safety substrate.
+
+The full registry of adaptive parameters lives in `src/orchestrator/adaptive-params/parameter-registry.ts`. Each entry declares `axiom` (which axiom the ceiling relates to), `range` (valid bounds), and `tunable` (whether sleep-cycle may adapt it).
 ---
 
 ## 2. Epistemic Communication Protocol (ECP)

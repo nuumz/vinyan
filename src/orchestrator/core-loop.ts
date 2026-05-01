@@ -2232,6 +2232,73 @@ async function executeTaskCore(
         // shell_exec.
         if (intentResolution.externalCodingCli) {
           const cliReq = intentResolution.externalCodingCli;
+          // Gap 3 — self-application boundary. Refuse autonomous dispatch
+          // when a #3 CLI Delegate is asked to modify its own subsystem
+          // (`src/orchestrator/external-coding-cli/`). The same Claude
+          // Code binary is also #4 (host CLI) per agent-vocabulary.md;
+          // letting #3 refactor #3 collapses the trust boundary.
+          // Resolution: emit `coding-cli:self_application_detected`,
+          // surface honest failure with "requires human approval" reason.
+          // Future enhancement: route through approval gate for explicit
+          // human consent rather than refuse outright.
+          const ECC_SELF_PATH = 'src/orchestrator/external-coding-cli/';
+          const selfTargets = (cliReq.targetPaths ?? []).filter((p) =>
+            p.includes(ECC_SELF_PATH),
+          );
+          // Also inspect the taskText (relative paths in the prompt may not
+          // be extracted as targetPaths by the path regex, but they're still
+          // self-application requests we must refuse).
+          const taskTextSelfMatch = cliReq.taskText.includes(ECC_SELF_PATH)
+            ? [ECC_SELF_PATH]
+            : [];
+          const allSelfTargets = [...new Set([...selfTargets, ...taskTextSelfMatch])];
+          if (allSelfTargets.length > 0) {
+            const reason = `Self-application detected: External Coding CLI cannot modify its own subsystem (${ECC_SELF_PATH}) without explicit human approval. Targets: ${allSelfTargets.join(', ')}`;
+            deps.bus?.emit('coding-cli:self_application_detected', {
+              taskId: input.id,
+              providerId: cliReq.providerId,
+              targetPaths: allSelfTargets,
+              reason,
+            });
+            const trace: ExecutionTrace = {
+              id: `trace-${input.id}-coding-cli-self-app`,
+              taskId: input.id,
+              workerId: 'external-coding-cli',
+              timestamp: Date.now(),
+              routingLevel: 2,
+              approach: 'external-coding-cli',
+              oracleVerdicts: {},
+              modelUsed: 'none',
+              tokensConsumed: 0,
+              durationMs: 0,
+              outcome: 'failure',
+              affectedFiles: allSelfTargets,
+              governanceProvenance: buildShortCircuitProvenance({
+                input,
+                decisionId: 'external-coding-cli-self-application',
+                attributedTo: 'intentResolver',
+                wasGeneratedBy: 'executeTaskCore.externalCodingCli',
+                reason,
+                evidence: [
+                  {
+                    kind: 'routing-factor',
+                    source: 'intent-strategy',
+                    summary: `provider=${cliReq.providerId}; self-targets=${allSelfTargets.slice(0, 5).join(',')}`,
+                  },
+                ],
+              }),
+            };
+            await deps.traceCollector.record(trace);
+            const result: TaskResult = {
+              id: input.id,
+              status: 'failed',
+              mutations: [],
+              trace,
+              answer: reason,
+            };
+            deps.bus?.emit('task:complete', { result });
+            return result;
+          }
           if (!deps.codingCliStrategy) {
             // Honest unsupported-capability — A9 resilient degradation. The
             // user asked for an external CLI, the binding is not configured.

@@ -681,6 +681,18 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
           errorMessage: depReason,
           partialOutputAvailable: false,
         });
+        // R1: durable terminal failure event for cascade-skipped delegate
+        // steps. Without this, replay shows the step as "pending" forever
+        // because the run loop never executes it.
+        depsWithStage.bus?.emit('workflow:delegate_failed', {
+          taskId: input.id,
+          stepId: step.id,
+          agentId: null,
+          status: 'skipped',
+          reason: `dependency failed (${failedDeps.join(', ')})`,
+          errorClass: 'dependency_failed',
+          durationMs: 0,
+        });
       }
     }
     if (skipNow.length > 0) emitPlanUpdate();
@@ -1126,6 +1138,7 @@ async function dispatchStrategy(
 
       case 'delegate-sub-agent': {
         if (!deps.executeTask) return { ...base, status: 'failed', output: 'executeTask not available' };
+        const delegateStartedAt = performance.now();
         // Phase-13 A1 Epistemic Separation. When the parent task is a
         // code-mutation (the binding domain per the original Phase 1 plan)
         // AND the sub-step description reads as verification work, the
@@ -1376,6 +1389,21 @@ async function dispatchStrategy(
             timeoutMs: timeoutKind === 'ceiling' ? HARD_CEILING_MS : subTaskTimeoutMs,
           });
           const errMessage = err instanceof Error ? err.message : String(err);
+          // R1: durable terminal failure event so audit replay shows
+          // "delegate timed out / failed" rather than a silent stall.
+          // The existing `workflow:delegate_timeout` is a live signal
+          // but not record-flagged; this complements it as the
+          // record:true terminal companion.
+          deps.bus?.emit('workflow:delegate_failed', {
+            taskId: input.id,
+            stepId: step.id,
+            subTaskId: subInput.id,
+            agentId: resolvedAgentId ?? null,
+            status: timeoutKind ? 'timeout' : 'failed',
+            reason: errMessage,
+            errorClass: classifyDelegateError(errMessage, { timeoutKind }),
+            durationMs: Math.max(0, Math.round(performance.now() - delegateStartedAt)),
+          });
           // Honest failure record on the subtask manifest — replaces the
           // UI's previous "[no output captured — agent failed]" placeholder
           // with structured detail (errorKind, errorMessage, agentId,

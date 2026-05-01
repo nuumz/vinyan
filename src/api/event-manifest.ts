@@ -182,6 +182,20 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'memory:approved', sse: true, record: false, scope: 'global', sessionBypass: true },
   { event: 'memory:rejected', sse: true, record: false, scope: 'global', sessionBypass: true },
 
+  // ── R5 — Durable approval ledger ────────────────────────────────────
+  // Legacy `task:approval_*` events still ship live; these complement
+  // them with approvalId + approvalKey + extended status (including
+  // superseded). Recorded so audit replay reconstructs the full
+  // lifecycle from the event log alone (A8).
+  { event: 'approval:ledger_pending', sse: true, record: true, scope: 'task' },
+  { event: 'approval:ledger_resolved', sse: true, record: true, scope: 'task' },
+  { event: 'approval:ledger_superseded', sse: true, record: false, scope: 'global', sessionBypass: true },
+
+  // ── R1 — Delegate failure terminal event ────────────────────────────
+  // Recorded so process replay reconstructs failed/timeout delegate
+  // sub-tasks as terminal rows rather than silent stalls.
+  { event: 'workflow:delegate_failed', sse: true, record: true, scope: 'task' },
+
   // ── Scheduler — durable agent cron ──────────────────────────────────
   // Global / session-bypass: schedule lifecycle is workspace-wide and
   // not bound to a single in-flight task. The fire-time event carries
@@ -207,6 +221,14 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'skill:proposal_approved', sse: true, record: false, scope: 'global', sessionBypass: true },
   { event: 'skill:proposal_rejected', sse: true, record: false, scope: 'global', sessionBypass: true },
   { event: 'skill:proposal_quarantined', sse: true, record: false, scope: 'global', sessionBypass: true },
+
+  // ── Autogenerator runtime — tracker + adaptive policy diagnostics ───
+  { event: 'skill:autogen_tracker_loaded', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'skill:autogen_tracker_pruned', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'skill:autogen_tracker_recovered', sse: false, record: false, scope: 'global' },
+  { event: 'skill:autogen_tracker_invalidated', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'skill:autogen_threshold_changed', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'skill:autogen_promotion_blocked', sse: false, record: false, scope: 'global' },
 
   // ── Memory Wiki — second brain substrate ────────────────────────────
   // Global / session-bypass: wiki ops are workspace-wide knowledge updates,

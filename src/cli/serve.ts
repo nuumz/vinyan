@@ -332,6 +332,8 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       codingCliStore: orchestrator.codingCliStore,
       gatewayScheduleStore: orchestrator.gatewayScheduleStore,
       skillProposalStore: orchestrator.skillProposalStore,
+      skillAutogenStateStore: orchestrator.skillAutogenStateStore,
+      parameterLedger: orchestrator.parameterLedger,
       workspace,
       defaultProfile: resolvedProfile.name,
     },
@@ -339,6 +341,9 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
 
   // ── Skill proposal autogen — wire `skill:outcome` → quarantined
   //    proposal after N successes per (agentId, taskSignature).
+  //    Round 4 hardening: pass the durable state store + parameter
+  //    ledger so promotion survives restarts AND the threshold tunes
+  //    itself from queue health (R1 + R3).
   //    Best-effort: wiring failure must not block startup.
   let skillAutogenOff: (() => void) | null = null;
   if (orchestrator.skillProposalStore) {
@@ -347,6 +352,10 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       skillAutogenOff = wireSkillProposalAutogen({
         bus: orchestrator.bus,
         store: orchestrator.skillProposalStore,
+        ...(orchestrator.skillAutogenStateStore
+          ? { stateStore: orchestrator.skillAutogenStateStore }
+          : {}),
+        ...(orchestrator.parameterLedger ? { ledger: orchestrator.parameterLedger } : {}),
         defaultProfile: resolvedProfile.name,
       });
     } catch (err) {

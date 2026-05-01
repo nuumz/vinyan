@@ -38,6 +38,13 @@ import { type DiscoveredPlugin, type LoadedPlugin, PluginLoadError } from './typ
 export interface InprocLoaderOptions {
   /** Current Vinyan API version, e.g. `'0.9.0'`. Compared to `manifest.vinyanApi`. */
   allowedVinyanApi: string;
+  /**
+   * Optional bus — used for the A12 RFC stub. When wired, the loader
+   * emits `module:hot_reload_candidate` events when a dynamic import
+   * detects an mtime newer than the previously-loaded copy. Today the
+   * event is informational; the supervisor handles actual reload.
+   */
+  bus?: import('../core/bus.ts').VinyanBus;
 }
 
 /** Result of a single load attempt. Successful loads carry integrity + signature. */
@@ -52,9 +59,13 @@ export interface LoadOutcome {
 export class InprocLoader {
   private readonly allowedVinyanApi: string;
   private readonly loaded = new Map<string, LoadedPlugin>();
+  private readonly bus: import('../core/bus.ts').VinyanBus | undefined;
+  /** mtime per loaded entry path — used by the A12 stub to detect reload candidates. */
+  private readonly loadMtime = new Map<string, number>();
 
   constructor(opts: InprocLoaderOptions) {
     this.allowedVinyanApi = opts.allowedVinyanApi;
+    this.bus = opts.bus;
   }
 
   get currentApiVersion(): string {
@@ -93,6 +104,28 @@ export class InprocLoader {
 
     // 5. Dynamic import of the entry file.
     const entryPath = path.resolve(rootDir, manifest.entry);
+
+    // A12 RFC stub (proposed, not yet load-bearing) — detect a hot-reload
+    // candidate. If we've already loaded this path AND its mtime is newer
+    // than the cached one, the runtime module cache is stale (Node/Bun
+    // caches dynamic imports). Today we emit an informational event; the
+    // supervisor (`vinyan serve --watch`) handles the actual restart.
+    // Future hot-reload protocol attaches here.
+    try {
+      const stat = await import('node:fs').then((m) => m.statSync(entryPath));
+      const previous = this.loadMtime.get(entryPath);
+      if (previous !== undefined && stat.mtimeMs > previous) {
+        this.bus?.emit('module:hot_reload_candidate', {
+          moduleId: pluginId,
+          detectedAt: Date.now(),
+          reason: `mtime ${stat.mtimeMs} newer than load mtime ${previous}`,
+        });
+      }
+      this.loadMtime.set(entryPath, stat.mtimeMs);
+    } catch {
+      /* mtime is best-effort — never blocks the load path */
+    }
+
     let mod: Record<string, unknown>;
     try {
       mod = (await import(entryPath)) as Record<string, unknown>;

@@ -105,6 +105,7 @@ import { loadAgentRegistry } from './agents/registry.ts';
 import { NullSkillAcquirer, type SkillAcquirer } from './agents/skill-acquirer.ts';
 import { evaluateOverclaim, SkillUsageTracker } from './agents/skill-usage-tracker.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
+import { ApprovalLedgerStore } from '../db/approval-ledger-store.ts';
 import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
 import { newLlmComprehender } from './comprehension/llm-comprehender.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
@@ -360,6 +361,8 @@ export interface Orchestrator {
   /** A9 / T4: live operator visibility surface; undefined when disabled in config. */
   degradationStatus?: DegradationStatusTracker;
   approvalGate?: ApprovalGateImpl;
+  /** R5: durable approval ledger; surfaced for API + doctor diagnostics. */
+  approvalLedgerStore?: ApprovalLedgerStore;
   // Economy stores (exposed for API/TUI)
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
   budgetEnforcer?: import('../economy/budget-enforcer.ts').BudgetEnforcer;
@@ -415,6 +418,17 @@ export interface Orchestrator {
    * handle is available — backs `/api/v1/skill-proposals/*`.
    */
   skillProposalStore?: import('../db/skill-proposal-store.ts').SkillProposalStore;
+  /**
+   * Restart-safe autogenerator tracker (mig 031). Persists per-
+   * signature counters so a restart doesn't lose progress while
+   * still gating against unsafe promotion of carryover state (R3).
+   */
+  skillAutogenStateStore?: import('../skills/autogen-state-store.ts').SkillAutogenStateStore;
+  /**
+   * Adaptive parameter ledger (mig 030). Records every threshold
+   * change for the autogenerator policy with provenance (R1).
+   */
+  parameterLedger?: import('./adaptive-params/parameter-ledger.ts').ParameterLedger;
   getSessionCount(): number;
   /**
    * Release all resources held by the orchestrator. Awaits truly async
@@ -1548,7 +1562,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
 
   // Approval Gate (A6: human-in-the-loop for high-risk tasks)
-  const approvalGate = new ApprovalGateImpl(bus);
+  // R5: when DB is available, wire the durable ledger so pending /
+  // resolved / timed_out approvals survive process restart and audit
+  // replay can reconstruct the full lifecycle.
+  const approvalLedgerStore: ApprovalLedgerStore | undefined = db
+    ? new ApprovalLedgerStore(db.getDb())
+    : undefined;
+  const approvalGate = new ApprovalGateImpl(
+    bus,
+    approvalLedgerStore ? { ledger: approvalLedgerStore } : undefined,
+  );
 
   // External Coding CLI (Claude Code / GitHub Copilot) — controller +
   // workflow strategy. Always constructed so:
@@ -2702,6 +2725,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     metricsCollector,
     degradationStatus,
     approvalGate,
+    approvalLedgerStore,
     costLedger,
     budgetEnforcer,
     // External Coding CLI surface — exposed for the API server (mounts
@@ -2728,6 +2752,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
             SkillProposalStore: SkillProposalStoreCtor,
           } = require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
           return new SkillProposalStoreCtor(db.getDb());
+        })()
+      : undefined,
+    skillAutogenStateStore: db
+      ? (() => {
+          const {
+            SkillAutogenStateStore: AutogenStoreCtor,
+          } = require('../skills/autogen-state-store.ts') as typeof import('../skills/autogen-state-store.ts');
+          return new AutogenStoreCtor(db.getDb());
+        })()
+      : undefined,
+    parameterLedger: db
+      ? (() => {
+          const {
+            ParameterLedger: ParameterLedgerCtor,
+          } = require('./adaptive-params/parameter-ledger.ts') as typeof import('./adaptive-params/parameter-ledger.ts');
+          return new ParameterLedgerCtor(db.getDb());
         })()
       : undefined,
     // W2: optional plugin subsystem — populated when

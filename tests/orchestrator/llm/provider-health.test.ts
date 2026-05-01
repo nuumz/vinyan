@@ -97,6 +97,50 @@ describe('ProviderHealthStore', () => {
     expect(store.isAvailable(PROVIDER, now)).toBe(true);
   });
 
+  test('per-model isAvailable: 429 on one model does NOT block sibling models', () => {
+    const now = 0;
+    const store = new ProviderHealthStore({ now: () => now });
+    // Sonnet hits 429.
+    store.recordFailure(
+      PROVIDER,
+      { ...quotaErr(60_000), model: 'claude-3-5-sonnet' },
+      {},
+    );
+    // Provider-wide check: blocked.
+    expect(store.isAvailable(PROVIDER, now)).toBe(false);
+    // Per-model on the rate-limited model: blocked.
+    expect(store.isAvailable(PROVIDER, 'claude-3-5-sonnet', now)).toBe(false);
+    // Per-model on a sibling model: NOT blocked. This is the fix.
+    expect(store.isAvailable(PROVIDER, 'claude-3-5-haiku', now)).toBe(true);
+    expect(store.isAvailable(PROVIDER, 'claude-3-opus', now)).toBe(true);
+  });
+
+  test('per-model isAvailable: provider-wide cooldown still blocks all models', () => {
+    const now = 0;
+    const store = new ProviderHealthStore({ now: () => now });
+    // Auth error has no `model` field — treat as provider-wide.
+    store.recordFailure(PROVIDER, authErr(), {});
+    // Sibling models all blocked because the cooldown record has no model tag.
+    expect(store.isAvailable(PROVIDER, 'claude-3-5-haiku', now)).toBe(false);
+    expect(store.isAvailable(PROVIDER, 'claude-3-opus', now)).toBe(false);
+  });
+
+  test('R3 — indexed isAvailable handles 100 buckets correctly', () => {
+    const now = 0;
+    const store = new ProviderHealthStore({ now: () => now });
+    for (let i = 0; i < 100; i++) {
+      store.recordFailure(
+        { id: `prov-${i % 10}`, tier: 'fast' as const },
+        { ...quotaErr(60_000), model: `model-${i}`, quotaMetric: `m${i}`, quotaId: `q${i}` },
+        {},
+      );
+    }
+    expect(store.listHealth().length).toBe(100);
+    expect(store.isAvailable({ id: 'prov-3' }, now)).toBe(false);
+    expect(store.isAvailable({ id: 'prov-NOT_REGISTERED' }, now)).toBe(true);
+    expect(store.isAvailable({ id: 'prov-3' }, 999_999_999)).toBe(true);
+  });
+
   test('emits cooldown_started → recovered envelopes', () => {
     let now = 0;
     const store = new ProviderHealthStore({ now: () => now });

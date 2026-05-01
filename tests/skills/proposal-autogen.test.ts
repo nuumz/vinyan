@@ -53,7 +53,14 @@ describe('wireSkillProposalAutogen', () => {
   test('does not fire below threshold', () => {
     const bus = createBus();
     const store = new SkillProposalStore(db);
-    const off = wireSkillProposalAutogen({ bus, store, threshold: 3, defaultProfile: 'autogen-a' });
+    const off = wireSkillProposalAutogen({
+      bus,
+      store,
+      threshold: 3,
+      defaultProfile: 'autogen-a',
+      policyEnabled: false,
+      cooldownMs: 0,
+    });
     bus.emit('skill:outcome', { taskId: 't1', skill: skill({ taskSignature: 'sig:a' }), success: true });
     bus.emit('skill:outcome', { taskId: 't2', skill: skill({ taskSignature: 'sig:a' }), success: true });
     off();
@@ -64,7 +71,14 @@ describe('wireSkillProposalAutogen', () => {
   test('fires at exactly N successes and merges idempotently afterwards', () => {
     const bus = createBus();
     const store = new SkillProposalStore(db);
-    const off = wireSkillProposalAutogen({ bus, store, threshold: 3, defaultProfile: 'autogen-b' });
+    const off = wireSkillProposalAutogen({
+      bus,
+      store,
+      threshold: 3,
+      defaultProfile: 'autogen-b',
+      policyEnabled: false,
+      cooldownMs: 0,
+    });
     bus.emit('skill:outcome', { taskId: 't1', skill: skill({ taskSignature: 'sig:b' }), success: true });
     bus.emit('skill:outcome', { taskId: 't2', skill: skill({ taskSignature: 'sig:b' }), success: true });
     bus.emit('skill:outcome', { taskId: 't3', skill: skill({ taskSignature: 'sig:b' }), success: true });
@@ -89,7 +103,14 @@ describe('wireSkillProposalAutogen', () => {
   test('failure outcomes do not count toward threshold', () => {
     const bus = createBus();
     const store = new SkillProposalStore(db);
-    const off = wireSkillProposalAutogen({ bus, store, threshold: 2, defaultProfile: 'autogen-c' });
+    const off = wireSkillProposalAutogen({
+      bus,
+      store,
+      threshold: 2,
+      defaultProfile: 'autogen-c',
+      policyEnabled: false,
+      cooldownMs: 0,
+    });
     bus.emit('skill:outcome', { taskId: 't1', skill: skill({ taskSignature: 'sig:c' }), success: true });
     bus.emit('skill:outcome', { taskId: 't2', skill: skill({ taskSignature: 'sig:c' }), success: false });
     bus.emit('skill:outcome', { taskId: 't3', skill: skill({ taskSignature: 'sig:c' }), success: true });
@@ -104,7 +125,14 @@ describe('wireSkillProposalAutogen', () => {
   test('distinct task signatures track independently', () => {
     const bus = createBus();
     const store = new SkillProposalStore(db);
-    const off = wireSkillProposalAutogen({ bus, store, threshold: 2, defaultProfile: 'autogen-d' });
+    const off = wireSkillProposalAutogen({
+      bus,
+      store,
+      threshold: 2,
+      defaultProfile: 'autogen-d',
+      policyEnabled: false,
+      cooldownMs: 0,
+    });
     bus.emit('skill:outcome', { taskId: 't1', skill: skill({ taskSignature: 'sig:x' }), success: true });
     bus.emit('skill:outcome', { taskId: 't2', skill: skill({ taskSignature: 'sig:y' }), success: true });
     bus.emit('skill:outcome', { taskId: 't3', skill: skill({ taskSignature: 'sig:x' }), success: true });
@@ -120,7 +148,14 @@ describe('wireSkillProposalAutogen', () => {
   test('distinct agent ids track independently (shared vs per-agent)', () => {
     const bus = createBus();
     const store = new SkillProposalStore(db);
-    const off = wireSkillProposalAutogen({ bus, store, threshold: 2, defaultProfile: 'autogen-e' });
+    const off = wireSkillProposalAutogen({
+      bus,
+      store,
+      threshold: 2,
+      defaultProfile: 'autogen-e',
+      policyEnabled: false,
+      cooldownMs: 0,
+    });
     bus.emit('skill:outcome', {
       taskId: 't1',
       skill: skill({ taskSignature: 'sig:shared', agentId: 'developer' }),
@@ -150,7 +185,19 @@ describe('wireSkillProposalAutogen', () => {
   test('proposed name survives slug regex /^[a-z][a-z0-9-]*$/ for messy signatures', () => {
     const bus = createBus();
     const store = new SkillProposalStore(db);
-    const off = wireSkillProposalAutogen({ bus, store, threshold: 1, defaultProfile: 'autogen-f' });
+    const off = wireSkillProposalAutogen({
+      bus,
+      store,
+      threshold: 2,
+      defaultProfile: 'autogen-f',
+      policyEnabled: false,
+      cooldownMs: 0,
+    });
+    bus.emit('skill:outcome', {
+      taskId: 't0',
+      skill: skill({ taskSignature: '999_RANDOM/sig:WITH special.chars!' }),
+      success: true,
+    });
     bus.emit('skill:outcome', {
       taskId: 't1',
       skill: skill({ taskSignature: '999_RANDOM/sig:WITH special.chars!' }),
@@ -165,10 +212,21 @@ describe('wireSkillProposalAutogen', () => {
   test('unsubscribe stops further emissions', () => {
     const bus = createBus();
     const store = new SkillProposalStore(db);
-    const off = wireSkillProposalAutogen({ bus, store, threshold: 1, defaultProfile: 'autogen-g' });
-    bus.emit('skill:outcome', { taskId: 't1', skill: skill({ taskSignature: 'sig:g' }), success: true });
+    const off = wireSkillProposalAutogen({
+      bus,
+      store,
+      threshold: 2,
+      defaultProfile: 'autogen-g',
+      policyEnabled: false,
+      cooldownMs: 0,
+    });
+    bus.emit('skill:outcome', { taskId: 't1a', skill: skill({ taskSignature: 'sig:g' }), success: true });
+    bus.emit('skill:outcome', { taskId: 't1b', skill: skill({ taskSignature: 'sig:g' }), success: true });
     off();
-    bus.emit('skill:outcome', { taskId: 't2', skill: skill({ taskSignature: 'sig:g-2' }), success: true });
+    // Even though we'd in principle want a 2nd signature to also fire,
+    // the listener is detached so this emission is dropped.
+    bus.emit('skill:outcome', { taskId: 't2a', skill: skill({ taskSignature: 'sig:g-2' }), success: true });
+    bus.emit('skill:outcome', { taskId: 't2b', skill: skill({ taskSignature: 'sig:g-2' }), success: true });
     const proposals = store.list('autogen-g');
     // Only the first signature should produce a proposal.
     expect(proposals.length).toBe(1);

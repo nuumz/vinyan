@@ -452,6 +452,15 @@ export class SleepCycleRunner {
           traceCount: currentTraceCount,
         },
       });
+      // A14 RFC stub (proposed) — emit a structured plateau-detected
+      // event so future plateau-adaptation logic can attach without a
+      // code change. NOT yet load-bearing: no threshold is lowered today.
+      // See `docs/foundation/concept.md` Proposed A14 + agent-vocabulary.md.
+      this.bus?.emit('sleep:plateau_detected', {
+        cycleId,
+        consecutiveNoopCycles: this.consecutiveNoopCycles,
+        threshold: this.sentinelMaxNoopCycles,
+      });
       return {
         cycleId,
         patterns: [],

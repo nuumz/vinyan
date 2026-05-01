@@ -324,6 +324,59 @@ export interface VinyanBusEvents {
     source: 'human' | 'timeout' | 'shutdown';
   };
 
+  // R5: ApprovalLedgerStore lifecycle events. These complement the
+  // existing `task:approval_*` events by carrying the durable approval
+  // id, approval key, status (including superseded/timed_out), and
+  // resolution metadata. Subscribers wanting full audit replay should
+  // use these; legacy UIs subscribed to `task:approval_*` keep working.
+  'approval:ledger_pending': {
+    approvalId: string;
+    taskId: string;
+    approvalKey: string;
+    riskScore: number;
+    reason: string;
+    requestedAt: number;
+    profile?: string;
+    sessionId?: string;
+  };
+  'approval:ledger_resolved': {
+    approvalId: string;
+    taskId: string;
+    approvalKey: string;
+    status: 'approved' | 'rejected' | 'timed_out' | 'shutdown_rejected' | 'superseded';
+    source: 'human' | 'timeout' | 'shutdown' | 'system';
+    decision: string | 'rejected' | 'approved' | 'superseded';
+    resolvedAt: number;
+    resolvedBy?: string;
+    batchCount?: number;
+  };
+  'approval:ledger_superseded': {
+    parentTaskId: string;
+    childTaskId: string;
+    count: number;
+  };
+
+  // R1: workflow delegate failure terminal event. Emitted in every
+  // failure branch of the delegate-sub-agent step (timeout, child task
+  // returned status='failed', empty-response treated as failed,
+  // skipped-due-to-dependency-cascade). Strengthens A8 by making the
+  // delegate failure replayable from the durable event log alone —
+  // `workflow:delegate_completed` only fires on the success path AND
+  // on the empty-response-failed path; the watchdog timeout path
+  // previously emitted only `workflow:delegate_timeout` (live signal,
+  // not durable terminal).
+  'workflow:delegate_failed': {
+    taskId: string;
+    stepId: string;
+    subTaskId?: string;
+    agentId: string | null;
+    status: 'failed' | 'timeout' | 'skipped';
+    reason: string;
+    errorClass?: string;
+    durationMs?: number;
+    tokensUsed?: number;
+  };
+
   // Agentic SDLC — Spec Refinement phase (between Perceive and Predict)
   'spec:drafted': {
     taskId: string;
@@ -635,6 +688,47 @@ export interface VinyanBusEvents {
     safetyFlags: ReadonlyArray<string>;
   };
 
+  // Autogenerator runtime — restart-safe tracker + adaptive threshold.
+  // Workspace-wide; recorder ignores them (audit lives in the
+  // parameter ledger / state table). UI surfaces them in the
+  // diagnostics panel.
+  'skill:autogen_tracker_loaded': {
+    bootId: string;
+    loaded: number;
+    prunedStale: number;
+    invalidatedSchema: number;
+    invalidatedCorrupt: number;
+  };
+  'skill:autogen_tracker_pruned': {
+    bootId: string;
+    reason: 'ttl' | 'capacity' | 'corrupt';
+    count: number;
+  };
+  'skill:autogen_tracker_recovered': {
+    bootId: string;
+    signatureKey: string;
+    successesAtBoot: number;
+  };
+  'skill:autogen_tracker_invalidated': {
+    bootId: string;
+    reason: 'schema-mismatch' | 'corrupt-json' | 'missing-table';
+    count: number;
+  };
+  'skill:autogen_threshold_changed': {
+    profile: string;
+    oldThreshold: number;
+    newThreshold: number;
+    reason: string;
+    explanation: string;
+  };
+  'skill:autogen_promotion_blocked': {
+    profile: string;
+    signatureKey: string;
+    reason: 'cooldown' | 'fresh-evidence' | 'below-threshold';
+    successes: number;
+    threshold: number;
+  };
+
   // Memory Wiki — second-brain substrate (src/memory/wiki/)
   'memory-wiki:source_ingested': {
     sourceId: string;
@@ -693,6 +787,61 @@ export interface VinyanBusEvents {
     demoted: number;
     archived: number;
     mirrored: number;
+  };
+
+  // Adaptive parameter store — emitted on every successful `set()`. Lets
+  // long-lived consumers (workers, sleep-cycle, dashboards) re-read
+  // current values without polling the store. Also a hook for telemetry.
+  'adaptive-params:value_changed': {
+    key: string;
+    oldValue: unknown;
+    newValue: unknown;
+    reason: string;
+    ownerModule: string;
+    source: 'ledger' | 'in-memory';
+  };
+
+  // ── Proposed A11/A12/A14 stubs (not yet load-bearing, RFC) ──
+  // A11 — emitted post-preflight, pre-write at artifact-commit. Lets
+  // future capability-escalation gating attach without a code change.
+  'commit:capability_escalation_evaluated': {
+    taskId: string;
+    actor: string;
+    targets: readonly string[];
+    decision: 'allow' | 'require-human' | 'deny';
+    reason: string;
+  };
+  // Gap 4 — emitted when a successful commit lands on a path under
+  // `src/orchestrator/` or `src/core/` (the running orchestrator's own
+  // code). UI surfaces "this change requires reload" warning.
+  'commit:dormant_pending_reload': {
+    taskId: string;
+    affectedPaths: readonly string[];
+  };
+  // A12 — emitted by the plugin loader when a candidate hot-reload is
+  // detected (file mtime newer than load mtime). Stub today; will tie
+  // into supervisor in Phase 7.
+  'module:hot_reload_candidate': {
+    moduleId: string;
+    detectedAt: number;
+    reason: string;
+  };
+  // A14 — emitted by sleep-cycle when consecutive no-op cycles exceed
+  // the plateau threshold. Stub today; future plateau-adaptation logic
+  // will lower promotion thresholds in a bounded way.
+  'sleep:plateau_detected': {
+    cycleId: string;
+    consecutiveNoopCycles: number;
+    threshold: number;
+  };
+  // Gap 3 — emitted when a #3 CLI Delegate is asked to modify
+  // `src/orchestrator/external-coding-cli/` (its own subsystem). The
+  // orchestrator escalates to human approval rather than dispatching.
+  'coding-cli:self_application_detected': {
+    taskId: string;
+    providerId: string;
+    targetPaths: readonly string[];
+    reason: string;
   };
 
   // Phase E: File invalidation relay

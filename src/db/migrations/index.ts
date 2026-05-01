@@ -38,6 +38,10 @@ import { migration026 } from './026_memory_wiki.ts';
 import { migration027 } from './027_task_archive_metadata.ts';
 import { migration028 } from './028_session_tasks_fts.ts';
 import { migration029 } from './029_skill_proposals.ts';
+import { migration030 } from './030_parameter_ledger.ts';
+import { migration031 } from './031_skill_autogen_state.ts';
+import { migration032 } from './032_skill_proposal_revisions.ts';
+import { migration033 } from './033_approval_ledger.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -70,4 +74,8 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration027,
   migration028,
   migration029,
+  migration030,
+  migration031,
+  migration032,
+  migration033,
 ];

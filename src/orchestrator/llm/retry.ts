@@ -240,7 +240,30 @@ export async function retryWithBackoff<T>(fn: (signal: AbortSignal) => Promise<T
               console.warn('[retry] onAttempt threw; ignoring', hookErr);
             }
           }
-          await new Promise((r) => setTimeout(r, delay));
+          // R2 — chunk the sleep into heartbeat-cadence ticks so the
+          // delegate watchdog sees an activity signal at most every
+          // `heartbeatIntervalMs` (default 30s). A naive single sleep
+          // longer than the watchdog's idle window (180s) would trip a
+          // false-positive timeout even though the system is healthy-
+          // but-paused. Each tick re-fires `onAttempt` so the existing
+          // `llm:retry_attempt` bus event keeps the watchdog reset.
+          // The TOTAL sleep duration is unchanged (`delay`); only the
+          // emission cadence is finer.
+          const heartbeat = Math.max(1_000, config.heartbeatIntervalMs ?? 30_000);
+          await sleepWithHeartbeat(delay, heartbeat, () => {
+            if (config.onAttempt) {
+              try {
+                config.onAttempt({
+                  attempt,
+                  delayMs: delay,
+                  reason: `${lastError?.message ?? 'retry'} [heartbeat]`,
+                  ...(typeof status === 'number' ? { status } : {}),
+                });
+              } catch (hookErr) {
+                console.warn('[retry] onAttempt heartbeat threw; ignoring', hookErr);
+              }
+            }
+          });
           continue;
         }
       }
@@ -248,6 +271,33 @@ export async function retryWithBackoff<T>(fn: (signal: AbortSignal) => Promise<T
     }
   }
   throw lastError ?? new Error('retryWithBackoff exhausted with no error');
+}
+
+/**
+ * Sleep for `totalMs` while invoking `onTick` at most every
+ * `intervalMs` so external watchdogs can observe liveness during a
+ * long backoff. Total wall-clock duration is exactly `totalMs`.
+ *
+ * Internal helper — exported for tests.
+ */
+export async function sleepWithHeartbeat(
+  totalMs: number,
+  intervalMs: number,
+  onTick: () => void,
+): Promise<void> {
+  if (totalMs <= intervalMs) {
+    await new Promise((r) => setTimeout(r, totalMs));
+    return;
+  }
+  let remaining = totalMs;
+  while (remaining > intervalMs) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    remaining -= intervalMs;
+    onTick();
+  }
+  if (remaining > 0) {
+    await new Promise((r) => setTimeout(r, remaining));
+  }
 }
 
 type TimeoutMode = 'connect' | 'idle' | 'wallClock';

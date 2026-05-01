@@ -97,9 +97,52 @@ export class ProviderHealthStore {
   private readonly clock: () => number;
   private readonly bus?: VinyanBus;
 
+  // R3 — secondary indexes maintained alongside `records` so the hot
+  // path `isAvailable(...)` does not iterate every bucket on every
+  // provider-selection call. Constant-time membership for the typical
+  // case (a few buckets per provider/model).
+  private readonly byProvider = new Map<string, Set<string>>();
+  private readonly byProviderModel = new Map<string, Set<string>>();
+
   constructor(deps: ProviderHealthDeps = {}) {
     this.clock = deps.now ?? Date.now;
     this.bus = deps.bus;
+  }
+
+  // ── Index helpers ────────────────────────────────────────────────────
+
+  private indexAdd(record: ProviderHealthRecord): void {
+    let set = this.byProvider.get(record.providerId);
+    if (!set) {
+      set = new Set();
+      this.byProvider.set(record.providerId, set);
+    }
+    set.add(record.key);
+    if (record.model !== undefined) {
+      const k = `${record.providerId}::${record.model}`;
+      let mset = this.byProviderModel.get(k);
+      if (!mset) {
+        mset = new Set();
+        this.byProviderModel.set(k, mset);
+      }
+      mset.add(record.key);
+    }
+  }
+
+  private indexRemove(record: ProviderHealthRecord): void {
+    const set = this.byProvider.get(record.providerId);
+    if (set) {
+      set.delete(record.key);
+      if (set.size === 0) this.byProvider.delete(record.providerId);
+    }
+    if (record.model !== undefined) {
+      const k = `${record.providerId}::${record.model}`;
+      const mset = this.byProviderModel.get(k);
+      if (mset) {
+        mset.delete(record.key);
+        if (mset.size === 0) this.byProviderModel.delete(k);
+      }
+    }
   }
 
   /**
@@ -145,7 +188,9 @@ export class ProviderHealthStore {
       ...(err.retryAfterMs !== undefined ? { retryAfterMs: err.retryAfterMs } : {}),
       ...(context.taskId ? { sourceTaskId: context.taskId } : {}),
     };
+    if (prior) this.indexRemove(prior);
     this.records.set(key, next);
+    this.indexAdd(next);
 
     const eventType: HealthEventEnvelope['type'] =
       prior && prior.cooldownUntil > now ? 'cooldown_extended' : 'cooldown_started';
@@ -163,38 +208,101 @@ export class ProviderHealthStore {
    */
   recordSuccess(provider: Pick<LLMProvider, 'id'>): void {
     const now = this.clock();
-    for (const [key, record] of this.records.entries()) {
-      if (record.providerId !== provider.id) continue;
+    const keysForProvider = this.byProvider.get(provider.id);
+    if (!keysForProvider || keysForProvider.size === 0) return;
+    // Snapshot so we can mutate the index inside the loop.
+    const snapshot = [...keysForProvider];
+    for (const key of snapshot) {
+      const record = this.records.get(key);
+      if (!record) continue;
       const decayed = Math.floor(record.failureCount * HEALTH_FAILURE_DECAY);
       const cleared = decayed === 0 && record.cooldownUntil <= now;
       if (cleared) {
+        this.indexRemove(record);
         this.records.delete(key);
         this.emit({ type: 'recovered', record: { ...record, failureCount: 0 } });
       } else if (decayed !== record.failureCount) {
-        this.records.set(key, { ...record, failureCount: decayed });
+        const next = { ...record, failureCount: decayed };
+        // failureCount-only change — no need to touch indexes (key + provider + model unchanged).
+        this.records.set(key, next);
       }
     }
   }
 
   /**
-   * Cooldown-aware availability check. A provider is unavailable when ANY of
-   * its quota buckets is in cooldown — different metrics on the same provider
-   * id share the routing slot.
+   * Cooldown-aware availability check.
+   *
+   * - When `model` is provided, checks the (provider, model) bucket
+   *   plus any provider-wide buckets (quota records that lack a model
+   *   tag — typically auth_error or full-provider outages). Sibling
+   *   models on the same provider with their own cooldowns DO NOT
+   *   cause this check to return false. This fixes the "one model rate
+   *   limited blocks the whole provider" failure mode.
+   * - When `model` is omitted, retains legacy provider-wide semantics
+   *   (any bucket on this provider counts).
+   *
+   * Per-model granularity is the right default for routing decisions
+   * (caller knows which model it's about to dispatch). Provider-wide
+   * is the right default for "is this provider up at all" diagnostics.
    */
-  isAvailable(provider: Pick<LLMProvider, 'id'>, now: number = this.clock()): boolean {
-    for (const record of this.records.values()) {
-      if (record.providerId !== provider.id) continue;
-      if (record.cooldownUntil > now) return false;
+  isAvailable(
+    provider: Pick<LLMProvider, 'id'>,
+    nowOrModel?: number | string,
+    nowOpt?: number,
+  ): boolean {
+    // Backwards-compatible signature: isAvailable(provider) — old callers
+    // pass only provider; isAvailable(provider, now) — old test callers;
+    // isAvailable(provider, model, now?) — new per-model check.
+    const model = typeof nowOrModel === 'string' ? nowOrModel : undefined;
+    const now =
+      typeof nowOrModel === 'number'
+        ? nowOrModel
+        : typeof nowOpt === 'number'
+          ? nowOpt
+          : this.clock();
+    // R3: O(buckets-for-this-provider) — indexed by providerId.
+    const keys = this.byProvider.get(provider.id);
+    if (!keys || keys.size === 0) return true;
+    for (const key of keys) {
+      const record = this.records.get(key);
+      if (!record) continue;
+      if (record.cooldownUntil <= now) continue;
+      if (model !== undefined) {
+        // Per-model check: only block on this exact model OR on
+        // provider-wide records (record.model === undefined / null).
+        if (record.model !== undefined && record.model !== model) continue;
+      }
+      return false;
     }
     return true;
   }
 
-  /** Return the soonest-expiring active cooldown for this provider, or `null`. */
-  getCooldown(provider: Pick<LLMProvider, 'id'>, now: number = this.clock()): ProviderHealthRecord | null {
+  /**
+   * Return the soonest-expiring active cooldown for this provider (and
+   * optionally model), or `null`. R3: indexed.
+   */
+  getCooldown(
+    provider: Pick<LLMProvider, 'id'>,
+    nowOrModel?: number | string,
+    nowOpt?: number,
+  ): ProviderHealthRecord | null {
+    const model = typeof nowOrModel === 'string' ? nowOrModel : undefined;
+    const now =
+      typeof nowOrModel === 'number'
+        ? nowOrModel
+        : typeof nowOpt === 'number'
+          ? nowOpt
+          : this.clock();
+    const keys = this.byProvider.get(provider.id);
+    if (!keys || keys.size === 0) return null;
     let soonest: ProviderHealthRecord | null = null;
-    for (const record of this.records.values()) {
-      if (record.providerId !== provider.id) continue;
+    for (const key of keys) {
+      const record = this.records.get(key);
+      if (!record) continue;
       if (record.cooldownUntil <= now) continue;
+      if (model !== undefined) {
+        if (record.model !== undefined && record.model !== model) continue;
+      }
       if (!soonest || record.cooldownUntil < soonest.cooldownUntil) soonest = record;
     }
     return soonest;
@@ -209,6 +317,7 @@ export class ProviderHealthStore {
   clearExpired(now: number = this.clock()): void {
     for (const [key, record] of this.records.entries()) {
       if (record.cooldownUntil <= now && record.failureCount === 0) {
+        this.indexRemove(record);
         this.records.delete(key);
       }
     }

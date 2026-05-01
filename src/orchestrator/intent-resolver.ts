@@ -596,9 +596,13 @@ export async function resolveIntent(
   // via the ROUTING RULE emitted in the classifier prompt.
   const isClarificationAnswer =
     deps.comprehension?.params.data?.state.isClarificationAnswer === true;
+  // Adaptive parameter — falls back to module-scope default when no store
+  // is wired (existing callers preserve byte-identical behavior).
+  const skipThreshold =
+    deps.params?.getNumber('intent.deterministic_skip_threshold') ?? DETERMINISTIC_SKIP_THRESHOLD;
   if (
     deterministic &&
-    deterministic.confidence >= DETERMINISTIC_SKIP_THRESHOLD &&
+    deterministic.confidence >= skipThreshold &&
     !deterministic.deterministicCandidate.ambiguous &&
     !isClarificationAnswer
   ) {

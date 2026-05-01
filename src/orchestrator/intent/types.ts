@@ -60,4 +60,12 @@ export interface IntentResolverDeps {
    *    (LLM advisory path even if deterministic would skip).
    */
   comprehension?: import('../comprehension/types.ts').ComprehendedTaskMessage;
+  /**
+   * Adaptive parameter store. When provided, the resolver reads its
+   * tunable thresholds (e.g., `intent.deterministic_skip_threshold`,
+   * `intent.llm_uncertain_threshold`) from the store rather than from
+   * the module-scope defaults. Falls back to defaults when omitted, so
+   * existing callers stay byte-identical.
+   */
+  params?: import('../adaptive-params/index.ts').ParameterStore;
 }

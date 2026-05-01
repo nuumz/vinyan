@@ -54,6 +54,19 @@ Adversarial robustness remains a **corollary** of A6 + A8 + A9, not a separate a
 
 Use axioms to resolve architectural conflicts — not as a checklist for every line edit.
 
+### Guard axioms vs Ceiling parameters
+
+Not every constant in the codebase is an axiom. Two distinct categories exist; conflating them blocks Vinyan's path to AGI-grade self-improvement.
+
+| Category | Examples | Mutability | Source of truth |
+|---|---|---|---|
+| **Guard axioms** | A1 separation, A3 governance, A4 hash, A6 zero-trust | **Immutable** — load-bearing for safety | `concept.md` axioms section |
+| **Ceiling parameters** | Wilson-LB threshold, tier confidence ceiling, cache TTL, routing risk-score breakpoints, sleep-cycle pattern minimums | **Tunable** — calcify capability without being load-bearing for safety | `src/orchestrator/adaptive-params/parameter-registry.ts` |
+
+Tunable ceilings are read at runtime via `ParameterStore` (`src/orchestrator/adaptive-params/parameter-store.ts`); every mutation lands in `parameter_adaptations` (migration 030) for audit. Sleep-cycle adapts them within range; operators override via config. Guard axioms remain immutable.
+
+The 7 core axioms above are guards. Adaptive ceilings live in `src/orchestrator/adaptive-params/parameter-registry.ts` — see that registry for the current list and which axiom each maps to.
+
 ## Tech Stack
 
 - **Runtime:** Bun (TypeScript, strict mode) — no npm/yarn/pnpm

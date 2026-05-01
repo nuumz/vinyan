@@ -382,7 +382,11 @@ describe('trust-tier promotion', () => {
     const promote = await server.handleRequest(
       authedReq(`/api/v1/skill-proposals/${created.proposal.id}/trust-tier`, {
         method: 'POST',
-        body: JSON.stringify({ tier: 'community', decidedBy: 'operator-d' }),
+        body: JSON.stringify({
+          tier: 'community',
+          decidedBy: 'operator-d',
+          reason: 'reviewed during round-2 sweep',
+        }),
       }),
     );
     expect(promote.status).toBe(200);
@@ -392,7 +396,11 @@ describe('trust-tier promotion', () => {
     const trusted = await server.handleRequest(
       authedReq(`/api/v1/skill-proposals/${created.proposal.id}/trust-tier`, {
         method: 'POST',
-        body: JSON.stringify({ tier: 'trusted', decidedBy: 'operator-d' }),
+        body: JSON.stringify({
+          tier: 'trusted',
+          decidedBy: 'operator-d',
+          reason: 'verified across 3 sample tasks',
+        }),
       }),
     );
     expect(trusted.status).toBe(200);
@@ -415,7 +423,11 @@ describe('trust-tier promotion', () => {
     const res = await server.handleRequest(
       authedReq(`/api/v1/skill-proposals/${created.proposal.id}/trust-tier`, {
         method: 'POST',
-        body: JSON.stringify({ tier: 'super-vip', decidedBy: 'operator-x' }),
+        body: JSON.stringify({
+          tier: 'super-vip',
+          decidedBy: 'operator-x',
+          reason: 'attempted bad tier',
+        }),
       }),
     );
     expect(res.status).toBe(400);
@@ -436,7 +448,28 @@ describe('trust-tier promotion', () => {
     const res = await server.handleRequest(
       authedReq(`/api/v1/skill-proposals/${created.proposal.id}/trust-tier`, {
         method: 'POST',
-        body: JSON.stringify({ tier: 'community' }),
+        body: JSON.stringify({ tier: 'community', reason: 'no decidedBy' }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test('missing reason returns 400', async () => {
+    const create = await server.handleRequest(
+      authedReq('/api/v1/skill-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposedName: 'tier-no-reason-target',
+          proposedCategory: 'refactor',
+          skillMd: SAFE_SKILL_MD,
+        }),
+      }),
+    );
+    const created = (await create.json()) as { proposal: { id: string } };
+    const res = await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${created.proposal.id}/trust-tier`, {
+        method: 'POST',
+        body: JSON.stringify({ tier: 'community', decidedBy: 'operator-x' }),
       }),
     );
     expect(res.status).toBe(400);

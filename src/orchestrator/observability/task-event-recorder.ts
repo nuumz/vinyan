@@ -189,6 +189,44 @@ export function attachTaskEventRecorder(
           payload,
           ts: Date.now(),
         });
+
+        // Sub-task session pre-seed.
+        //
+        // Closes a race that surfaced as `[no activity captured]` on
+        // multi-agent replay cards: when the parent workflow-executor
+        // dispatches a delegate it calls `await executeTask(subInput)`,
+        // and the inner orchestrator's first event for the sub-task is
+        // not always `task:start`. If any sub-task event reaches the
+        // recorder before the sub-task's own task:start populates the
+        // cache (e.g. an agent-loop tool event from the persona's first
+        // tick), that event has no `sessionId` in payload, the cache
+        // lookup by sub-task id misses, and the row persists with
+        // `session_id=NULL`. The replay endpoint
+        // (`/tasks/:id/event-history?includeDescendants=true`) then
+        // applies `AND session_id = ?` against the parent's session and
+        // silently drops every sub-task event for that delegate —
+        // showing a DONE row with no tool history and no output.
+        //
+        // Pre-seeding the sub-task → parent-session mapping the moment
+        // `workflow:delegate_dispatched` is recorded means subsequent
+        // sub-task events that omit sessionId still backfill correctly,
+        // regardless of which inner-loop branch emits first. Honors the
+        // existing LRU eviction so the cache cannot grow unbounded under
+        // long-running orchestrators.
+        if (eventName === 'workflow:delegate_dispatched' && sessionId) {
+          const rawPayloadObj = rawPayload as Record<string, unknown> | null;
+          const subTaskId =
+            rawPayloadObj && typeof rawPayloadObj.subTaskId === 'string'
+              ? (rawPayloadObj.subTaskId as string)
+              : undefined;
+          if (subTaskId && subTaskId.length > 0 && !sessionByTask.has(subTaskId)) {
+            if (sessionByTask.size >= SESSION_CACHE_LIMIT) {
+              const oldest = sessionByTask.keys().next().value;
+              if (oldest !== undefined) sessionByTask.delete(oldest);
+            }
+            sessionByTask.set(subTaskId, sessionId);
+          }
+        }
       }),
     );
   }

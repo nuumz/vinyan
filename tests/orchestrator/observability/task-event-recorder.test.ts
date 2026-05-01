@@ -165,6 +165,115 @@ describe('TaskEventRecorder', () => {
     expect(types).toEqual(['workflow:step_start', 'workflow:step_complete']);
   });
 
+  test('pre-seeds sub-task session on delegate_dispatched so out-of-order sub-task events still record session_id', () => {
+    // Closes the multi-agent `[no activity captured]` regression:
+    // workflow-executor dispatches a delegate, then `await executeTask(subInput)`
+    // hands control to an inner orchestrator. If the first sub-task event the
+    // recorder sees is NOT `task:start` (e.g. an agent-loop tool event lands
+    // first because the persona started immediately), the recorder's per-task
+    // session cache misses on the sub-task id and the row persists with
+    // `session_id=NULL`. The replay endpoint's session-guarded tree query then
+    // silently drops it — UI shows DONE rows with no captured tool history.
+    handle = attachTaskEventRecorder(bus, store, { flushIntervalMs: 10_000 });
+
+    bus.emit('task:start', {
+      input: { id: 't-parent', sessionId: 'sess-X', goal: 'g', taskType: 'reasoning' },
+      routing: { level: 0, model: 'pending', budgetTokens: 0, latencyBudgetMs: 0 },
+    } as never);
+    bus.emit('workflow:delegate_dispatched', {
+      taskId: 't-parent',
+      stepId: 'step1',
+      agentId: 'architect',
+      subTaskId: 't-parent-delegate-step1',
+    } as never);
+    // Sub-task's first event reaches the recorder BEFORE its own
+    // task:start (the race we are fixing). No sessionId in payload —
+    // recorder must backfill from the pre-seeded sub-task entry.
+    bus.emit('agent:tool_started', {
+      taskId: 't-parent-delegate-step1',
+      turnId: 'sub-turn-1',
+      toolCallId: 'tc-1',
+      toolName: 'shell_exec',
+    } as never);
+
+    handle.flush();
+
+    const subEvents = store.listForTask('t-parent-delegate-step1');
+    expect(subEvents.length).toBe(1);
+    expect(subEvents[0]?.eventType).toBe('agent:tool_started');
+    // The bug surfaced as `session_id=NULL` here. With the pre-seed
+    // fix, the sub-task event inherits the parent's session.
+    expect(subEvents[0]?.sessionId).toBe('sess-X');
+  });
+
+  test('does not pre-seed when delegate_dispatched payload omits subTaskId', () => {
+    // Defensive: a malformed dispatch event without subTaskId must not
+    // crash or pollute the cache with an empty key. Subsequent sub-task
+    // events behave as before (lookup miss → NULL session_id).
+    handle = attachTaskEventRecorder(bus, store, { flushIntervalMs: 10_000 });
+
+    bus.emit('task:start', {
+      input: { id: 't-parent2', sessionId: 'sess-Y', goal: 'g', taskType: 'reasoning' },
+      routing: { level: 0, model: 'pending', budgetTokens: 0, latencyBudgetMs: 0 },
+    } as never);
+    bus.emit('workflow:delegate_dispatched', {
+      taskId: 't-parent2',
+      stepId: 'step1',
+      agentId: 'architect',
+      // subTaskId intentionally omitted
+    } as never);
+
+    handle.flush();
+    // The dispatch event itself is recorded under the parent — that path
+    // is unaffected by the missing subTaskId.
+    const parentEvents = store.listForTask('t-parent2');
+    expect(parentEvents.map((e) => e.eventType)).toContain('workflow:delegate_dispatched');
+    for (const e of parentEvents) {
+      expect(e.sessionId).toBe('sess-Y');
+    }
+  });
+
+  test('pre-seed is idempotent — repeated dispatches do not overwrite an existing sub-task session', () => {
+    // Once a sub-task has cached its real session (either via the
+    // pre-seed or via its own task:start), a duplicate dispatch event
+    // (replay, retry, race) must not clobber the entry with stale data.
+    handle = attachTaskEventRecorder(bus, store, { flushIntervalMs: 10_000 });
+
+    bus.emit('task:start', {
+      input: { id: 't-parent3', sessionId: 'sess-Z', goal: 'g', taskType: 'reasoning' },
+      routing: { level: 0, model: 'pending', budgetTokens: 0, latencyBudgetMs: 0 },
+    } as never);
+    bus.emit('workflow:delegate_dispatched', {
+      taskId: 't-parent3',
+      stepId: 'step1',
+      agentId: 'architect',
+      subTaskId: 't-parent3-delegate-step1',
+    } as never);
+    // Sub-task's own task:start with explicit (correct) session.
+    bus.emit('task:start', {
+      input: {
+        id: 't-parent3-delegate-step1',
+        sessionId: 'sess-Z',
+        goal: 'g',
+        taskType: 'reasoning',
+      },
+      routing: { level: 0, model: 'pending', budgetTokens: 0, latencyBudgetMs: 0 },
+    } as never);
+    bus.emit('agent:tool_started', {
+      taskId: 't-parent3-delegate-step1',
+      turnId: 'sub-turn-1',
+      toolCallId: 'tc-2',
+      toolName: 'shell_exec',
+    } as never);
+
+    handle.flush();
+    const subEvents = store.listForTask('t-parent3-delegate-step1');
+    expect(subEvents.length).toBe(2);
+    for (const e of subEvents) {
+      expect(e.sessionId).toBe('sess-Z');
+    }
+  });
+
   test('priority eviction: falls back to FIFO when buffer is all high-priority', () => {
     handle = attachTaskEventRecorder(bus, store, {
       bufferLimit: 2,

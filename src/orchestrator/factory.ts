@@ -268,6 +268,16 @@ export interface OrchestratorConfig {
   knowledgeProviders?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProvider[];
   /** Optional deterministic provider order for capability research. */
   knowledgeProviderOrder?: readonly import('./capabilities/knowledge-acquisition.ts').KnowledgeProviderId[];
+  /**
+   * Test-only override for the External Coding CLI workflow strategy. When
+   * set, the factory uses this instance instead of constructing one from
+   * the default ClaudeCode/Copilot adapters. Production callers leave this
+   * undefined — it exists so integration tests can inject a fake strategy
+   * that captures `step` arguments and returns a deterministic outcome
+   * without spawning a subprocess. Pass `null` to explicitly disable the
+   * strategy (simulates "External Coding CLI not configured").
+   */
+  codingCliStrategyOverride?: CodingCliWorkflowStrategy | null;
 }
 
 export interface Orchestrator {
@@ -1539,22 +1549,34 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let codingCliController: ExternalCodingCliController | undefined;
   let codingCliStrategy: CodingCliWorkflowStrategy | undefined;
   let codingCliStoreInstance: CodingCliStore | undefined;
-  try {
-    if (db) {
-      codingCliStoreInstance = new CodingCliStore(db.getDb());
+  // Test-only override path: when the caller explicitly disabled the
+  // strategy (`null`) we leave both controller and strategy undefined —
+  // the core-loop dispatch will surface the unsupported-capability outcome,
+  // which is the exact path we want to exercise. When the override is a
+  // real instance (test fake), use it without constructing the production
+  // adapters.
+  if (config.codingCliStrategyOverride !== undefined) {
+    if (config.codingCliStrategyOverride !== null) {
+      codingCliStrategy = config.codingCliStrategyOverride;
     }
-    const cliConfig = CodingCliConfigSchema.parse({});
-    codingCliController = new ExternalCodingCliController({
-      bus,
-      approvalGate,
-      config: cliConfig,
-      adapters: [new ClaudeCodeAdapter(), new GitHubCopilotAdapter()],
-      store: codingCliStoreInstance,
-    });
-    codingCliStrategy = new CodingCliWorkflowStrategy(codingCliController);
-  } catch {
-    /* coding-cli wiring is best-effort — leave undefined and the
-     * pre-classifier surfaces an unsupported-capability outcome */
+  } else {
+    try {
+      if (db) {
+        codingCliStoreInstance = new CodingCliStore(db.getDb());
+      }
+      const cliConfig = CodingCliConfigSchema.parse({});
+      codingCliController = new ExternalCodingCliController({
+        bus,
+        approvalGate,
+        config: cliConfig,
+        adapters: [new ClaudeCodeAdapter(), new GitHubCopilotAdapter()],
+        store: codingCliStoreInstance,
+      });
+      codingCliStrategy = new CodingCliWorkflowStrategy(codingCliController);
+    } catch {
+      /* coding-cli wiring is best-effort — leave undefined and the
+       * pre-classifier surfaces an unsupported-capability outcome */
+    }
   }
 
   // Forward Predictor (A7: prediction error as learning signal)

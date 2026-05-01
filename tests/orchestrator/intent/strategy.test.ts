@@ -9,10 +9,11 @@
 import { describe, expect, it } from 'bun:test';
 import {
   composeDeterministicCandidate,
+  enforceSubTaskLeafStrategy,
   fallbackStrategy,
   mapUnderstandingToStrategy,
 } from '../../../src/orchestrator/intent/strategy.ts';
-import type { SemanticTaskUnderstanding, TaskInput } from '../../../src/orchestrator/types.ts';
+import type { IntentResolution, SemanticTaskUnderstanding, TaskInput } from '../../../src/orchestrator/types.ts';
 
 function stu(over: Partial<SemanticTaskUnderstanding> = {}): SemanticTaskUnderstanding {
   return {
@@ -389,5 +390,47 @@ describe('composeDeterministicCandidate — sub-task recursion guard (STU mapper
     );
     expect(result.deterministicCandidate.source).not.toBe('creative-deliverable-pattern');
     expect(result.strategy).not.toBe('agentic-workflow');
+  });
+});
+
+describe('enforceSubTaskLeafStrategy', () => {
+  it('demotes fallback agentic-workflow decisions for delegated sub-tasks', () => {
+    const resolution: IntentResolution = {
+      strategy: 'agentic-workflow',
+      refinedGoal: 'แบ่ง Agent 3ตัว แข่งกันถามตอบ',
+      workflowPrompt: 'make a nested workflow',
+      confidence: 0.5,
+      reasoning: 'Fallback: regex-based (Intent resolution timeout)',
+      reasoningSource: 'fallback',
+      type: 'known',
+    };
+
+    const result = enforceSubTaskLeafStrategy(
+      { parentTaskId: 'parent-1' },
+      resolution,
+    );
+
+    expect(result.strategy).toBe('conversational');
+    expect(result.workflowPrompt).toBeUndefined();
+    expect(result.reasoning).toContain('sub-task leaf guard');
+    expect(result.deterministicCandidate?.source).toBe('sub-task-recursion-guard');
+  });
+
+  it('leaves top-level multi-agent workflow decisions untouched', () => {
+    const resolution: IntentResolution = {
+      strategy: 'agentic-workflow',
+      refinedGoal: 'แบ่ง Agent 3ตัว แข่งกันถามตอบ',
+      workflowPrompt: 'top-level workflow',
+      confidence: 0.9,
+      reasoning: 'Deterministic multi-agent delegation pattern matched',
+      reasoningSource: 'deterministic',
+      type: 'known',
+    };
+
+    const result = enforceSubTaskLeafStrategy({}, resolution);
+
+    expect(result).toBe(resolution);
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.workflowPrompt).toBe('top-level workflow');
   });
 });

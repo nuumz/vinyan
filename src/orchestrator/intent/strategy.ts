@@ -69,6 +69,39 @@ export function fallbackStrategy(
   return 'full-pipeline';
 }
 
+/**
+ * Delegated sub-tasks are workflow leaves. If any resolver path still returns
+ * `agentic-workflow` for a sub-task, collapse it to one conversational LLM
+ * answer so delegates cannot recursively launch child workflows.
+ */
+export function enforceSubTaskLeafStrategy(
+  input: Pick<TaskInput, 'parentTaskId'>,
+  resolution: IntentResolution,
+): IntentResolution {
+  if (!input.parentTaskId || resolution.strategy !== 'agentic-workflow') return resolution;
+
+  const {
+    directToolCall: _directToolCall,
+    externalCodingCli: _externalCodingCli,
+    workflowPrompt: _workflowPrompt,
+    ...leaf
+  } = resolution;
+  return {
+    ...leaf,
+    strategy: 'conversational',
+    confidence: Math.min(resolution.confidence, 0.7),
+    reasoning:
+      `${resolution.reasoning} [sub-task leaf guard: parentTaskId present, demoted agentic-workflow → conversational to prevent nested workflow recursion]`,
+    reasoningSource: resolution.reasoningSource ?? 'deterministic',
+    deterministicCandidate: {
+      strategy: 'conversational',
+      confidence: Math.min(resolution.confidence, 0.7),
+      source: 'sub-task-recursion-guard',
+      ambiguous: false,
+    },
+  };
+}
+
 // Detect tokens that look like filenames (e.g. `src/foo.ts`, `README.md`).
 const FILE_TOKEN_REGEX = /\b[\w.\-/]+\.[A-Za-z0-9]{1,6}\b/;
 

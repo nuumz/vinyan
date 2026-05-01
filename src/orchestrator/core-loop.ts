@@ -21,6 +21,7 @@ import { buildConversationalResult } from './conversational-result-builder.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { applyRoutingGovernance, buildShortCircuitProvenance } from './governance-provenance.ts';
+import { enforceSubTaskLeafStrategy } from './intent/strategy.ts';
 import { runWithLLMTrace } from './llm/llm-trace-context.ts';
 import { enforceGoalGroundingBoundary } from './orchestration-boundaries.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
@@ -1204,6 +1205,8 @@ async function prepareExecution(
         source: 'fallback',
       });
     }
+
+    intentResolution = enforceSubTaskLeafStrategy(input, intentResolution);
   }
 
   // G2: Wire archiver for rejected approaches
@@ -2255,7 +2258,7 @@ async function executeTaskCore(
                   {
                     kind: 'routing-factor',
                     source: 'intent-strategy',
-                    summary: `provider=${cliReq.providerId}; mode=${cliReq.mode}; reason=${cliReq.reason}`,
+                    summary: `provider=${cliReq.providerId}; mode=${cliReq.mode}; targets=${(cliReq.targetPaths ?? []).slice(0, 5).join(',')}; classifier-reason=${cliReq.reason}`,
                   },
                 ],
               }),
@@ -2312,7 +2315,7 @@ async function executeTaskCore(
                 {
                   kind: 'routing-factor',
                   source: 'intent-strategy',
-                  summary: `provider=${outcome.providerId ?? 'unknown'}; status=${outcome.status}; verified=${outcome.verification?.passed ?? false}`,
+                  summary: `provider=${outcome.providerId ?? 'unknown'}; mode=${cliReq.mode}; targets=${(cliReq.targetPaths ?? []).slice(0, 5).join(',')}; status=${outcome.status}; verified=${outcome.verification?.passed ?? false}`,
                 },
               ],
             }),

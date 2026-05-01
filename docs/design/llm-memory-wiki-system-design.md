@@ -234,7 +234,10 @@ Page types (extensible — vocabulary lives in `schema.ts`):
 | `workflow-pattern`| a successful repeatable workflow                             |
 | `source-summary`  | a one-page summary of one external source                    |
 | `task-memory`     | what we learned doing one task                               |
-| `agent-profile`   | what we know about one agent (capabilities, prefs, history)  |
+| `persona-profile` | what we know about one Vinyan internal persona (#1)          |
+| `worker-profile`  | what we know about one Vinyan agentic worker (#2)            |
+| `cli-delegate-profile` | what we know about an external coding CLI (#3)          |
+| `peer-profile`    | what we know about an A2A peer Vinyan instance (#5)          |
 | `open-question`   | an unresolved question with evidence so far                  |
 
 Lifecycle states:

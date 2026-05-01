@@ -10,6 +10,24 @@ Code capability is Vinyan's first and most critical capability — not because V
 
 **Identity hierarchy:** Epistemic Orchestration (paradigm) → Vinyan (system) → ENS (verification substrate) → ECP (wire protocol)
 
+## "Agent" — five distinct things in this codebase
+
+The word *agent* is overloaded. **Always disambiguate:**
+
+| # | Canonical name | What it is | Trust |
+|---|---|---|---|
+| 1 | **Persona** | Internal Vinyan role (developer, reviewer, coordinator) — `src/orchestrator/agents/` | internal-trusted |
+| 2 | **Worker** | Vinyan agentic-worker subprocess (Phase 6) — `src/orchestrator/worker/` | zero-trust (A6) |
+| 3 | **CLI Delegate** | External coding CLI Vinyan **spawns** (Claude Code, Copilot) — `src/orchestrator/external-coding-cli/` | zero-trust (A6 + A1) |
+| 4 | **Host CLI** | The Claude Code (or other tool) the **developer uses to BUILD Vinyan** — outside `src/` entirely | dev-time, human-reviewed |
+| 5 | **Peer** | A2A peer Vinyan instance — `src/a2a/` | earned via PeerTrustLevel |
+
+**Crucial #3 vs #4 distinction:** Claude Code CLI is the same binary in both. Vinyan-as-runtime spawning Claude Code (#3) is unrelated to a developer using Claude Code to write Vinyan source (#4). When reading prompts that mention "Claude Code", classify by intent (use it vs talk about it vs the dev-toolchain identity).
+
+Full taxonomy, code anchors, branded ID types, and migration RFCs: **`docs/foundation/agent-vocabulary.md`**. Branded types live in `src/core/agent-vocabulary.ts`.
+
+**Naming rule:** new code uses `persona` / `worker` / `cliDelegate` / `peer` — never bare `agent` / `agentId`. User-facing strings (governance reasons, errors, prompts, UI) MUST use the canonical name; "Agent failed" is forbidden, "Worker subprocess failed" or "Persona `developer` failed" is required.
+
 ## 7 Core Axioms (Non-Negotiable)
 
 | # | Axiom | Principle |

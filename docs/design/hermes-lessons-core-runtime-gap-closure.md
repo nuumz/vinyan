@@ -1,9 +1,14 @@
 # Hermes Lessons → Vinyan Core Runtime Gap Closure
 
-**Status:** Phase 0 audit + Phases 2 / 3 / 4 / 5 / 6 / 7 implemented and
-tested · 2026-05-01 · Phase 1 + Phase 8 (frontend operational console)
-remain future work and are explicitly out of scope for this round
-because the backend contracts they consume only just landed.
+**Status:** All 9 phases delivered · 2026-05-01.
+
+- Round 1: Phase 0 audit + Phase 5 (FTS5 task search).
+- Round 2: Phases 2 (memory snapshot), 3 (skill proposals + safety scan),
+  4 (scheduler API + recursion guard), 5 (tool registry audit — no gap),
+  6 (profile isolation completion), 7 (doctor runtime probes), 9 (this
+  doc).
+- Round 3: skill autogenerator from `skill:outcome`, trust-tier API,
+  `/scheduler` page, `/skill-proposals` page (Phases 1 + 8 frontend).
 
 > Hermes Agent (NousResearch) is a different shape of system than Vinyan,
 > but it is the most mature open-source implementation of an agent
@@ -150,12 +155,16 @@ evidence of "already covered."
 
 ## 4. Implementation slices completed in this PR
 
-> **Round 1 (initial PR):** sections 4.1–4.4 below — FTS5 search and the
-> design note framework.
+> **Round 1:** sections 4.1–4.4 — FTS5 search and the design note
+> framework.
 >
-> **Round 2 (this PR):** sections 4.5–4.10 below — durable scheduler API,
-> doctor runtime probes, memory frozen-snapshot contract, skill-proposal
+> **Round 2:** sections 4.5–4.10 — durable scheduler API, doctor
+> runtime probes, memory frozen-snapshot contract, skill-proposal
 > quarantine, profile isolation extensions, recursion guards.
+>
+> **Round 3:** sections 4.11–4.13 — skill auto-generator from
+> `skill:outcome`, trust-tier API, `/scheduler` and `/skill-proposals`
+> frontend pages.
 
 ### 4.1 Migration 028 — `session_tasks_fts`
 
@@ -337,6 +346,100 @@ Two layers:
 
 Skill proposals do not need a runtime recursion guard because their lifecycle is read-only from the agent's perspective — the agent can only POST a proposal (which is by design — that's the whole loop), and approval requires a human-attributed `decidedBy` field that an LLM running an automated task cannot legitimately fill.
 
+### 4.11 Skill proposal auto-generator
+
+`src/skills/proposal-autogen.ts` subscribes to `skill:outcome` and
+produces a proposal after `threshold` (default 3) consecutive
+successes for the same `(agentId, taskSignature)` pair. Wired in
+`cli/serve.ts` after the orchestrator is constructed.
+
+Design constraints:
+
+- **A3** — pure rule-based threshold. No LLM in the path.
+- **A6** — every produced proposal goes through the same store +
+  safety scanner as human-driven proposals; auto-generated rows land
+  as `quarantined` (default trust tier) regardless of the SKILL.md
+  content. Activation still requires a human-attributed `approve`
+  call.
+- **A8** — proposal carries `sourceTaskIds` (last 25) so the operator
+  can replay the runs that triggered it.
+- **Bounded memory** — tracker is capped at 1 000 distinct signatures;
+  LRU eviction by `lastSeen`. Across server restarts the counter
+  resets — intentional, so a half-counted signature doesn't prematurely
+  promote.
+- **Idempotent merge** — the store's `(profile, proposedName)` merge
+  contract means re-creating with the same name bumps `successCount`
+  by 1 instead of duplicating the row.
+
+`tests/skills/proposal-autogen.test.ts` — 7 cases: below-threshold no-op,
+exact-threshold creation + idempotent merge, failure outcomes ignored,
+distinct signatures track independently, distinct agentIds (shared vs
+per-agent) track independently, slug regex survival for messy task
+signatures, unsubscribe stops further emissions.
+
+### 4.12 Trust-tier API
+
+`POST /api/v1/skill-proposals/:id/trust-tier` lets an operator promote
+or demote a proposal's trust tier (`quarantined` → `community` →
+`trusted` → `official` → `builtin`). Lifecycle status (pending /
+approved / rejected / quarantined) is unaffected; the tier is a
+separate axis. Every transition requires `decidedBy` (no LLM-driven
+promotion path is possible — A6).
+
+3 new tests in `tests/api/skill-proposals.test.ts`: round-trip
+quarantined → community → trusted, invalid tier rejection (400),
+missing decidedBy rejection (400).
+
+### 4.13 Frontend operational pages
+
+**`/scheduler`** (`vinyan-ui/src/pages/scheduler.tsx`) — durable agent
+cron operations console:
+
+- Status filter tabs (All / Active / Paused / Failed-circuit / Expired)
+- Create form with mode toggle: natural-language phrase OR raw cron
+  expression. Sends to `POST /api/v1/scheduler/jobs`.
+- Job table with goal, cron + timezone, status badge + failure-streak
+  counter, next-fire (relative time), last-run + run count, action
+  cluster (pause / resume / run-now / delete).
+- Last-run cell links to `/tasks?search=<taskId>` so the operator
+  can drill into the actual fired task.
+- ConfirmDialog gate on delete (matches the danger-action pattern
+  used elsewhere).
+- SSE-fallback polling at 60 s — bus events update the cache live.
+
+**`/skill-proposals`** (`vinyan-ui/src/pages/skill-proposals.tsx`) —
+agent-managed skill creation review queue:
+
+- Status tabs with counts (Pending / Quarantined / Approved /
+  Rejected / All) computed from a single `useSkillProposals()` query.
+- Dense table: name + capability tags, status badge, trust-tier
+  badge, success count, safety flags, created-relative-time, decided-by.
+- Detail drawer with: status panel (status / trust / profile /
+  success count / created / decided), safety-flags warning panel
+  (with quarantine guidance text when applicable), provenance
+  panel (capability tags, tools required, source task ids — each
+  links to `/tasks?search=<taskId>`), full SKILL.md preview in a
+  monospace block.
+- Decision form requires `decidedBy` (audit trail). Quarantined
+  proposals show no Approve button (server returns 409 anyway —
+  client matches the contract).
+- Trust-tier promotion buttons appear only on approved proposals.
+- Delete behind ConfirmDialog with proposal-name confirmation.
+
+**Wiring** — `vinyan-ui/src/lib/api-client.ts` adds 7 scheduler
+methods + 7 skill-proposal methods (mirroring the backend surface
+1:1). `vinyan-ui/src/hooks/use-scheduler.ts` and
+`use-skill-proposals.ts` expose React Query mutations / queries.
+`vinyan-ui/src/lib/query-keys.ts` adds `qk.scheduler*` /
+`qk.skillProposals*`. `App.tsx` registers both routes;
+`layouts/app-layout.tsx` adds nav entries (Scheduler under Runtime,
+Proposals under Knowledge).
+
+`/tasks` page was already a complete operational console (summary
+strip / status tabs / toolbar / table / detail drawer / process
+replay / actions) — round 3 verified it continues to work and added
+no churn.
+
 ---
 
 ## 5. What is now active by default
@@ -353,6 +456,10 @@ Anything that runs in unmodified `vinyan serve` without extra flags:
 - **Provider governance** — every provider in the registry is wrapped; cooldown after 429 with `Retry-After` parsing; adjacent-tier fallback; bus events `quota_exhausted` / `cooldown_started` / `cooldown_skipped` / `fallback_selected` / `unavailable` / `recovered` / `health_changed` are recorded into `task_events` for replay.
 - **Profile isolation** — `X-Vinyan-Profile` header + `body.profile` validated by `isValidProfileName`; default falls back to server `defaultProfile`. Verified across new scheduler + skill-proposals endpoints.
 - **Recursion guards** — implicit (no scheduler tool registered for agents) + explicit (`X-Vinyan-Origin: gateway-cron` → HTTP 423 + recorded `scheduler:recursion_blocked` event).
+- **Skill auto-generator** — `skill:outcome` listener in `cli/serve.ts` produces a quarantined proposal after 3 consecutive successes per `(agentId, taskSignature)`. Bounded memory + LRU eviction; resets on server restart.
+- **Trust-tier API** — `POST /api/v1/skill-proposals/:id/trust-tier` promotes / demotes approved proposals along the quarantine → community → trusted → official → builtin axis.
+- **Frontend `/scheduler`** — operational console for `gateway_schedules`. NL + cron create form, status tabs, pause / resume / run-now / delete actions, last-run drill-down to `/tasks`.
+- **Frontend `/skill-proposals`** — review queue for the autogen + manual proposals. Detail drawer with SKILL.md preview, safety flags, provenance, decision form, trust-tier promotion buttons.
 
 ---
 
@@ -360,13 +467,12 @@ Anything that runs in unmodified `vinyan serve` without extra flags:
 
 | Item | Why deferred |
 |---|---|
-| **Frontend operational console — `/tasks`, `/sessions`, `/skills`, `/memory`, `/providers`, `/doctor`, `/scheduler` (Phase 1 + 8).** Dense filter / detail-drawer / replay / actions UI. | Backend contracts only just landed. Cleanest sequence is: backend stable in `main` → frontend consumes via the hooks listed in Phase 8. The UI hooks already exist in `vinyan-ui/src/hooks/use-tasks.ts` and `use-task-events.ts` for the task console; scheduler / skill-proposal hooks need authoring against the new endpoints documented in §4.5 and §4.8. |
-| **Auto-generation of skill proposals from `skill:outcome` events.** Threshold-based generator that converts repeated success or corrected failure into a `POST /skill-proposals` call. | The proposal-store + API + safety scan are all live. The generator's threshold policy (`successCount >= N`, `failureSimilarity > t`) needs real-data tuning before it ships; an MVP generator that fires on every successful task would flood the quarantine queue. Tracked in `multi-agent-hardening-roadmap.md` follow-up. |
-| **Trust-tier promotion UI flow.** A skill proposal can be set to `community` / `trusted` / `official` via `setTrustTier`, but no API/UI yet exposes this transition. | Trust promotion is rare and high-stakes (A6). Done via `vinyan` CLI for now; web UI lands when the proposals tab does. |
+| **Auto-generator threshold tuning.** The default `threshold = 3` was chosen conservatively without traffic data. | The right number depends on real workload — too low floods the quarantine queue, too high never proposes. Tune once real `skill:outcome` traffic exists; the threshold is a single constructor argument so re-tuning is trivial. |
 | **Cross-tier exhaustion event distinct from `provider_unavailable`** | The existing `llm:provider_unavailable` event already fires when no healthy provider is found in the requested tier or any adjacent fallback tier. Adding a separate "exhausted across the whole chain" event would duplicate semantics. |
 | **Trigram FTS5 tokenizer for CJK / substring** | Hermes ships a parallel `messages_fts_trigram`. Our usage is mostly Latin-script today; deferred until a real CJK workload appears. |
 | **Tool capability registry consolidation (original Phase 2).** A single `ToolCapabilityRegistry` with one schema + one `availability` check per tool. | The current shape (direct-tool-resolver + tool-classifier + skill-tools + MCP + command-approval-gate) is already gated, category-grouped, and risk-class-tagged. Audit found no genuine gap (no unavailable tool was being advertised to the LLM, no missing approval edge). Consolidating for symmetry risks breaking working call sites without delivering observable behaviour change. |
 | **Mid-task memory write → next-turn pickup.** Snapshot freezes at task start. A second concurrent task in the same session would already see the new memory — but the operator may want a force-refresh hook. | The right place for this is a `refreshMemorySnapshot` opt at task ingress, not a global mutation hook. Wait for a real call site before adding. |
+| **Frontend SKILL.md inline editor.** The proposals page shows the draft as a read-only `<pre>`. An operator who wants to clear safety flags must POST a fresh proposal with the cleaned text. | A real Markdown editor with live safety-scan preview is the right product surface, but it's a much bigger UI piece. The current shape lets the operator do everything they need via the backend; an editor is upsell, not blocker. |
 
 ---
 
@@ -384,16 +490,25 @@ bun test tests/api/scheduler-api.test.ts \
          tests/api/skill-proposals.test.ts
 # → 48 pass, 0 fail, 155 expect() calls.
 
-# Full backend regression — every test under tests/api, tests/db, tests/memory
-bun test tests/api tests/db tests/memory
-# → 948 pass, 3 skip, 0 fail, 3288 expect() calls across 79 files.
+# Round 3 — autogenerator + trust-tier
+bun test tests/skills/proposal-autogen.test.ts tests/api/skill-proposals.test.ts
+# → 20 pass, 0 fail, 54 expect() calls.
+
+# Full backend regression — every test under tests/api, tests/db,
+# tests/memory, tests/skills
+bun test tests/api tests/db tests/memory tests/skills
+# → 1277 pass, 3 skip, 0 fail, 4288 expect() calls across 111 files.
 
 # tsc --noEmit on the entire backend
 bun x tsc --noEmit
 # → clean, no errors.
+
+# Frontend tsc --noEmit
+cd ../vinyan-ui && bun run lint
+# → clean, no errors.
 ```
 
-Files changed (round 1 + round 2 cumulative):
+Files changed (round 1 + round 2 + round 3 cumulative):
 
 ```
 NEW backend files
@@ -402,21 +517,23 @@ src/db/migrations/028_session_tasks_fts.ts       # FTS5 over session_tasks
 src/db/migrations/029_skill_proposals.ts         # skill_proposals table
 src/db/skill-proposal-store.ts                   # store + safety integration
 src/memory/snapshot.ts                           # MemorySnapshot + dedup + safety verdict
+src/skills/proposal-autogen.ts                   # skill:outcome → quarantined proposal
 
 NEW backend tests
 ─────────────────
 tests/api/tasks-fts-search.test.ts               # 9 cases
 tests/api/scheduler-api.test.ts                  # 15 cases
 tests/api/doctor-runtime.test.ts                 # 8 cases
-tests/api/skill-proposals.test.ts                # 10 cases
+tests/api/skill-proposals.test.ts                # 13 cases (+3 trust-tier)
 tests/memory/snapshot.test.ts                    # 15 cases
+tests/skills/proposal-autogen.test.ts            # 7 cases
 
 MODIFIED backend files
 ──────────────────────
-src/api/server.ts                                # scheduler + skill-proposal handlers, doctor probes, searchMode flag
+src/api/server.ts                                # scheduler + skill-proposal + trust-tier handlers, doctor probes, searchMode flag
 src/api/event-manifest.ts                        # +15 events (scheduler:* + skill:proposal_*)
 src/cli/doctor.ts                                # runtime probes + migrations check
-src/cli/serve.ts                                 # wires gatewayScheduleStore + skillProposalStore
+src/cli/serve.ts                                 # wires gatewayScheduleStore + skillProposalStore + autogenerator
 src/core/bus.ts                                  # +15 event type declarations
 src/db/gateway-schedule-store.ts                 # +listAll + delete
 src/db/migrations/index.ts                       # registers mig 028 + 029
@@ -424,6 +541,20 @@ src/db/session-store.ts                          # FTS5 search mode + sanitizer
 src/orchestrator/core-loop.ts                    # captureMemorySnapshot wiring
 src/orchestrator/factory.ts                      # constructs new stores; exposes on Orchestrator
 docs/design/hermes-lessons-core-runtime-gap-closure.md  # this file
+
+NEW frontend files (vinyan-ui/)
+────────────────────────────────
+src/pages/scheduler.tsx                          # /scheduler operational console
+src/pages/skill-proposals.tsx                    # /skill-proposals review queue
+src/hooks/use-scheduler.ts                       # 7 React Query hooks
+src/hooks/use-skill-proposals.ts                 # 5 React Query hooks
+
+MODIFIED frontend files (vinyan-ui/)
+────────────────────────────────────
+src/App.tsx                                      # registers /scheduler + /skill-proposals routes
+src/layouts/app-layout.tsx                       # nav entries under Runtime + Knowledge
+src/lib/api-client.ts                            # 14 new methods + scheduler/proposal types
+src/lib/query-keys.ts                            # qk.scheduler* + qk.skillProposals*
 ```
 
 ---
@@ -455,19 +586,18 @@ accountability) without weakening any axiom:
 
 ## 9. Followup checklist
 
-Tracked in `docs/design/multi-agent-hardening-roadmap.md` so it does
-not get lost:
-
-Closed in this round:
+Closed:
 
 - [x] Bounded-memory frozen-snapshot contract + test fixture (Phase 2 — round 2)
 - [x] Agent-managed skill proposal quarantine (Phase 3 — round 2)
 - [x] Durable scheduler API with recursion guard (Phase 4 — round 2)
 - [x] Doctor diagnostics runtime probes (Phase 7 — round 2)
+- [x] Auto-generator from `skill:outcome` (round 3)
+- [x] Trust-tier promotion API (round 3)
+- [x] `/scheduler` and `/skill-proposals` frontend pages (Phases 1 + 8 — round 3)
 
-Still open:
+Still open (tracked in `docs/design/multi-agent-hardening-roadmap.md`):
 
-- [ ] Frontend operational console (`/tasks`, `/scheduler`, `/skills` proposals tab, etc.) — Phases 1 + 8.
-- [ ] Auto-generator that converts `skill:outcome` success runs into `POST /skill-proposals` calls — needs threshold tuning.
-- [ ] Trust-tier promotion API + UI for approved-but-quarantined proposals.
+- [ ] Auto-generator threshold tuning once real `skill:outcome` traffic exists.
 - [ ] Trigram FTS5 tokenizer when a real CJK workload appears.
+- [ ] SKILL.md inline editor with live safety-scan preview on the proposals page.

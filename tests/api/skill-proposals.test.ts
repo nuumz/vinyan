@@ -364,6 +364,85 @@ describe('profile isolation', () => {
   });
 });
 
+describe('trust-tier promotion', () => {
+  test('approved proposal can be promoted to community then trusted', async () => {
+    const create = await server.handleRequest(
+      authedReq('/api/v1/skill-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposedName: 'tier-target',
+          proposedCategory: 'refactor',
+          skillMd: SAFE_SKILL_MD,
+        }),
+      }),
+    );
+    const created = (await create.json()) as { proposal: { id: string; trustTier: string } };
+    expect(created.proposal.trustTier).toBe('quarantined');
+
+    const promote = await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${created.proposal.id}/trust-tier`, {
+        method: 'POST',
+        body: JSON.stringify({ tier: 'community', decidedBy: 'operator-d' }),
+      }),
+    );
+    expect(promote.status).toBe(200);
+    const promoted = (await promote.json()) as { proposal: { trustTier: string } };
+    expect(promoted.proposal.trustTier).toBe('community');
+
+    const trusted = await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${created.proposal.id}/trust-tier`, {
+        method: 'POST',
+        body: JSON.stringify({ tier: 'trusted', decidedBy: 'operator-d' }),
+      }),
+    );
+    expect(trusted.status).toBe(200);
+    const trustedBody = (await trusted.json()) as { proposal: { trustTier: string } };
+    expect(trustedBody.proposal.trustTier).toBe('trusted');
+  });
+
+  test('invalid tier returns 400', async () => {
+    const create = await server.handleRequest(
+      authedReq('/api/v1/skill-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposedName: 'tier-bad-target',
+          proposedCategory: 'refactor',
+          skillMd: SAFE_SKILL_MD,
+        }),
+      }),
+    );
+    const created = (await create.json()) as { proposal: { id: string } };
+    const res = await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${created.proposal.id}/trust-tier`, {
+        method: 'POST',
+        body: JSON.stringify({ tier: 'super-vip', decidedBy: 'operator-x' }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test('missing decidedBy returns 400', async () => {
+    const create = await server.handleRequest(
+      authedReq('/api/v1/skill-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposedName: 'tier-no-who-target',
+          proposedCategory: 'refactor',
+          skillMd: SAFE_SKILL_MD,
+        }),
+      }),
+    );
+    const created = (await create.json()) as { proposal: { id: string } };
+    const res = await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${created.proposal.id}/trust-tier`, {
+        method: 'POST',
+        body: JSON.stringify({ tier: 'community' }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('503 when store not configured', () => {
   test('list / create return 503 when skillProposalStore is omitted', async () => {
     const stub = new VinyanAPIServer(

@@ -6,6 +6,21 @@
  * and manages start/stop lifecycle for long-running modules.
  *
  * Zero overhead when network.instances.enabled = false (default).
+ *
+ * ── Agent vocabulary ─────────────────────────────────────────────────
+ * This module deals with **Agent type #5 — Peer Instance**: another
+ * Vinyan installation participating in the A2A network. Trust tier:
+ * `earned` via `PeerTrustLevel` (`untrusted | probation | trusted`),
+ * promoted/demoted by Wilson-LB on verification accuracy.
+ *
+ * Identifier is `instanceId` (not `agentId`). NOT to be confused with #1
+ * Persona, #2 Worker, or #3 CLI Delegate. Full taxonomy in
+ * `docs/foundation/agent-vocabulary.md`. Branded ID type for new code:
+ * `PeerInstanceId` from `src/core/agent-vocabulary.ts`.
+ *
+ * Note: `src/db/agent-profile-store.ts` is a *different* concept again —
+ * it stores the workspace-level singleton "who is this Vinyan installation"
+ * record. That name is legacy and slated for rename to `InstanceProfile`.
  */
 import { basename, join } from 'node:path';
 

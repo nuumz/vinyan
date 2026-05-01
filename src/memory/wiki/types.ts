@@ -33,6 +33,22 @@ export type WikiSourceKind = (typeof WIKI_SOURCE_KINDS)[number];
 
 // ── Page types ──────────────────────────────────────────────────────────
 
+/**
+ * Page types. The four `*-profile` types are deliberately split per the
+ * Agent Vocabulary (`docs/foundation/agent-vocabulary.md`):
+ *
+ *   persona-profile      — #1 Vinyan internal persona/specialist
+ *   worker-profile       — #2 Vinyan agentic worker subprocess
+ *   cli-delegate-profile — #3 External coding CLI (Claude Code, Copilot)
+ *   peer-profile         — #5 A2A peer Vinyan instance
+ *
+ * #4 (Host CLI / build-time Claude Code) intentionally has no profile
+ * type — it is a dev-time concept, not a Vinyan runtime concept.
+ *
+ * The previous merged `agent-profile` type produced ambiguity bugs (one
+ * page could refer to any of four distinct things). New code must pick
+ * the specific profile.
+ */
 export const WIKI_PAGE_TYPES = [
   'concept',
   'entity',
@@ -42,7 +58,10 @@ export const WIKI_PAGE_TYPES = [
   'workflow-pattern',
   'source-summary',
   'task-memory',
-  'agent-profile',
+  'persona-profile',
+  'worker-profile',
+  'cli-delegate-profile',
+  'peer-profile',
   'open-question',
 ] as const;
 export type WikiPageType = (typeof WIKI_PAGE_TYPES)[number];

@@ -278,8 +278,14 @@ schemaVersion is unknown.
 
 ## Page types
 - concept, entity, project, decision, failure-pattern,
-  workflow-pattern, source-summary, task-memory, agent-profile,
+  workflow-pattern, source-summary, task-memory,
+  persona-profile (Vinyan internal specialist),
+  worker-profile (Vinyan agentic worker subprocess),
+  cli-delegate-profile (external coding CLI: Claude Code, Copilot),
+  peer-profile (A2A peer Vinyan instance),
   open-question.
+
+See \`docs/foundation/agent-vocabulary.md\` for the full taxonomy.
 
 ## Lifecycle states
 - draft, canonical, stale, disputed, archived.

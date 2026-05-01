@@ -5,6 +5,20 @@
  * If config has no agents, built-ins are used. Never writes to disk.
  *
  * Exposes read-only accessors for the core loop, intent resolver, CLI, and API.
+ *
+ * ── Agent vocabulary ─────────────────────────────────────────────────
+ * This module deals with **Agent type #1 — Persona** (a.k.a. Specialist):
+ * internal Vinyan roles like `developer`, `reviewer`, `coordinator`. Trust
+ * tier: `internal-trusted` (runs in Vinyan's process, A1 generation/
+ * verification still applies, A6 zero-trust subprocess gate does NOT).
+ *
+ * NOT to be confused with #2 Worker (subprocess loop, `src/orchestrator/
+ * worker/`), #3 CLI Delegate (external coding CLI, `src/orchestrator/
+ * external-coding-cli/`), #4 Host CLI (build-time tool, outside `src/`),
+ * or #5 Peer Instance (A2A peer, `src/a2a/`).
+ *
+ * Full taxonomy: `docs/foundation/agent-vocabulary.md`.
+ * Branded ID type for new code: `PersonaId` from `src/core/agent-vocabulary.ts`.
  */
 import type { AgentSpecConfig } from '../../config/schema.ts';
 import type { AgentCapabilityOverrides, AgentRoutingHints, AgentSpec, CapabilityClaim, SkillRef } from '../types.ts';

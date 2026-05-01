@@ -128,7 +128,17 @@ function checkOrphans(store: MemoryWikiStore, pages: readonly WikiPage[]): Draft
   const out: DraftFinding[] = [];
   for (const page of pages) {
     if (page.lifecycle === 'archived') continue;
-    if (page.type === 'open-question' || page.type === 'agent-profile') continue;
+    // Profile-shaped pages (persona/worker/cli-delegate/peer) and open
+    // questions don't need inbound edges — they're identity/intent records.
+    if (
+      page.type === 'open-question' ||
+      page.type === 'persona-profile' ||
+      page.type === 'worker-profile' ||
+      page.type === 'cli-delegate-profile' ||
+      page.type === 'peer-profile'
+    ) {
+      continue;
+    }
     const incoming = store.edgesTo(page.id);
     if (incoming.length === 0) {
       out.push({

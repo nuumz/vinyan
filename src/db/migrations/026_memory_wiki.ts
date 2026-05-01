@@ -51,7 +51,8 @@ export const migration026: Migration = {
         type            TEXT NOT NULL
                           CHECK(type IN ('concept','entity','project','decision','failure-pattern',
                                          'workflow-pattern','source-summary','task-memory',
-                                         'agent-profile','open-question')),
+                                         'persona-profile','worker-profile','cli-delegate-profile',
+                                         'peer-profile','open-question')),
         title           TEXT NOT NULL,
         aliases_json    TEXT NOT NULL DEFAULT '[]',
         tags_json       TEXT NOT NULL DEFAULT '[]',

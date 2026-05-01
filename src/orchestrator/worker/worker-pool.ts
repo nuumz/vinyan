@@ -6,6 +6,23 @@
  * Subprocess mode follows oracle/runner.ts pattern (Bun.spawn + timeout + Zod validation).
  *
  * Source of truth: spec/tdd.md §16.3 (Worker lifecycle), §17 (Generator Engine)
+ *
+ * ── Agent vocabulary ─────────────────────────────────────────────────
+ * This module deals with **Agent type #2 — Worker** (a.k.a. Agentic
+ * Worker): the subprocess that runs the agentic-worker-protocol loop
+ * (think → act → observe). Trust tier: `zero-trust` per A6 — workers
+ * propose, the orchestrator validates and disposes.
+ *
+ * Bus events `agent:turn_complete`, `agent:tool_started`, `agent:tool_executed`,
+ * `agent:thinking`, `agent:contract_violation`, `agent:plan_update`, etc.
+ * are Worker-scoped (despite the legacy `agent:*` namespace — slated for
+ * rename to `worker:*` per the RFC in `docs/foundation/agent-vocabulary.md`).
+ *
+ * NOT to be confused with #1 Persona (`src/orchestrator/agents/`), #3
+ * CLI Delegate (`src/orchestrator/external-coding-cli/`), or #5 Peer
+ * Instance (`src/a2a/`).
+ *
+ * Branded ID type for new code: `WorkerId` from `src/core/agent-vocabulary.ts`.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';

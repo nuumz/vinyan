@@ -93,15 +93,21 @@ export function wireSkillProposalAutogen(deps: SkillProposalAutogenDeps): () => 
     try {
       const proposedName = autogenName(skill);
       const skillMd = renderSkillMd(skill, entry);
+      // The store's merge path adds `input.successCount` to the
+      // existing row, so passing the cumulative `entry.successes`
+      // every emission would double-count. Pass `1` per emission;
+      // after threshold the count starts at 1 and bumps by 1 per
+      // subsequent successful run. That matches the skill-proposals
+      // store contract used by the human-driven create path.
       deps.store.create({
         profile,
         proposedName,
         proposedCategory: 'auto-generated',
         skillMd,
         capabilityTags: [skill.agentId ?? 'shared'].filter(Boolean) as string[],
-        sourceTaskIds: entry.taskIds.slice(),
+        sourceTaskIds: [taskId],
         evidenceEventIds: [],
-        successCount: entry.successes,
+        successCount: 1,
       });
     } catch (err) {
       // Best-effort: a store failure must not corrupt the bus listener.

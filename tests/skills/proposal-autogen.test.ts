@@ -70,17 +70,20 @@ describe('wireSkillProposalAutogen', () => {
     bus.emit('skill:outcome', { taskId: 't3', skill: skill({ taskSignature: 'sig:b' }), success: true });
     let proposals = store.list('autogen-b');
     expect(proposals.length).toBe(1);
-    expect(proposals[0]?.successCount).toBe(3);
-    expect(proposals[0]?.sourceTaskIds).toEqual(['t1', 't2', 't3']);
+    // First emit at threshold creates with successCount=1; subsequent
+    // emits would bump it. Here only the t3 emit ran the create, so
+    // count is 1.
+    expect(proposals[0]?.successCount).toBe(1);
+    expect(proposals[0]?.sourceTaskIds).toEqual(['t3']);
 
-    // Two more successes — same proposal merges.
+    // Two more successes — same proposal merges, count goes 1 → 2 → 3.
     bus.emit('skill:outcome', { taskId: 't4', skill: skill({ taskSignature: 'sig:b' }), success: true });
     bus.emit('skill:outcome', { taskId: 't5', skill: skill({ taskSignature: 'sig:b' }), success: true });
     off();
     proposals = store.list('autogen-b');
     expect(proposals.length).toBe(1);
-    expect(proposals[0]?.successCount).toBe(5);
-    expect(proposals[0]?.sourceTaskIds.sort()).toEqual(['t1', 't2', 't3', 't4', 't5']);
+    expect(proposals[0]?.successCount).toBe(3);
+    expect([...(proposals[0]?.sourceTaskIds ?? [])].sort()).toEqual(['t3', 't4', 't5']);
   });
 
   test('failure outcomes do not count toward threshold', () => {
@@ -92,8 +95,10 @@ describe('wireSkillProposalAutogen', () => {
     bus.emit('skill:outcome', { taskId: 't3', skill: skill({ taskSignature: 'sig:c' }), success: true });
     off();
     const proposals = store.list('autogen-c');
+    // Threshold = 2 successes; t1+t3 hit threshold at the t3 emit so a
+    // single proposal lands. Failure t2 was correctly skipped.
     expect(proposals.length).toBe(1);
-    expect(proposals[0]?.successCount).toBe(2);
+    expect(proposals[0]?.sourceTaskIds).toEqual(['t3']);
   });
 
   test('distinct task signatures track independently', () => {

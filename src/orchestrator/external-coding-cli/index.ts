@@ -5,6 +5,28 @@
  * GitHub Copilot, future). Provider adapters absorb each binary's quirks;
  * the controller stays deterministic and treats every CLI as a zero-trust
  * worker whose self-reported "done" must be verified by Vinyan.
+ *
+ * ── Agent vocabulary ─────────────────────────────────────────────────
+ * This module deals with **Agent type #3 — CLI Delegate** (a.k.a.
+ * External Coding CLI): vendor binaries (Claude Code, GitHub Copilot)
+ * that Vinyan **spawns as subprocesses** to perform delegated coding
+ * tasks. Trust tier: `zero-trust` per A6 + A1 verification — every CLI
+ * claim runs through Vinyan's verifier before completion.
+ *
+ * IMPORTANT — distinguish from **#4 Host CLI**: the same Claude Code
+ * binary is also what a human developer might use to write Vinyan source
+ * code. That's #4 and Vinyan does NOT see it. When parsing user prompts
+ * that mention "Claude Code", the intent classifier MUST distinguish:
+ *   - "ask Claude Code to ..."  → #3, route here
+ *   - "what is Claude Code?"    → conversational, NOT here
+ *   - (developer's own toolchain) → #4, outside Vinyan entirely
+ *
+ * The 2026-04-30 routing bug ("dangerous metacharacter" rejection on a
+ * Thai delegation prompt) was a #3-vs-shell-exec confusion that the
+ * vocabulary discipline prevents from recurring.
+ *
+ * Full taxonomy: `docs/foundation/agent-vocabulary.md`.
+ * Branded ID type: `CliDelegateProviderId` from `src/core/agent-vocabulary.ts`.
  */
 export * from './types.ts';
 export {

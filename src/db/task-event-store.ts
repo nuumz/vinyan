@@ -375,6 +375,42 @@ export class TaskEventStore {
   forgetTask(taskId: string): void {
     this.seqByTask.delete(taskId);
   }
+
+  /**
+   * Return the subset of `taskIds` that have an UNRESOLVED workflow gate
+   * of the given pair. A gate is considered open when the recorded count
+   * of `_needed` events exceeds the count of matching `_provided` events.
+   *
+   * Used by the operations console list endpoint so the row-level
+   * "needs action" signal reflects the actual gate state — not a heuristic
+   * derived from `result.status === 'partial'`, which over-fires on
+   * already-resolved partial results.
+   */
+  listOpenGates(
+    taskIds: string[],
+    needed: string,
+    provided: string,
+  ): Set<string> {
+    if (taskIds.length === 0) return new Set();
+    const ids = taskIds.slice(0, 500);
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .query<{ task_id: string; need_count: number; prov_count: number }, (string | number)[]>(
+        `SELECT task_id,
+                SUM(CASE WHEN event_type = ? THEN 1 ELSE 0 END) AS need_count,
+                SUM(CASE WHEN event_type = ? THEN 1 ELSE 0 END) AS prov_count
+           FROM task_events
+          WHERE task_id IN (${placeholders})
+            AND event_type IN (?, ?)
+          GROUP BY task_id`,
+      )
+      .all(needed, provided, ...ids, needed, provided);
+    const open = new Set<string>();
+    for (const r of rows) {
+      if ((r.need_count ?? 0) > (r.prov_count ?? 0)) open.add(r.task_id);
+    }
+    return open;
+  }
 }
 
 function parseSessionCursor(token: string): { ts: number; id: string } | undefined {

@@ -370,6 +370,46 @@ describe('archive / unarchive', () => {
   });
 });
 
+describe('needs-action gate refinement', () => {
+  test('partial result without an open gate is NOT flagged as partial-decision', async () => {
+    const sid = await createSession();
+    const taskId = await submitGoalInSession(sid, 'partial-task');
+
+    const list = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&limit=50`));
+    const body = (await list.json()) as { tasks: Array<{ taskId: string; status: string; needsActionType: string }> };
+    const row = body.tasks.find((t) => t.taskId === taskId);
+    expect(row?.status).toBe('partial');
+    // No `_needed` event was recorded for this task — the row classifier
+    // would have fired 'partial-decision' from the heuristic, but the
+    // gate-state refinement strips it.
+    expect(row?.needsActionType).toBe('none');
+  });
+
+  test('partial result WITH an open gate keeps the partial-decision flag', async () => {
+    const sid = await createSession();
+    const taskId = await submitGoalInSession(sid, 'partial-task');
+
+    // Simulate the workflow recording a gate event without a paired
+    // `_provided` — i.e. the user has not yet decided.
+    taskEventStore.append({
+      taskId,
+      sessionId: sid,
+      eventType: 'workflow:partial_failure_decision_needed',
+      payload: { taskId, sessionId: sid, reason: 'researcher failed' },
+      ts: Date.now(),
+    });
+
+    const list = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&limit=50`));
+    const body = (await list.json()) as { tasks: Array<{ taskId: string; needsActionType: string }> };
+    const row = body.tasks.find((t) => t.taskId === taskId);
+    expect(row?.needsActionType).toBe('partial-decision');
+
+    const detail = await server.handleRequest(req(`/api/v1/tasks/${taskId}`));
+    const detailBody = (await detail.json()) as { pendingGates: { partialDecision: boolean } };
+    expect(detailBody.pendingGates.partialDecision).toBe(true);
+  });
+});
+
 describe('GET /api/v1/tasks/:id/export', () => {
   test('returns task summary + result + persisted events', async () => {
     const sid = await createSession();

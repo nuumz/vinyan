@@ -1454,6 +1454,33 @@ export class VinyanAPIServer {
       summaries.push(enrich(t, false));
     }
 
+    // ── Refine needs-action against the persisted gate state ────────
+    // The classifier's coarse heuristic ("result.status === 'partial' →
+    // partial-decision") over-fires on tasks where the user already
+    // resolved the gate (continue/abort). The authoritative signal is
+    // the event log: a `_needed` event without a paired `_provided`.
+    if (taskEventStore && summaries.length > 0) {
+      const candidatePartial = summaries
+        .filter((s) => s.needsActionType === 'partial-decision')
+        .map((s) => s.taskId);
+      const openPartial =
+        candidatePartial.length > 0
+          ? taskEventStore.listOpenGates(
+              candidatePartial,
+              'workflow:partial_failure_decision_needed',
+              'workflow:partial_failure_decision_provided',
+            )
+          : new Set<string>();
+      for (const s of summaries) {
+        if (s.needsActionType === 'partial-decision' && !openPartial.has(s.taskId)) {
+          // Gate already resolved → no row-level action needed; the
+          // partial status badge alone tells the operator everything.
+          s.needsActionType = 'none';
+          s.needsAction = false;
+        }
+      }
+    }
+
     // ── Post-projection filters (in memory) ─────────────────────────
     let filtered = summaries;
     if (statusFilters && statusFilters.length > 0) {
@@ -1662,12 +1689,48 @@ export class VinyanAPIServer {
       }
     })();
 
+    // Authoritative gate state for the drawer header — same query the
+    // list endpoint runs, scoped to one task. Cheap (single row).
+    const openPartialGate = (() => {
+      if (!this.deps.taskEventStore) return false;
+      try {
+        return this.deps.taskEventStore
+          .listOpenGates(
+            [taskId],
+            'workflow:partial_failure_decision_needed',
+            'workflow:partial_failure_decision_provided',
+          )
+          .has(taskId);
+      } catch {
+        return false;
+      }
+    })();
+    const openHumanInputGate = (() => {
+      if (!this.deps.taskEventStore) return false;
+      try {
+        return this.deps.taskEventStore
+          .listOpenGates(
+            [taskId],
+            'workflow:human_input_needed',
+            'workflow:human_input_provided',
+          )
+          .has(taskId);
+      } catch {
+        return false;
+      }
+    })();
+
     return jsonResponse({
       taskId,
       sessionId: sessionDetail?.sessionId,
       status,
       ...(result?.status ? { resultStatus: result.status } : {}),
       goal: sessionDetail?.goal ?? taskInput?.goal,
+      pendingGates: {
+        partialDecision: openPartialGate,
+        humanInput: openHumanInputGate,
+        approval: !!pendingApproval,
+      },
       taskInput: taskInput
         ? {
             id: taskInput.id,

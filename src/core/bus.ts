@@ -355,6 +355,29 @@ export interface VinyanBusEvents {
     childTaskId: string;
     count: number;
   };
+  /**
+   * Diagnostic — fired when ApprovalGate.requestApproval is called for a
+   * (taskId, approvalKey) slot that already has a live pending entry (or
+   * a ledger-only orphan from a prior process). The gate ignores the
+   * second request — does NOT reset the timer, does NOT emit a second
+   * `task:approval_required`, does NOT create a duplicate ledger row —
+   * but emits this event so audit replay can show the duplicate dispatch
+   * happened. Not user-visible: `sse: false, record: false` in the
+   * manifest. The original waiter's promise still settles for every
+   * caller that hit the slot.
+   */
+  'approval:duplicate_request_ignored': {
+    taskId: string;
+    approvalKey: string;
+    reason: string;
+    /** When the original (still-pending) row was opened. 0 when the in-memory
+     *  slot is missing — i.e. ledger duplicate_pending with no live waiter
+     *  (orphan/restart case). */
+    existingRequestedAt: number;
+    /** True when the duplicate was detected by the durable ledger rather
+     *  than the in-memory pending map — i.e. orphan path. */
+    ledgerDuplicate: boolean;
+  };
 
   // R1: workflow delegate failure terminal event. Emitted in every
   // failure branch of the delegate-sub-agent step (timeout, child task

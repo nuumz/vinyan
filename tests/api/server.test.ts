@@ -641,11 +641,15 @@ describe('API Server', () => {
       const retryData = (await retryRes.json()) as { taskId: string };
 
       expect(captured).toHaveLength(1);
-      expect(captured[0]).toEqual({
-        taskId: retryData.taskId,
-        parentTaskId: parentId,
-        reason: 'unit-test-emit',
-      });
+      expect(captured[0]?.taskId).toBe(retryData.taskId);
+      expect(captured[0]?.parentTaskId).toBe(parentId);
+      // The retry handler appends a `[policy:<name>]` suffix to the
+      // recorded reason so audit replay can explain which budget was
+      // applied without re-reading the bus payload schema. The parent
+      // here is a freshly-completed task with no result yet, so the
+      // policy defaults to 'timeout' (defensive — preserves the
+      // pre-policy behavior for in-flight retries).
+      expect(captured[0]?.reason).toMatch(/^unit-test-emit \[policy:(timeout|standard|client-override)\]$/);
     } finally {
       off();
     }

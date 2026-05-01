@@ -30,6 +30,10 @@ import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { handleCodingCliRoute } from './coding-cli-routes.ts';
 import { handleMemoryWikiRoute, type MemoryWikiRouteDeps } from './memory-wiki-routes.ts';
+import {
+  TaskProcessProjectionService,
+  type TaskProcessProjection,
+} from './projections/task-process-projection.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
 import type { Session, SessionManager } from './session-manager.ts';
 import { createSessionSSEStream, createSSEStream } from './sse.ts';
@@ -477,6 +481,15 @@ export class VinyanAPIServer {
     if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+\/event-history$/)) {
       const taskId = path.split('/')[4]!;
       return this.handleTaskEventHistory(taskId, req);
+    }
+
+    // Backend-authoritative process projection — vinyan-ui uses this
+    // (not raw /event-history) to render task lifecycle / gate /
+    // plan / coding-cli state without re-classifying raw events
+    // client-side. See `src/api/projections/task-process-projection.ts`.
+    if (method === 'GET' && path.match(/^\/api\/v1\/tasks\/[^/]+\/process-state$/)) {
+      const taskId = path.split('/')[4]!;
+      return this.handleTaskProcessState(taskId);
     }
 
     // ── Sessions ──────────────────────────────────────────
@@ -1359,6 +1372,10 @@ export class VinyanAPIServer {
     const pendingApprovalIds = new Set(
       (this.deps.approvalGate?.getPending() ?? []).map((p) => p.taskId),
     );
+    // Defer the open-coding-cli-approval lookup until after we have the
+    // full taskId set — the helper takes a batch and SQLite chunks
+    // internally, so a single call is cheaper than per-row probes.
+    const codingCliStore = this.deps.codingCliStore;
 
     const enrich = (
       base: {
@@ -1382,6 +1399,9 @@ export class VinyanAPIServer {
         status,
         result,
         pendingApprovals: pendingApprovalIds,
+        // openCodingCliApprovals is filled in below in a refinement
+        // pass after every summary has been enriched — we don't have
+        // the candidate set yet here.
         taskId: base.taskId,
         isInFlight,
         createdAt: base.createdAt,
@@ -1511,6 +1531,35 @@ export class VinyanAPIServer {
           // partial status badge alone tells the operator everything.
           s.needsActionType = 'none';
           s.needsAction = false;
+        }
+      }
+    }
+
+    // ── Coding-CLI approval refinement (durable row truth) ──────────
+    // Frontend used to fold `coding-cli:approval_required` /
+    // `_resolved` events client-side. The authoritative source is the
+    // `coding_cli_approvals` table: rows with `human_decision IS NULL`
+    // are still waiting for the operator. A single batch query keeps
+    // the list endpoint cheap regardless of fleet size.
+    if (codingCliStore && summaries.length > 0) {
+      const allTaskIds = summaries.map((s) => s.taskId);
+      let openCodingCli: ReadonlySet<string>;
+      try {
+        const map = codingCliStore.listOpenApprovalsForTasks(allTaskIds);
+        openCodingCli = new Set(map.keys());
+      } catch {
+        // Best-effort: missing helper / migration → skip refinement.
+        openCodingCli = new Set();
+      }
+      for (const s of summaries) {
+        if (openCodingCli.has(s.taskId)) {
+          // A coding-cli approval outranks the workflow / partial / stale
+          // signals because it is the most operator-actionable: the CLI
+          // is paused waiting for an explicit decision. Promote it.
+          if (s.needsActionType !== 'approval') {
+            s.needsActionType = 'coding-cli-approval';
+            s.needsAction = true;
+          }
         }
       }
     }
@@ -1753,6 +1802,18 @@ export class VinyanAPIServer {
         return false;
       }
     })();
+    // Coding-CLI approval gate from the durable approval row, NOT from
+    // raw events. The frontend trusts this field instead of folding
+    // `coding-cli:approval_required` / `_resolved` itself.
+    const openCodingCliGate = (() => {
+      const store = this.deps.codingCliStore;
+      if (!store) return false;
+      try {
+        return store.hasOpenApprovalForTask(taskId);
+      } catch {
+        return false;
+      }
+    })();
 
     return jsonResponse({
       taskId,
@@ -1764,6 +1825,7 @@ export class VinyanAPIServer {
         partialDecision: openPartialGate,
         humanInput: openHumanInputGate,
         approval: !!pendingApproval,
+        codingCliApproval: openCodingCliGate,
       },
       taskInput: taskInput
         ? {
@@ -1957,11 +2019,52 @@ export class VinyanAPIServer {
       return jsonResponse({ error: 'Invalid request body' }, 400);
     }
 
-    // Default 240s for timeout-recovery; honour explicit overrides first.
-    const TIMEOUT_RETRY_BUDGET = { maxTokens: 50_000, maxDurationMs: 240_000, maxRetries: 3 } as const;
-    const budget: TaskInput['budget'] =
-      body.budget ??
-      (body.maxDurationMs ? { ...TIMEOUT_RETRY_BUDGET, maxDurationMs: body.maxDurationMs } : TIMEOUT_RETRY_BUDGET);
+    // Backend-authoritative retry policy. The previous version trusted
+    // the client to pick the right budget by toggling a "timeout"
+    // hint in the request body; that put policy in the operator
+    // console, where it doesn't belong.
+    //
+    // Policy choice:
+    //   1. `body.budget` provided in full — operator override (rare).
+    //      Recorded as `client-override` for the audit ledger.
+    //   2. `body.maxDurationMs` provided — partial override; merge on
+    //      top of the timeout-recovery shape so the rest of the
+    //      budget remains policy-driven.
+    //   3. Else, derive from the parent's persisted state:
+    //      - parent timed out (result.status === 'timeout' OR trace
+    //        outcome === 'timeout') → TIMEOUT_RETRY_BUDGET (longer
+    //        wall-clock so the retry has room to succeed)
+    //      - parent has no terminal state yet (in-flight write race) →
+    //        TIMEOUT_RETRY_BUDGET (defensive default; preserves
+    //        pre-policy behavior)
+    //      - parent failed for a non-timeout reason → STANDARD_RETRY_BUDGET
+    //
+    // The chosen policy is exposed in the response and on the bus so
+    // dashboards / replay can show "applied timeout retry policy" to
+    // the operator without re-deriving it.
+    const parentResult = parent.result;
+    // TaskResult.status is the orchestrator's enum (no 'timeout' member);
+    // the durable timeout signal lives on `trace.outcome`. We still
+    // accept `parent.status === 'timeout'` defensively (older code paths)
+    // by reading the lookup row's status string.
+    const parentTimedOut =
+      parent.status === 'timeout' || parentResult?.trace?.outcome === 'timeout';
+    type RetryPolicy = 'timeout' | 'standard' | 'client-override';
+    let policy: RetryPolicy;
+    let budget: TaskInput['budget'];
+    if (body.budget) {
+      budget = body.budget;
+      policy = 'client-override';
+    } else if (typeof body.maxDurationMs === 'number') {
+      budget = { ...TIMEOUT_RETRY_BUDGET, maxDurationMs: body.maxDurationMs };
+      policy = 'client-override';
+    } else if (parentTimedOut || !parentResult) {
+      budget = TIMEOUT_RETRY_BUDGET;
+      policy = 'timeout';
+    } else {
+      budget = STANDARD_RETRY_BUDGET;
+      policy = 'standard';
+    }
 
     const newId = crypto.randomUUID();
     const goal = body.goal ?? parent.input.goal;
@@ -1983,10 +2086,14 @@ export class VinyanAPIServer {
 
     // Track parent linkage on the bus so observability surfaces the chain.
     // Observational only (A1, A3) — never used to alter routing.
+    // The chosen `policy` is encoded into `reason` so audit replay
+    // can explain "240s applied because parent timed out" vs "60s
+    // applied because parent failed for an oracle mismatch", without
+    // requiring a schema migration on the recorded event.
     this.deps.bus?.emit('task:retry_requested', {
       taskId: newId,
       parentTaskId,
-      reason: body.reason ?? 'manual-retry',
+      reason: `${body.reason ?? 'manual-retry'} [policy:${policy}]`,
       sessionId: parent.sessionId,
     });
 
@@ -2018,6 +2125,7 @@ export class VinyanAPIServer {
         sessionId: parent.sessionId,
         status: 'accepted',
         budget,
+        policy,
       },
       202,
     );
@@ -4473,6 +4581,53 @@ export class VinyanAPIServer {
   }
 
   /**
+   * Backend-authoritative process projection for a task. The vinyan-ui
+   * console renders the returned object directly — it does NOT classify
+   * lifecycle / gate / plan state from raw events anymore.
+   *
+   * 404 when:
+   *   - the recorder isn't wired AND no SessionStore lookup matches AND
+   *     no async result + no in-flight + no pending approval +
+   *     no coding-cli session for this task. Operators see "task not
+   *     found" instead of an empty projection skeleton.
+   */
+  private handleTaskProcessState(taskId: string): Response {
+    const service = this.getProcessProjectionService();
+    const projection = service.build(taskId);
+    if (!projection) {
+      return jsonResponse({ error: 'Task not found', taskId }, 404);
+    }
+    return jsonResponse(projection satisfies TaskProcessProjection);
+  }
+
+  /**
+   * Cached factory for the projection service. The service is stateless
+   * (closes over store handles only), so a single instance per server
+   * is sufficient and lets tests assert behaviour without re-wiring deps.
+   */
+  private processProjectionService: TaskProcessProjectionService | null = null;
+  private getProcessProjectionService(): TaskProcessProjectionService {
+    if (this.processProjectionService) return this.processProjectionService;
+    this.processProjectionService = new TaskProcessProjectionService({
+      ...(this.deps.taskEventStore ? { taskEventStore: this.deps.taskEventStore } : {}),
+      ...(this.deps.approvalLedgerStore ? { approvalLedgerStore: this.deps.approvalLedgerStore } : {}),
+      ...(this.deps.codingCliStore ? { codingCliStore: this.deps.codingCliStore } : {}),
+      findTaskRow: (id) => {
+        try {
+          return this.deps.sessionManager.getSessionStore().findTaskRowById(id);
+        } catch {
+          return undefined;
+        }
+      },
+      pendingApprovalTaskIds: () =>
+        new Set((this.deps.approvalGate?.getPending() ?? []).map((p) => p.taskId)),
+      asyncResults: () => this.asyncResults,
+      inFlightTaskIds: () => new Set(this.inFlightTasks.keys()),
+    });
+    return this.processProjectionService;
+  }
+
+  /**
    * BFS the delegation graph rooted at `rootTaskId` to depth `maxDepth`,
    * stopping early when the discovered set hits {@link TREE_TASKID_CAP}.
    * The visited set doubles as cycle protection — a child whose own
@@ -5327,6 +5482,25 @@ const DEFAULT_TASK_BUDGET = {
   maxRetries: 3,
 } as const;
 
+/**
+ * Backend-authoritative retry budgets. The operator console MUST NOT
+ * encode these — the choice between them is policy and lives in
+ * `handleRetryTask`. `TIMEOUT_RETRY_BUDGET` extends the wall-clock
+ * because the parent task ran out of time; `STANDARD_RETRY_BUDGET`
+ * keeps the default short window because the parent failed for a
+ * reason a retry alone can't fix faster.
+ */
+const TIMEOUT_RETRY_BUDGET: TaskInput['budget'] = {
+  maxTokens: 50_000,
+  maxDurationMs: 240_000,
+  maxRetries: 3,
+};
+const STANDARD_RETRY_BUDGET: TaskInput['budget'] = {
+  maxTokens: 25_000,
+  maxDurationMs: 60_000,
+  maxRetries: 1,
+};
+
 function buildTaskInput(partial: Partial<TaskInput>, profile?: string): TaskInput {
   return {
     id: partial.id ?? crypto.randomUUID(),
@@ -5427,6 +5601,12 @@ function classifyNeedsAction(args: {
   status: string;
   result?: TaskResult;
   pendingApprovals: ReadonlySet<string>;
+  /**
+   * Backend-authoritative: tasks with at least one unresolved
+   * coding-cli approval row in `coding_cli_approvals`. Frontend MUST
+   * NOT compute this from raw events — the durable row is truth.
+   */
+  openCodingCliApprovals?: ReadonlySet<string>;
   taskId: string;
   isInFlight: boolean;
   createdAt: number;
@@ -5441,6 +5621,7 @@ function classifyNeedsAction(args: {
   | 'failed'
   | 'timeout' {
   if (args.pendingApprovals.has(args.taskId)) return 'approval';
+  if (args.openCodingCliApprovals?.has(args.taskId)) return 'coding-cli-approval';
 
   // Workflow / partial-decision / coding-cli signals come from the
   // result envelope's `clarificationNeeded` / status flags. The full

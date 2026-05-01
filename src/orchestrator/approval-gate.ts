@@ -13,6 +13,20 @@
  * process restart. Strengthens A8 (traceability) without changing the
  * promise-based contract — when no store is wired, behavior is
  * byte-identical to the legacy in-memory gate.
+ *
+ * Idempotency (2026-05-01): the gate is keyed by (taskId, approvalKey).
+ * A second `requestApproval` for the same slot while one is already
+ * pending attaches a new waiter to the existing slot — it does NOT
+ * reset `requestedAt`, does NOT reset the timeout timer, does NOT emit
+ * a duplicate `task:approval_required` (which would otherwise spawn a
+ * second user-facing approval card), and does NOT create a second
+ * ledger row. One human resolve / timeout / shutdown settles every
+ * waiter on that slot atomically.
+ *
+ * Distinct approvalKeys for the same taskId are allowed to coexist —
+ * the ledger's unique index is `(task_id, approval_key) WHERE status
+ * = 'pending'`, so two separate gates may run concurrently when a
+ * caller deliberately uses different keys.
  */
 
 import type { VinyanBus } from '../core/bus.ts';
@@ -32,8 +46,10 @@ export interface PendingApprovalInfo {
   sessionId?: string;
 }
 
-interface PendingApproval extends PendingApprovalInfo {
-  resolve: (decision: ApprovalDecision) => void;
+interface PendingApprovalSlot extends PendingApprovalInfo {
+  /** Every concurrent waiter for the same slot. Drained on resolve /
+   *  timeout / clear in insertion order. */
+  resolvers: Array<(decision: ApprovalDecision) => void>;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -60,8 +76,14 @@ export interface RequestApprovalOptions {
   readonly provenance?: Readonly<Record<string, unknown>>;
 }
 
+const DEFAULT_APPROVAL_KEY = 'default';
+
+function makeSlotKey(taskId: string, approvalKey: string): string {
+  return `${taskId}::${approvalKey}`;
+}
+
 export class ApprovalGate {
-  private pending = new Map<string, PendingApproval>();
+  private pending = new Map<string, PendingApprovalSlot>();
   private bus: VinyanBus;
   private timeoutMs: number;
   private ledger: ApprovalLedgerStore | undefined;
@@ -84,8 +106,16 @@ export class ApprovalGate {
 
   /**
    * Request human approval for a task.
-   * Emits `task:approval_required` on the bus and waits for a resolution.
-   * Auto-rejects after timeoutMs (default: 5 minutes).
+   *
+   * Identity is `(taskId, approvalKey)`. A second call for the same
+   * slot while one is pending attaches a new waiter to the existing
+   * slot and emits `approval:duplicate_request_ignored` — neither the
+   * timer nor `requestedAt` is reset, and the user-facing
+   * `task:approval_required` event fires only on the first open. The
+   * returned promise settles with the same decision as every other
+   * waiter on that slot.
+   *
+   * Auto-rejects after `timeoutMs` (default: 5 minutes).
    *
    * When a ledger is wired, a `pending` row lands BEFORE the bus emit
    * so consumers reading the ledger never observe a pre-pending state.
@@ -97,15 +127,34 @@ export class ApprovalGate {
     reason: string,
     opts: RequestApprovalOptions = {},
   ): Promise<ApprovalDecision> {
+    const approvalKey = opts.approvalKey ?? DEFAULT_APPROVAL_KEY;
+    const slotKey = makeSlotKey(taskId, approvalKey);
+
     return new Promise<ApprovalDecision>((resolve) => {
-      const approvalKey = opts.approvalKey ?? 'default';
+      // ── Idempotent fast path: same slot already pending ───────────
+      const existing = this.pending.get(slotKey);
+      if (existing) {
+        existing.resolvers.push(resolve);
+        this.bus.emit('approval:duplicate_request_ignored', {
+          taskId,
+          approvalKey,
+          reason,
+          existingRequestedAt: existing.requestedAt,
+          ledgerDuplicate: false,
+        });
+        return;
+      }
+
       const requestedAt = Date.now();
       let approvalId: string | undefined;
 
-      // R5: ledger-first. The pending row exists on disk before the bus
-      // event, so a UI subscribing only to the ledger never misses an
-      // approval. A duplicate-pending response is treated as a soft
-      // success (the pre-existing row already represents the intent).
+      // R5: ledger-first. The pending row exists on disk before the
+      // bus event, so a UI subscribing only to the ledger never misses
+      // an approval. A `duplicate_pending` response when the in-memory
+      // slot is empty means the row exists from a prior process — we
+      // do NOT silently open a second live gate. The diagnostic fires,
+      // the awaiting caller is rejected, and the orphan stays visible
+      // via `getOrphanedPending` for operator action.
       if (this.ledger) {
         const result = this.ledger.createPending({
           taskId,
@@ -129,19 +178,35 @@ export class ApprovalGate {
             ...(opts.profile !== undefined ? { profile: opts.profile } : {}),
             ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
           });
+        } else if (result.reason === 'duplicate_pending') {
+          // Orphan / restart path: ledger has a row but this process
+          // has no live waiter to attach to. Surfacing it via a second
+          // approval card would let two cards race a single resolve,
+          // and reusing the orphan from this process would silently
+          // adopt state from a crashed predecessor. We reject the new
+          // request with a clear diagnostic; the orphan remains
+          // discoverable via `getOrphanedPending()` so a human can
+          // explicitly retire it.
+          this.bus.emit('approval:duplicate_request_ignored', {
+            taskId,
+            approvalKey,
+            reason,
+            existingRequestedAt: 0,
+            ledgerDuplicate: true,
+          });
+          resolve('rejected');
+          return;
         }
-        // duplicate_pending: another pending row already exists. We do
-        // NOT throw — the caller's intent is "I want approval for this",
-        // and the ledger already represents that. Continue with the
-        // existing promise-based gate so the caller still awaits.
       }
 
       const timer = setTimeout(() => {
-        // Auto-reject path: drop the entry first so a racing /approval POST
-        // sees a 404 instead of double-resolving, then notify listeners
-        // (chat clients drop their cached approval card) and finally
-        // settle the awaiting promise.
-        this.pending.delete(taskId);
+        // Auto-reject path: drop the slot first so a racing /approval
+        // POST sees a 404 instead of double-resolving, then notify
+        // listeners (chat clients drop their cached approval card)
+        // and finally settle every waiting promise on this slot.
+        const slot = this.pending.get(slotKey);
+        if (!slot) return;
+        this.pending.delete(slotKey);
         if (this.ledger) {
           const r = this.ledger.timeout(taskId, approvalKey);
           if (r.ok) {
@@ -157,10 +222,10 @@ export class ApprovalGate {
           }
         }
         this.bus.emit('task:approval_resolved', { taskId, decision: 'rejected', source: 'timeout' });
-        resolve('rejected');
+        for (const r of slot.resolvers) r('rejected');
       }, this.timeoutMs);
 
-      this.pending.set(taskId, {
+      this.pending.set(slotKey, {
         taskId,
         riskScore,
         reason,
@@ -169,7 +234,7 @@ export class ApprovalGate {
         ...(approvalId ? { approvalId } : {}),
         ...(opts.profile !== undefined ? { profile: opts.profile } : {}),
         ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
-        resolve,
+        resolvers: [resolve],
         timer,
       });
 
@@ -179,13 +244,24 @@ export class ApprovalGate {
     });
   }
 
-  /** Resolve a pending approval (called by TUI or API handler). */
-  resolve(taskId: string, decision: ApprovalDecision, resolvedBy?: string): boolean {
-    const entry = this.pending.get(taskId);
-    if (!entry) return false;
+  /**
+   * Resolve a pending approval (called by TUI or API handler).
+   *
+   * The `approvalKey` parameter defaults to `'default'` — every legacy
+   * caller (api/server.ts, TUI EmbeddedDataSource) targets the default
+   * slot. Distinct approvalKeys must be addressed explicitly.
+   *
+   * Settles every waiter on the resolved slot atomically — duplicate
+   * `requestApproval` calls all observe the same decision.
+   */
+  resolve(taskId: string, decision: ApprovalDecision, resolvedBy?: string, approvalKey?: string): boolean {
+    const key = approvalKey ?? DEFAULT_APPROVAL_KEY;
+    const slotKey = makeSlotKey(taskId, key);
+    const slot = this.pending.get(slotKey);
+    if (!slot) return false;
 
-    clearTimeout(entry.timer);
-    this.pending.delete(taskId);
+    clearTimeout(slot.timer);
+    this.pending.delete(slotKey);
 
     // R5: ledger-first. Update the durable row before settling the
     // promise so any reader (including subscribers to ledger_resolved)
@@ -193,7 +269,7 @@ export class ApprovalGate {
     if (this.ledger) {
       const r = this.ledger.resolve({
         taskId,
-        ...(entry.approvalKey ? { approvalKey: entry.approvalKey } : {}),
+        ...(slot.approvalKey ? { approvalKey: slot.approvalKey } : {}),
         status: decision === 'approved' ? 'approved' : 'rejected',
         source: 'human',
         decision,
@@ -213,31 +289,39 @@ export class ApprovalGate {
       }
     }
 
-    // Notify cross-tab UIs BEFORE resolving the awaiting promise so the
-    // approval card disappears the moment the gate clears, not after the
-    // dependent task transitions further. Source = 'human' covers both
-    // explicit API calls and TUI keybinds — anything that is not the
-    // auto-timeout path.
+    // Notify cross-tab UIs BEFORE resolving the awaiting promises so
+    // the approval card disappears the moment the gate clears, not
+    // after the dependent task transitions further. Source = 'human'
+    // covers both explicit API calls and TUI keybinds — anything that
+    // is not the auto-timeout path.
     this.bus.emit('task:approval_resolved', { taskId, decision, source: 'human' });
-    entry.resolve(decision);
+    for (const r of slot.resolvers) r(decision);
     return true;
   }
 
-  /** Check if a task has a pending approval. */
+  /** Check if a task has any pending approval (across all approvalKeys). */
   hasPending(taskId: string): boolean {
-    return this.pending.has(taskId);
+    for (const slot of this.pending.values()) {
+      if (slot.taskId === taskId) return true;
+    }
+    return false;
   }
 
-  /** Get all pending approval task IDs. */
+  /** Get all unique pending taskIds. Distinct approvalKeys collapse to the
+   *  same taskId — use `getPending()` when callers need per-slot detail. */
   getPendingIds(): string[] {
-    return [...this.pending.keys()];
+    const ids = new Set<string>();
+    for (const slot of this.pending.values()) ids.add(slot.taskId);
+    return [...ids];
   }
 
   /**
    * Get all pending approvals with full context (riskScore, reason,
-   * requestedAt). When a ledger is wired, the in-memory pending list
-   * is the ground truth for THIS process — restart-orphaned rows live
-   * in the ledger and are surfaced separately via `getOrphanedPending`.
+   * requestedAt). One entry per (taskId, approvalKey) slot — distinct
+   * approvalKeys appear as separate entries. When a ledger is wired,
+   * the in-memory pending list is the ground truth for THIS process —
+   * restart-orphaned rows live in the ledger and are surfaced
+   * separately via `getOrphanedPending`.
    */
   getPending(): PendingApprovalInfo[] {
     return [...this.pending.values()].map(({ taskId, riskScore, reason, requestedAt, approvalKey, approvalId, profile, sessionId }) => ({
@@ -266,7 +350,8 @@ export class ApprovalGate {
     const all = this.ledger.listPending();
     const out: { taskId: string; approvalId: string; approvalKey: string; riskScore: number; reason: string; requestedAt: number }[] = [];
     for (const row of all) {
-      if (this.pending.has(row.taskId)) continue;
+      const slotKey = makeSlotKey(row.taskId, row.approvalKey);
+      if (this.pending.has(slotKey)) continue;
       out.push({
         taskId: row.taskId,
         approvalId: row.id,
@@ -300,16 +385,17 @@ export class ApprovalGate {
     return count;
   }
 
-  /** Clear all pending approvals (auto-reject). Used during shutdown. */
+  /** Clear all pending approvals (auto-reject). Used during shutdown.
+   *  Drains every waiter on every slot. */
   clear(): void {
-    for (const entry of this.pending.values()) {
-      clearTimeout(entry.timer);
+    for (const slot of this.pending.values()) {
+      clearTimeout(slot.timer);
       this.bus.emit('task:approval_resolved', {
-        taskId: entry.taskId,
+        taskId: slot.taskId,
         decision: 'rejected',
         source: 'shutdown',
       });
-      entry.resolve('rejected');
+      for (const r of slot.resolvers) r('rejected');
     }
     this.pending.clear();
     // R5: also reject any ledger row that may have been orphaned during

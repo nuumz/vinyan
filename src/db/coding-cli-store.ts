@@ -50,7 +50,7 @@ interface EventRow {
   ts: number;
 }
 
-interface ApprovalRow {
+export interface ApprovalRow {
   id: string;
   coding_cli_session_id: string;
   task_id: string;
@@ -258,6 +258,56 @@ export class CodingCliStore {
         `SELECT * FROM coding_cli_approvals WHERE coding_cli_session_id = ? ORDER BY requested_at ASC`,
       )
       .all(sessionId);
+  }
+
+  /**
+   * True iff the task has at least one coding-cli approval that has not
+   * been resolved (human_decision IS NULL). Used by the task-list and
+   * task-detail projections to set `needsActionType: 'coding-cli-approval'`
+   * authoritatively from the durable approval row, not from a client-side
+   * fold of `coding-cli:approval_required` / `coding-cli:approval_resolved`.
+   */
+  hasOpenApprovalForTask(taskId: string): boolean {
+    const row = this.db
+      .query<{ n: number }, [string]>(
+        `SELECT 1 AS n FROM coding_cli_approvals
+          WHERE task_id = ? AND human_decision IS NULL
+          LIMIT 1`,
+      )
+      .get(taskId);
+    return row !== null;
+  }
+
+  /**
+   * Batch lookup: return all unresolved approvals grouped by `task_id`.
+   * Tasks with zero open approvals are absent from the result map.
+   * Stable ordering by `requested_at ASC` so consumers see the oldest
+   * pending approval first.
+   */
+  listOpenApprovalsForTasks(taskIds: readonly string[]): Map<string, ApprovalRow[]> {
+    const out = new Map<string, ApprovalRow[]>();
+    if (taskIds.length === 0) return out;
+    // SQLite has a hard parameter cap (~999 in default builds); we chunk
+    // to keep the query inside that envelope without forcing callers to
+    // pre-batch.
+    const CHUNK = 500;
+    for (let start = 0; start < taskIds.length; start += CHUNK) {
+      const slice = taskIds.slice(start, start + CHUNK);
+      const placeholders = slice.map(() => '?').join(',');
+      const rows = this.db
+        .query<ApprovalRow, string[]>(
+          `SELECT * FROM coding_cli_approvals
+            WHERE human_decision IS NULL AND task_id IN (${placeholders})
+            ORDER BY requested_at ASC`,
+        )
+        .all(...slice);
+      for (const row of rows) {
+        const bucket = out.get(row.task_id);
+        if (bucket) bucket.push(row);
+        else out.set(row.task_id, [row]);
+      }
+    }
+    return out;
   }
 
   recordDecision(record: {

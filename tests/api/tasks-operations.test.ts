@@ -339,6 +339,68 @@ describe('POST /api/v1/tasks/:id/retry lineage', () => {
   });
 });
 
+describe('POST /api/v1/tasks/:id/retry — backend-authoritative budget policy', () => {
+  test("timeout-trace parent → response budget = TIMEOUT_RETRY_BUDGET (240s) and policy = 'timeout'", async () => {
+    const sid = await createSession();
+    const parentId = await submitGoalInSession(sid, 'timeout-task');
+    // Mock executor sets trace.outcome === 'timeout' for goal === 'timeout-task'.
+
+    const retry = await server.handleRequest(
+      req(`/api/v1/tasks/${parentId}/retry`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'policy-test' }),
+      }),
+    );
+    expect(retry.status).toBe(202);
+    const body = (await retry.json()) as {
+      policy: string;
+      budget: { maxDurationMs: number; maxTokens: number; maxRetries: number };
+    };
+    expect(body.policy).toBe('timeout');
+    expect(body.budget.maxDurationMs).toBe(240_000);
+  });
+
+  test("standard failure parent → response policy = 'standard' and budget shrinks", async () => {
+    const sid = await createSession();
+    // 'escalated-task' produces status='escalated' with non-timeout
+    // trace.outcome — the standard branch.
+    const parentId = await submitGoalInSession(sid, 'escalated-task');
+
+    const retry = await server.handleRequest(
+      req(`/api/v1/tasks/${parentId}/retry`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'policy-test' }),
+      }),
+    );
+    expect(retry.status).toBe(202);
+    const body = (await retry.json()) as {
+      policy: string;
+      budget: { maxDurationMs: number; maxTokens: number; maxRetries: number };
+    };
+    expect(body.policy).toBe('standard');
+    // The standard budget is short by design — see STANDARD_RETRY_BUDGET
+    // in src/api/server.ts.
+    expect(body.budget.maxDurationMs).toBeLessThan(240_000);
+    expect(body.budget.maxRetries).toBeLessThan(3);
+  });
+
+  test("explicit body.maxDurationMs → policy = 'client-override' (UI escape hatch preserved)", async () => {
+    const sid = await createSession();
+    const parentId = await submitGoalInSession(sid, 'escalated-task');
+
+    const retry = await server.handleRequest(
+      req(`/api/v1/tasks/${parentId}/retry`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'policy-test', maxDurationMs: 90_000 }),
+      }),
+    );
+    expect(retry.status).toBe(202);
+    const body = (await retry.json()) as { policy: string; budget: { maxDurationMs: number } };
+    expect(body.policy).toBe('client-override');
+    expect(body.budget.maxDurationMs).toBe(90_000);
+  });
+});
+
 describe('archive / unarchive', () => {
   test('round-trips visibility flag', async () => {
     const sid = await createSession();

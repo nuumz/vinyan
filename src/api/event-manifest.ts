@@ -197,6 +197,12 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'approval:ledger_pending', sse: true, record: true, scope: 'task' },
   { event: 'approval:ledger_resolved', sse: true, record: true, scope: 'task' },
   { event: 'approval:ledger_superseded', sse: true, record: false, scope: 'global', sessionBypass: true },
+  // Audit-only — duplicate requestApproval on the same slot. Neither
+  // surfaced live to clients (would create a second user card the gate
+  // explicitly suppresses) nor recorded per-task (the original
+  // approval:ledger_pending row already exists). Useful for tests and
+  // the audit listener to detect re-entrant phase invocations.
+  { event: 'approval:duplicate_request_ignored', sse: false, record: false, scope: 'task' },
 
   // ── R1 — Delegate failure terminal event ────────────────────────────
   // Recorded so process replay reconstructs failed/timeout delegate

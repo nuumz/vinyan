@@ -12,7 +12,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-import { migration006 } from '../../../src/db/migrations/006_gateway_tables.ts';
 import { MigrationRunner } from '../../../src/db/migrations/migration-runner.ts';
 import type { MarketScheduler } from '../../../src/economy/market/market-scheduler.ts';
 import type { MessagingAdapterLifecycleManager } from '../../../src/gateway/lifecycle.ts';
@@ -25,7 +24,7 @@ let db: Database;
 
 beforeEach(() => {
   db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration006]);
+  new MigrationRunner().migrate(db, [migration001]);
 });
 
 afterEach(() => {

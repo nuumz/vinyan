@@ -14,7 +14,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration005 } from '../../src/db/migrations/005_trajectory_export.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { buildJoinedRow, exportTrajectories, toShareGPT } from '../../src/trajectory/exporter.ts';
 import { BUILT_IN_POLICY } from '../../src/trajectory/redaction.ts';
@@ -72,7 +71,7 @@ let tmpDir: string;
 
 beforeEach(() => {
   db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration005]);
+  new MigrationRunner().migrate(db, [migration001]);
   tmpDir = mkdtempSync(join(tmpdir(), 'vinyan-traj-'));
 });
 

@@ -8,6 +8,7 @@
  * Companion contract doc: docs/design/a9-degradation-contract.md (row #3).
  */
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { describe, expect, test } from 'bun:test';
 import { CostLedger, type CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
 

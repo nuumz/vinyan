@@ -8,7 +8,6 @@
 import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-import { migration026 } from '../../../src/db/migrations/026_memory_wiki.ts';
 import { MigrationRunner } from '../../../src/db/migrations/migration-runner.ts';
 import { MemoryWikiIngestor } from '../../../src/memory/wiki/ingest.ts';
 import { PageWriter } from '../../../src/memory/wiki/page-writer.ts';
@@ -17,7 +16,7 @@ import { MemoryWikiStore } from '../../../src/memory/wiki/store.ts';
 
 function freshDb(): Database {
   const db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration026]);
+  new MigrationRunner().migrate(db, [migration001]);
   return db;
 }
 

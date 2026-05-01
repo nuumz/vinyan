@@ -6,7 +6,6 @@ import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { GatewayScheduleStore } from '../../src/db/gateway-schedule-store.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration006 } from '../../src/db/migrations/006_gateway_tables.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { SCHEDULE_RUN_HISTORY_LIMIT, type ScheduledHypothesisTuple } from '../../src/gateway/scheduling/types.ts';
 
@@ -15,7 +14,7 @@ let store: GatewayScheduleStore;
 
 beforeEach(() => {
   db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration006]);
+  new MigrationRunner().migrate(db, [migration001]);
   store = new GatewayScheduleStore(db);
 });
 

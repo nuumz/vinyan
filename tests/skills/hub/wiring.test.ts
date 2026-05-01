@@ -10,7 +10,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MigrationRunner } from '../../../src/db/migrations/index.ts';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-import { migration008 } from '../../../src/db/migrations/008_skill_trust_ledger.ts';
 import { SkillArtifactStore } from '../../../src/skills/artifact-store.ts';
 import type { GateRequest, GateVerdict } from '../../../src/gate/gate.ts';
 import type { CriticResult } from '../../../src/orchestrator/critic/critic-engine.ts';
@@ -116,7 +115,7 @@ beforeEach(() => {
   rootDir = mkdtempSync(join(tmpdir(), 'skill-hub-wiring-'));
   artifactStore = new SkillArtifactStore({ rootDir });
   db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration008]);
+  new MigrationRunner().migrate(db, [migration001]);
 });
 
 afterEach(() => {

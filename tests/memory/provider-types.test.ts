@@ -11,9 +11,9 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { describe, expect, it } from 'bun:test';
 import type { ConfidenceTier } from '../../src/core/confidence-tier.ts';
-import { migration003 } from '../../src/db/migrations/003_memory_records.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { MemoryRecordInputSchema, MemoryRecordSchema, SearchOptsSchema } from '../../src/memory/provider/types.ts';
 
@@ -188,12 +188,12 @@ describe('SearchOptsSchema', () => {
 function freshDb(): Database {
   const db = new Database(':memory:');
   const runner = new MigrationRunner();
-  const result = runner.migrate(db, [migration003]);
-  expect(result.applied).toEqual([3]);
+  const result = runner.migrate(db, [migration001]);
+  expect(result.applied).toEqual([1]);
   return db;
 }
 
-describe('migration003 — schema', () => {
+describe('migration001 — schema', () => {
   it('applies cleanly on a fresh in-memory database', () => {
     const db = freshDb();
     const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{
@@ -208,10 +208,10 @@ describe('migration003 — schema', () => {
   it('is idempotent — second run applies nothing', () => {
     const db = new Database(':memory:');
     const runner = new MigrationRunner();
-    runner.migrate(db, [migration003]);
-    const second = runner.migrate(db, [migration003]);
+    runner.migrate(db, [migration001]);
+    const second = runner.migrate(db, [migration001]);
     expect(second.applied).toEqual([]);
-    expect(second.current).toBe(3);
+    expect(second.current).toBe(1);
     db.close();
   });
 
@@ -257,7 +257,7 @@ describe('migration003 — schema', () => {
   });
 });
 
-describe('migration003 — FTS5 trigger sync', () => {
+describe('migration001 — FTS5 trigger sync', () => {
   it('inserts a matching FTS5 row on base insert', () => {
     const db = freshDb();
     db.run(

@@ -2,8 +2,8 @@
  * registerSlackAdapter — bundled Slack adapter ingestion helper.
  */
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { afterEach, describe, expect, it } from 'bun:test';
-import { migration007 } from '../../src/db/migrations/007_plugin_audit.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { PluginAuditStore } from '../../src/db/plugin-audit-store.ts';
 import { SlackAdapter } from '../../src/gateway/adapters/slack.ts';
@@ -29,7 +29,7 @@ afterEach(() => {
 function freshRegistry(): PluginRegistry {
   const db = new Database(':memory:');
   databases.push(db);
-  new MigrationRunner().migrate(db, [migration007]);
+  new MigrationRunner().migrate(db, [migration001]);
   const audit = new PluginAuditStore(db);
   const loader = new InprocLoader({ allowedVinyanApi: '*' });
   const trust: TrustConfig = { publishers: [], permissive: true };

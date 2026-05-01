@@ -4,7 +4,6 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-import { migration003 } from '../../../src/db/migrations/003_memory_records.ts';
 import { MigrationRunner } from '../../../src/db/migrations/migration-runner.ts';
 import { registerSessionSearchTool } from '../../../src/orchestrator/tools/register-session-search.ts';
 import type { Tool } from '../../../src/orchestrator/tools/tool-interface.ts';
@@ -12,7 +11,7 @@ import type { Tool } from '../../../src/orchestrator/tools/tool-interface.ts';
 function freshDb(): Database {
   const db = new Database(':memory:');
   const runner = new MigrationRunner();
-  runner.migrate(db, [migration001, migration003]);
+  runner.migrate(db, [migration001]);
   return db;
 }
 

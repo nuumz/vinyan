@@ -10,7 +10,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration013 } from '../../src/db/migrations/013_rule_promote_capability_action.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import type { Migration } from '../../src/db/migrations/migration-runner.ts';
 
@@ -218,7 +217,7 @@ describe('MigrationRunner', () => {
     expect(JSON.parse(trace.affected_files)).toEqual(['src/a.ts']);
   });
 
-  test('migration013 allows promote-capability action while preserving existing rules', () => {
+  test('migration001 allows promote-capability action while preserving existing rules', () => {
     db.exec(`
       CREATE TABLE evolutionary_rules (
         id            TEXT PRIMARY KEY,
@@ -242,7 +241,7 @@ describe('MigrationRunner', () => {
       ['existing-rule', Date.now()],
     );
 
-    migration013.up(db);
+    migration001.up(db);
 
     db.run(
       `INSERT INTO evolutionary_rules (id, source, condition, action, parameters, status, created_at, effectiveness, specificity, superseded_by, origin)

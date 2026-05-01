@@ -14,8 +14,6 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration029 } from '../../src/db/migrations/029_skill_proposals.ts';
-import { migration032 } from '../../src/db/migrations/032_skill_proposal_revisions.ts';
 import { migration034 } from '../../src/db/migrations/034_skill_proposal_revisions_rebackfill.ts';
 import { ALL_MIGRATIONS } from '../../src/db/migrations/index.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
@@ -33,7 +31,7 @@ function setupBaseDb(): Database {
   const db = new Database(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   // 001 = initial schema; 029 = skill_proposals.
-  new MigrationRunner().migrate(db, [migration001, migration029]);
+  new MigrationRunner().migrate(db, [migration001]);
   return db;
 }
 
@@ -191,26 +189,30 @@ describe('Migration 034 — repeat backfill of skill_proposal_revisions', () => 
   test('full migration runner picks up mig034 from ALL_MIGRATIONS', () => {
     expect(ALL_MIGRATIONS.find((m) => m.version === 34)).toBe(migration034);
     expect(migration034.version).toBe(34);
-    // ALL_MIGRATIONS is sorted by version; mig034 should be last.
+    // mig034 is in the top-level chain (not the squashed bundle) because
+    // it performs a backfill INSERT, not pure DDL. Higher-version
+    // operational migrations may live alongside it.
     const versions = ALL_MIGRATIONS.map((m) => m.version);
-    expect(Math.max(...versions)).toBe(34);
+    expect(versions).toContain(34);
   });
 
-  test('fresh DB through ALL_MIGRATIONS: revision rows present after mig032 runs in full', () => {
-    // Sanity: the happy path (deployment that ran second-wave mig032)
-    // already has revision rows; mig034 is a no-op. This guards
-    // against accidentally rewriting existing rows on first deploy.
+  test('fresh DB through ALL_MIGRATIONS: revision rows backfilled when proposals are inserted post-mig001', () => {
+    // Post-2026-05-02 consolidation, mig032's CREATE TABLE +
+    // INSERT-OR-IGNORE backfill runs INSIDE migration001's `up()`. On a
+    // fresh DB the `skill_proposals` table is empty at that point, so
+    // mig032's SELECT inserts nothing. Once a proposal is inserted by
+    // the test AFTER mig001 has already applied, mig034 is the
+    // operational backfill path that picks it up — its reason text
+    // ("by migration 034") is therefore the expected provenance.
     const db = new Database(':memory:');
     db.exec('PRAGMA foreign_keys = ON');
-    // Stop after mig029 so we can insert a proposal before mig032 runs.
-    new MigrationRunner().migrate(db, [migration001, migration029]);
+    new MigrationRunner().migrate(db, [migration001]);
     insertProposal(db, { id: 'prop-fresh', name: 'fresh', skillMd: '# f', createdAt: 42 });
-    // Now run 032 + 034 in version order.
-    new MigrationRunner().migrate(db, [migration001, migration029, migration032, migration034]);
+    // mig034 is the only operational migration left to apply.
+    new MigrationRunner().migrate(db, [migration001, migration034]);
 
     const rows = listRevisions(db);
     expect(rows.length).toBe(1);
-    // mig032 ran first and won the INSERT; mig034 saw the row and skipped.
-    expect(rows[0]?.reason).toBe('initial create (backfilled by migration 032)');
+    expect(rows[0]?.reason).toBe('initial create (backfilled by migration 034)');
   });
 });

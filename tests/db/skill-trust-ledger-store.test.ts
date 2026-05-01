@@ -3,12 +3,12 @@
  */
 import { describe, expect, test, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { migration008 } from '../../src/db/migrations/008_skill_trust_ledger.ts';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { SkillTrustLedgerStore, type SkillTrustLedgerRecord } from '../../src/db/skill-trust-ledger-store.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
-  migration008.up(db);
+  migration001.up(db);
   return db;
 }
 

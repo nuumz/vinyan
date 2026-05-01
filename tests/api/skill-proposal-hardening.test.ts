@@ -18,6 +18,7 @@
  *   - G7: configurable `minPostRestartEvidence` floor (clamped to ≥1)
  */
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -26,7 +27,6 @@ import { VinyanAPIServer } from '../../src/api/server.ts';
 import { SessionManager } from '../../src/api/session-manager.ts';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
-import { migration032 } from '../../src/db/migrations/032_skill_proposal_revisions.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
 import {
   MAX_REVISIONS_PER_PROPOSAL,
@@ -591,48 +591,6 @@ describe('G4 — autogen event noise reduction', () => {
     off();
     const cooldownEvents = events.filter((e) => e.reason === 'cooldown');
     expect(cooldownEvents.length).toBeGreaterThanOrEqual(1);
-  });
-});
-
-describe('G5 — mig 032 backfills revision 1 for pre-existing proposals', () => {
-  test('proposal without revision rows gets revision 1 on backfill', () => {
-    // Create a fresh DB so we can simulate "proposal exists without
-    // a corresponding revision row" without colliding with the
-    // module-scope `db`.
-    const localDb = new Database(':memory:');
-    localDb.exec('PRAGMA journal_mode = WAL');
-    new MigrationRunner().migrate(localDb, ALL_MIGRATIONS);
-    // Simulate a pre-mig-032 proposal by inserting via raw SQL
-    // (bypassing SkillProposalStore.create which auto-seeds the
-    // revision row), then deleting its revision-1 row so we look
-    // like a pre-mig-032 leftover.
-    const localStore = new SkillProposalStore(localDb);
-    const proposal = localStore.create({
-      profile: 'backfill',
-      proposedName: 'pre-mig-target',
-      proposedCategory: 'refactor',
-      skillMd: SAFE_MD,
-    });
-    localDb.run(`DELETE FROM skill_proposal_revisions WHERE proposal_id = ?`, [proposal.id]);
-    expect(
-      (localDb
-        .query(
-          `SELECT COUNT(*) AS c FROM skill_proposal_revisions WHERE proposal_id = ?`,
-        )
-        .get(proposal.id) as { c: number }).c,
-    ).toBe(0);
-
-    // Re-run mig 032's backfill. The migration is idempotent — the
-    // CREATE TABLE / TRIGGER blocks all use IF NOT EXISTS, and the
-    // backfill is INSERT OR IGNORE.
-    migration032.up(localDb);
-
-    const after = localStore.listRevisions('backfill', proposal.id);
-    expect(after.length).toBe(1);
-    expect(after[0]?.revision).toBe(1);
-    expect(after[0]?.actor).toBe('auto-generator');
-    expect(after[0]?.reason).toContain('backfilled by migration 032');
-    localDb.close();
   });
 });
 

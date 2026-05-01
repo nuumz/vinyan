@@ -17,7 +17,6 @@ import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { OracleVerdict } from '../../src/core/types.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration005 } from '../../src/db/migrations/005_trajectory_export.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { explainRouting } from '../../src/gate/routing-explainer.ts';
 import { toECPEnriched } from '../../src/trajectory/ecp-enriched.ts';
@@ -228,7 +227,7 @@ let tmpDir: string;
 
 beforeEach(() => {
   db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration005]);
+  new MigrationRunner().migrate(db, [migration001]);
   tmpDir = mkdtempSync(join(tmpdir(), 'vinyan-ecp-'));
 });
 
@@ -284,7 +283,7 @@ describe('exportTrajectories(format=ecp)', () => {
     // The redaction happens BEFORE the hash, so the "after redaction" hash
     // for this run should still differ from run A (different input text).
     const db2 = new Database(':memory:');
-    new MigrationRunner().migrate(db2, [migration001, migration005]);
+    new MigrationRunner().migrate(db2, [migration001]);
     try {
       const leakedTurns = JSON.parse(JSON.stringify(makeTurns()));
       // inject a path into the user message block

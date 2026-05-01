@@ -10,8 +10,8 @@
  *   - commonsensePromoted is always 0 (M4.5 hookup is opt-in)
  */
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { migration010 } from '../../src/db/migrations/010_commonsense_rules.ts';
 import { PATTERN_SCHEMA_SQL } from '../../src/db/pattern-schema.ts';
 import { PatternStore } from '../../src/db/pattern-store.ts';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
@@ -25,7 +25,7 @@ function makeStores() {
   db.exec(TRACE_SCHEMA_SQL);
   db.exec(PATTERN_SCHEMA_SQL);
   db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at INTEGER NOT NULL);`);
-  migration010.up(db);
+  migration001.up(db);
   return {
     db,
     traceStore: new TraceStore(db),

@@ -14,7 +14,6 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration017 } from '../../src/db/migrations/017_task_events.ts';
 import { migration025 } from '../../src/db/migrations/025_task_events_session_backfill.ts';
 import { migration035 } from '../../src/db/migrations/035_task_events_cross_task_session_backfill.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
@@ -24,7 +23,7 @@ function setupDb(): Database {
   db.exec('PRAGMA foreign_keys = ON');
   // Apply 001 (base schema), 017 (task_events). 025 is applied
   // explicitly per test where the order matters.
-  new MigrationRunner().migrate(db, [migration001, migration017]);
+  new MigrationRunner().migrate(db, [migration001]);
   return db;
 }
 

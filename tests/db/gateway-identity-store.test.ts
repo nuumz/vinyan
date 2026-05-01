@@ -1,8 +1,8 @@
 /**
  * Tests for GatewayIdentityStore — identity upsert + pairing tokens.
  *
- * Uses an in-memory SQLite with migration001 (base schema) + migration006
- * (Gateway tables). migration006 is not wired into `ALL_MIGRATIONS` yet —
+ * Uses an in-memory SQLite with migration001 (base schema) + migration001
+ * (Gateway tables). migration001 is not wired into `ALL_MIGRATIONS` yet —
  * the coordinator does that post-merge — so we instantiate the runner
  * manually here.
  */
@@ -11,7 +11,6 @@ import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { GatewayIdentityStore } from '../../src/db/gateway-identity-store.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration006 } from '../../src/db/migrations/006_gateway_tables.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 
 let db: Database;
@@ -19,7 +18,7 @@ let store: GatewayIdentityStore;
 
 beforeEach(() => {
   db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration006]);
+  new MigrationRunner().migrate(db, [migration001]);
   store = new GatewayIdentityStore(db);
 });
 

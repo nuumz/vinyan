@@ -4,7 +4,6 @@
 import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-import { migration030 } from '../../../src/db/migrations/030_parameter_ledger.ts';
 import { MigrationRunner } from '../../../src/db/migrations/migration-runner.ts';
 import {
   getParameterDef,
@@ -16,7 +15,7 @@ import {
 
 function freshDb(): Database {
   const db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration030]);
+  new MigrationRunner().migrate(db, [migration001]);
   return db;
 }
 

@@ -1,47 +1,33 @@
 /**
- * Migration Index — ordered list of all database migrations.
+ * Migration Index — ordered list of top-level migrations.
  *
- * As of the 2026-04-20 consolidation, the 41 historical migrations have
- * been squashed into a single `001_initial_schema.ts` that creates the
- * post-041 final schema in one pass. New schema changes append migrations
- * here in version order.
+ * As of the 2026-04-20 consolidation, the 41 pre-1.0 historical
+ * migrations were squashed into `001_initial_schema.ts`. As of the
+ * 2026-05-02 consolidation, the post-041 incremental DDL migrations
+ * (003-033, excluding the operational ones below) were folded into
+ * the same file: their source still lives under `./_squashed/` and
+ * `001_initial_schema.ts` imports + invokes them in version order.
+ *
+ * What stays in this top-level list:
+ *   - 001 — consolidated initial schema (idempotent on every run).
+ *   - 018 — legacy persona-id retirement (DELETE on agent_proposals).
+ *   - 025 — task_events.session_id backfill from siblings.
+ *   - 034 — skill_proposal_revisions backfill (re-run wave).
+ *   - 035 — task_events cross-task session backfill via parent dispatch.
+ *
+ * Why those four stay separate: each performs an UPDATE / DELETE /
+ * INSERT against existing rows. They are operational migrations that
+ * upgrades depend on, not pure DDL. Bundling them into 001 would
+ * either (a) re-run on every fresh install (harmless but wasteful)
+ * or (b) lose their per-version application semantics on upgrades.
  */
 
 export type { MigrateResult, Migration } from './migration-runner.ts';
 export { MigrationRunner } from './migration-runner.ts';
 
 import { migration001 } from './001_initial_schema.ts';
-import { migration003 } from './003_memory_records.ts';
-import { migration004 } from './004_skill_artifact.ts';
-import { migration005 } from './005_trajectory_export.ts';
-import { migration006 } from './006_gateway_tables.ts';
-import { migration007 } from './007_plugin_audit.ts';
-import { migration008 } from './008_skill_trust_ledger.ts';
-import { migration009 } from './009_user_md_dialectic.ts';
-import { migration010 } from './010_commonsense_rules.ts';
-import { migration011 } from './011_commonsense_rule_telemetry.ts';
-import { migration012 } from './012_capability_trace_metadata.ts';
-import { migration013 } from './013_rule_promote_capability_action.ts';
-import { migration014 } from './014_session_metadata.ts';
-import { migration015 } from './015_capability_route_audit.ts';
-import { migration016 } from './016_agent_proposals.ts';
-import { migration017 } from './017_task_events.ts';
 import { migration018 } from './018_retire_legacy_builtins.ts';
-import { migration019 } from './019_skill_outcomes.ts';
-import { migration020 } from './020_a8_governance_provenance.ts';
-import { migration021 } from './021_a10_goal_grounding.ts';
-import { migration022 } from './022_a5_oracle_independence.ts';
-import { migration023 } from './023_persona_overclaim.ts';
-import { migration024 } from './024_coding_cli.ts';
 import { migration025 } from './025_task_events_session_backfill.ts';
-import { migration026 } from './026_memory_wiki.ts';
-import { migration027 } from './027_task_archive_metadata.ts';
-import { migration028 } from './028_session_tasks_fts.ts';
-import { migration029 } from './029_skill_proposals.ts';
-import { migration030 } from './030_parameter_ledger.ts';
-import { migration031 } from './031_skill_autogen_state.ts';
-import { migration032 } from './032_skill_proposal_revisions.ts';
-import { migration033 } from './033_approval_ledger.ts';
 import { migration034 } from './034_skill_proposal_revisions_rebackfill.ts';
 import { migration035 } from './035_task_events_cross_task_session_backfill.ts';
 import type { Migration } from './migration-runner.ts';
@@ -49,37 +35,8 @@ import type { Migration } from './migration-runner.ts';
 /** All migrations in version order. */
 export const ALL_MIGRATIONS: Migration[] = [
   migration001,
-  migration003,
-  migration004,
-  migration005,
-  migration006,
-  migration007,
-  migration008,
-  migration009,
-  migration010,
-  migration011,
-  migration012,
-  migration013,
-  migration014,
-  migration015,
-  migration016,
-  migration017,
   migration018,
-  migration019,
-  migration020,
-  migration021,
-  migration022,
-  migration023,
-  migration024,
   migration025,
-  migration026,
-  migration027,
-  migration028,
-  migration029,
-  migration030,
-  migration031,
-  migration032,
-  migration033,
   migration034,
   migration035,
 ];

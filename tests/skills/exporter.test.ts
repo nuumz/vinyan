@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration004 } from '../../src/db/migrations/004_skill_artifact.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { SkillArtifactStore } from '../../src/skills/artifact-store.ts';
 import { normalizeIdFromSignature, SkillExporter } from '../../src/skills/exporter.ts';
@@ -21,7 +20,7 @@ let exporter: SkillExporter;
 beforeEach(() => {
   db = new Database(':memory:');
   const runner = new MigrationRunner();
-  runner.migrate(db, [migration001, migration004]);
+  runner.migrate(db, [migration001]);
   rootDir = mkdtempSync(join(tmpdir(), 'skill-exporter-'));
   store = new SkillArtifactStore({ rootDir });
   exporter = new SkillExporter({ db, artifactStore: store });

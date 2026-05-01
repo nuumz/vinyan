@@ -5,7 +5,6 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration017 } from '../../src/db/migrations/017_task_events.ts';
 import { migration025 } from '../../src/db/migrations/025_task_events_session_backfill.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 
@@ -14,7 +13,7 @@ function setupDbAtVersion024(): Database {
   db.exec('PRAGMA foreign_keys = ON');
   // Run only the migrations we need — 001 for the base schema, 017 for the
   // task_events table. The 025 backfill doesn't depend on anything else.
-  new MigrationRunner().migrate(db, [migration001, migration017]);
+  new MigrationRunner().migrate(db, [migration001]);
   return db;
 }
 

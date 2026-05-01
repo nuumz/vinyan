@@ -7,7 +7,6 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-import { migration026 } from '../../../src/db/migrations/026_memory_wiki.ts';
 import { MigrationRunner } from '../../../src/db/migrations/migration-runner.ts';
 import { MemoryWikiLint } from '../../../src/memory/wiki/lint.ts';
 import { PageWriter } from '../../../src/memory/wiki/page-writer.ts';
@@ -16,7 +15,7 @@ import { assertPathSafe, ensureVaultDirs, resolveVaultLayout } from '../../../sr
 
 function freshStore(): MemoryWikiStore {
   const db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration026]);
+  new MigrationRunner().migrate(db, [migration001]);
   return new MemoryWikiStore(db, { clock: () => 1_700_000_000_000 });
 }
 

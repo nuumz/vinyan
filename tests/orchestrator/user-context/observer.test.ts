@@ -14,9 +14,9 @@
  *   - applyPending idempotent when no new observations arrive between calls.
  */
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
-import { migration009 } from '../../../src/db/migrations/009_user_md_dialectic.ts';
 import { UserMdStore } from '../../../src/db/user-md-store.ts';
 import type { DialecticCritic } from '../../../src/orchestrator/user-context/dialectic.ts';
 import { UserMdObserver } from '../../../src/orchestrator/user-context/observer.ts';
@@ -28,7 +28,7 @@ import { UNKNOWN_PREDICTION_TEXT } from '../../../src/orchestrator/user-context/
 
 function freshDb(): Database {
   const db = new Database(':memory:');
-  migration009.up(db);
+  migration001.up(db);
   return db;
 }
 

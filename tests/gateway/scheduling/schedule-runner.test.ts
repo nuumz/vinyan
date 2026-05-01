@@ -1,14 +1,13 @@
 /**
  * Tests for ScheduleRunner — tick-driven firing with circuit-breaker.
  *
- * Uses an in-memory SQLite (migration001 + migration006) so the tests
+ * Uses an in-memory SQLite (migration001 + migration001) so the tests
  * exercise the real GatewayScheduleStore instead of a stub.
  */
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { GatewayScheduleStore } from '../../../src/db/gateway-schedule-store.ts';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-import { migration006 } from '../../../src/db/migrations/006_gateway_tables.ts';
 import { MigrationRunner } from '../../../src/db/migrations/migration-runner.ts';
 import {
   type MarketSchedulerTickApi,
@@ -26,7 +25,7 @@ let store: GatewayScheduleStore;
 
 beforeEach(() => {
   db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration006]);
+  new MigrationRunner().migrate(db, [migration001]);
   store = new GatewayScheduleStore(db);
 });
 

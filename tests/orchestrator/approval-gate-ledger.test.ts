@@ -15,14 +15,13 @@ import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { ApprovalLedgerStore } from '../../src/db/approval-ledger-store.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration033 } from '../../src/db/migrations/033_approval_ledger.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { ApprovalGate } from '../../src/orchestrator/approval-gate.ts';
 import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 
 function freshDb(): Database {
   const db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration033]);
+  new MigrationRunner().migrate(db, [migration001]);
   return db;
 }
 

@@ -12,9 +12,8 @@
  * Demotion criterion: firing_count ≥ 100 AND override_rate > 0.5.
  */
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { migration010 } from '../../../src/db/migrations/010_commonsense_rules.ts';
-import { migration011 } from '../../../src/db/migrations/011_commonsense_rule_telemetry.ts';
 import {
   CommonSenseRegistry,
   DEFAULT_DEMOTION_CONFIG,
@@ -31,8 +30,8 @@ beforeEach(() => {
       version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at INTEGER NOT NULL
     );
   `);
-  migration010.up(db);
-  migration011.up(db);
+  migration001.up(db);
+  migration001.up(db);
   registry = new CommonSenseRegistry(db);
 });
 
@@ -49,10 +48,10 @@ function makeRule(overrides: Partial<CommonSenseRuleInput> = {}): CommonSenseRul
   };
 }
 
-describe('migration011', () => {
+describe('migration001', () => {
   test('idempotent — applying twice does not throw', () => {
-    expect(() => migration011.up(db)).not.toThrow();
-    expect(() => migration011.up(db)).not.toThrow();
+    expect(() => migration001.up(db)).not.toThrow();
+    expect(() => migration001.up(db)).not.toThrow();
   });
 
   test('adds firing_count, override_count, last_fired_at, retired_at columns', () => {

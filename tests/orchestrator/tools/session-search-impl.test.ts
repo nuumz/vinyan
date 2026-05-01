@@ -8,7 +8,6 @@ import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import type { ConfidenceTier } from '../../../src/core/confidence-tier.ts';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-import { migration003 } from '../../../src/db/migrations/003_memory_records.ts';
 import { MigrationRunner } from '../../../src/db/migrations/migration-runner.ts';
 import { DefaultMemoryProvider } from '../../../src/memory/provider/default-provider.ts';
 import type { MemoryKind, MemoryRecord } from '../../../src/memory/provider/types.ts';
@@ -21,7 +20,7 @@ const NOW = 1_700_000_000_000;
 function freshDb(): Database {
   const db = new Database(':memory:');
   const runner = new MigrationRunner();
-  runner.migrate(db, [migration001, migration003]);
+  runner.migrate(db, [migration001]);
   return db;
 }
 

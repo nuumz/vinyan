@@ -133,7 +133,7 @@ describe('selectMicrotheory — domain axis', () => {
   });
 
   test('migration paths → data-pipeline', () => {
-    expect(selectMicrotheory({ path: 'src/db/migrations/010_x.ts' }).domain).toBe(
+    expect(selectMicrotheory({ path: 'src/db/migrations/_squashed/010_x.ts' }).domain).toBe(
       'data-pipeline',
     );
   });

@@ -13,7 +13,6 @@ import {
 } from '../../src/gateway/envelope.ts';
 import { GatewayIdentityStore } from '../../src/db/gateway-identity-store.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { migration006 } from '../../src/db/migrations/006_gateway_tables.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
@@ -43,7 +42,7 @@ function makeTaskResult(id: string, response: string): TaskResult {
 
 function makeHarness(): Harness {
   const db = new Database(':memory:');
-  new MigrationRunner().migrate(db, [migration001, migration006]);
+  new MigrationRunner().migrate(db, [migration001]);
   const identityStore = new GatewayIdentityStore(db);
   const rateLimiter = new GatewayRateLimiter();
   const executeCalls: TaskInput[] = [];

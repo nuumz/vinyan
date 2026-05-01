@@ -1,9 +1,9 @@
 import { Database } from 'bun:sqlite';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { migration010 } from '../../../src/db/migrations/010_commonsense_rules.ts';
 import { isAbstention } from '../../../src/core/types.ts';
 import {
   clearRegistryCache,
@@ -28,13 +28,13 @@ function createTestEnv(): TestEnv {
   const dbPath = join(dbDir, 'vinyan.db');
 
   const db = new Database(dbPath);
-  // Bootstrap schema_version + apply migration010
+  // Bootstrap schema_version + apply migration001
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at INTEGER NOT NULL
     );
   `);
-  migration010.up(db);
+  migration001.up(db);
 
   const registry = new CommonSenseRegistry(db);
 

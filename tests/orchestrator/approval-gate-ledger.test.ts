@@ -152,6 +152,71 @@ describe('ApprovalGate + ledger — supersede for retry', () => {
   });
 });
 
+describe('ApprovalGate + ledger — idempotency on duplicate slot', () => {
+  test('duplicate request creates one ledger row and emits each lifecycle event once', async () => {
+    const gate = new ApprovalGate(bus, { ledger, timeoutMs: 60_000 });
+    const requiredEvents: VinyanBusEvents['task:approval_required'][] = [];
+    const ledgerPendingEvents: VinyanBusEvents['approval:ledger_pending'][] = [];
+    const dupEvents: VinyanBusEvents['approval:duplicate_request_ignored'][] = [];
+    bus.on('task:approval_required', (p) => requiredEvents.push(p));
+    bus.on('approval:ledger_pending', (p) => ledgerPendingEvents.push(p));
+    bus.on('approval:duplicate_request_ignored', (p) => dupEvents.push(p));
+
+    const p1 = gate.requestApproval('t-dup', 0.7, 'first');
+    const p2 = gate.requestApproval('t-dup', 0.99, 'second');
+
+    expect(requiredEvents.length).toBe(1);
+    expect(ledgerPendingEvents.length).toBe(1);
+    expect(ledger.findByTask('t-dup').length).toBe(1);
+    expect(ledger.listPending().length).toBe(1);
+    expect(dupEvents.length).toBe(1);
+    expect(dupEvents[0]?.ledgerDuplicate).toBe(false);
+
+    gate.resolve('t-dup', 'approved', 'alice');
+    const [d1, d2] = await Promise.all([p1, p2]);
+    expect(d1).toBe('approved');
+    expect(d2).toBe('approved');
+
+    // One row, one resolved transition.
+    const rows = ledger.findByTask('t-dup');
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.status).toBe('approved');
+  });
+
+  test('orphan ledger row from prior process: duplicate_request rejected with diagnostic, no new live gate', async () => {
+    // Simulate a previous process leaving a pending ledger row by
+    // creating one directly via the store.
+    const orphan = ledger.createPending({
+      taskId: 't-orphan',
+      approvalKey: 'default',
+      riskScore: 0.5,
+      reason: 'orphan',
+    });
+    expect(orphan.ok).toBe(true);
+
+    // Fresh gate — empty in-memory map, sees ledger duplicate_pending.
+    const gate = new ApprovalGate(bus, { ledger, timeoutMs: 60_000 });
+    const requiredEvents: VinyanBusEvents['task:approval_required'][] = [];
+    const dupEvents: VinyanBusEvents['approval:duplicate_request_ignored'][] = [];
+    bus.on('task:approval_required', (p) => requiredEvents.push(p));
+    bus.on('approval:duplicate_request_ignored', (p) => dupEvents.push(p));
+
+    const decision = await gate.requestApproval('t-orphan', 0.5, 'new-process');
+    expect(decision).toBe('rejected');
+    // No second user-facing approval card created.
+    expect(requiredEvents.length).toBe(0);
+    // Diagnostic fired with the ledger-duplicate flag.
+    expect(dupEvents.length).toBe(1);
+    expect(dupEvents[0]?.ledgerDuplicate).toBe(true);
+    // The orphan row is still on disk and discoverable for operator
+    // action — we did not silently overwrite or co-opt it.
+    expect(ledger.listPending().length).toBe(1);
+    const orphans = gate.getOrphanedPending();
+    expect(orphans?.length).toBe(1);
+    expect(orphans?.[0]?.taskId).toBe('t-orphan');
+  });
+});
+
 describe('ApprovalGate — legacy (no ledger) backwards-compat', () => {
   test('legacy 2-arg constructor still works', async () => {
     const gate = new ApprovalGate(bus, 60_000);

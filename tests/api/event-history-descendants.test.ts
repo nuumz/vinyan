@@ -381,4 +381,204 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
     );
     expect(desc.status).toBe(404);
   });
+
+  test('multi-agent realistic scenario — parent + child tool + child stream + terminal', async () => {
+    // Pinned contract for the historical Process Replay surface. Two
+    // delegates (researcher / author) run under the parent, each emits
+    // its own `agent:tool_*` and `llm:stream_delta` rows under its own
+    // taskId, and the parent emits `workflow:delegate_completed` (with
+    // outputPreview) plus `task:complete` at the end. The descendants
+    // endpoint must return every row with correct row-level taskId
+    // attribution and (ts, id) ordering. The cross-session guard remains
+    // in force.
+    const T = 'multi-A';
+    const SESSION = 'sess-multi-A';
+    const C1 = 'multi-A-delegate-step1_researcher';
+    const C2 = 'multi-A-delegate-step2_author';
+
+    // Parent kickoff
+    taskEventStore.append({
+      taskId: T,
+      sessionId: SESSION,
+      eventType: 'task:start',
+      payload: { input: { id: T, sessionId: SESSION, goal: 'compare strategies' } },
+      ts: 100,
+    });
+    taskEventStore.append({
+      taskId: T,
+      sessionId: SESSION,
+      eventType: 'workflow:subtasks_planned',
+      payload: {
+        taskId: T,
+        groupMode: 'competition',
+        subtasks: [
+          { subtaskId: 'st-r', stepId: 'step1_researcher', fallbackLabel: 'Agent 1', agentName: 'researcher' },
+          { subtaskId: 'st-a', stepId: 'step2_author', fallbackLabel: 'Agent 2', agentName: 'author' },
+        ],
+      },
+      ts: 110,
+    });
+
+    // Parent dispatches researcher (child C1)
+    taskEventStore.append({
+      taskId: T,
+      sessionId: SESSION,
+      eventType: 'workflow:delegate_dispatched',
+      payload: { taskId: T, stepId: 'step1_researcher', subTaskId: C1, agentId: 'researcher' },
+      ts: 200,
+    });
+    // Researcher emits its own tool + stream rows under its own taskId
+    taskEventStore.append({
+      taskId: C1,
+      sessionId: SESSION,
+      eventType: 'agent:tool_started',
+      payload: { taskId: C1, turnId: 'turn-r-1', toolCallId: 'tc-r-1', toolName: 'Read' },
+      ts: 220,
+    });
+    taskEventStore.append({
+      taskId: C1,
+      sessionId: SESSION,
+      eventType: 'agent:tool_executed',
+      payload: { taskId: C1, turnId: 'turn-r-1', toolCallId: 'tc-r-1', toolName: 'Read', durationMs: 12, isError: false },
+      ts: 230,
+    });
+    taskEventStore.append({
+      taskId: C1,
+      sessionId: SESSION,
+      eventType: 'llm:stream_delta',
+      payload: { taskId: C1, turnId: 'turn-r-1', kind: 'content', text: 'researcher answer body…' },
+      ts: 240,
+    });
+    taskEventStore.append({
+      taskId: T,
+      sessionId: SESSION,
+      eventType: 'workflow:delegate_completed',
+      payload: {
+        taskId: T,
+        stepId: 'step1_researcher',
+        subTaskId: C1,
+        agentId: 'researcher',
+        status: 'completed',
+        outputPreview: 'researcher answer body…',
+      },
+      ts: 250,
+    });
+
+    // Parent dispatches author (child C2)
+    taskEventStore.append({
+      taskId: T,
+      sessionId: SESSION,
+      eventType: 'workflow:delegate_dispatched',
+      payload: { taskId: T, stepId: 'step2_author', subTaskId: C2, agentId: 'author' },
+      ts: 300,
+    });
+    taskEventStore.append({
+      taskId: C2,
+      sessionId: SESSION,
+      eventType: 'agent:tool_started',
+      payload: { taskId: C2, turnId: 'turn-a-1', toolCallId: 'tc-a-1', toolName: 'Grep' },
+      ts: 320,
+    });
+    taskEventStore.append({
+      taskId: C2,
+      sessionId: SESSION,
+      eventType: 'llm:stream_delta',
+      payload: { taskId: C2, turnId: 'turn-a-1', kind: 'content', text: 'author narrative…' },
+      ts: 340,
+    });
+    taskEventStore.append({
+      taskId: T,
+      sessionId: SESSION,
+      eventType: 'workflow:delegate_completed',
+      payload: {
+        taskId: T,
+        stepId: 'step2_author',
+        subTaskId: C2,
+        agentId: 'author',
+        status: 'completed',
+        outputPreview: 'author narrative…',
+      },
+      ts: 360,
+    });
+
+    // Terminal — note no top-level `taskId`; row.task_id derived from
+    // payload.result.id. The replay path must still attribute correctly.
+    taskEventStore.append({
+      taskId: T,
+      sessionId: SESSION,
+      eventType: 'task:complete',
+      payload: { result: { id: T, status: 'partial', content: 'comparison synthesis' } },
+      ts: 400,
+    });
+
+    const res = await serverWithStore.handleRequest(
+      req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      taskId: string;
+      rootTaskId: string;
+      taskIds: string[];
+      events: Array<{ id: string; taskId: string; eventType: string; ts: number; payload: Record<string, unknown> }>;
+      truncated: boolean;
+    };
+
+    expect(body.taskId).toBe(T);
+    expect(body.rootTaskId).toBe(T);
+    expect(body.truncated).toBe(false);
+    expect(body.taskIds.sort()).toEqual([T, C1, C2].sort());
+
+    // Row-level taskId is correct on every persisted row.
+    const byType = (eventType: string, taskId: string) =>
+      body.events.find((e) => e.eventType === eventType && e.taskId === taskId);
+    expect(byType('agent:tool_started', C1)).toBeDefined();
+    expect(byType('agent:tool_executed', C1)).toBeDefined();
+    expect(byType('llm:stream_delta', C1)).toBeDefined();
+    expect(byType('agent:tool_started', C2)).toBeDefined();
+    expect(byType('llm:stream_delta', C2)).toBeDefined();
+    expect(byType('workflow:delegate_completed', T)).toBeDefined();
+    expect(byType('task:complete', T)).toBeDefined();
+
+    // Order is parent dispatch → child child tool → child stream → parent
+    // completed → next child… → parent terminal. Pure (ts, id) order.
+    const tsOf = (eventType: string, taskId: string) => byType(eventType, taskId)?.ts ?? Infinity;
+    expect(tsOf('workflow:delegate_dispatched', T)).toBeLessThan(tsOf('agent:tool_executed', C1));
+    expect(tsOf('agent:tool_executed', C1)).toBeLessThan(tsOf('llm:stream_delta', C1));
+    expect(tsOf('llm:stream_delta', C1)).toBeLessThan(tsOf('workflow:delegate_completed', T));
+    expect(tsOf('llm:stream_delta', C2)).toBeLessThan(tsOf('task:complete', T));
+
+    // Defense-in-depth: a row written into a sibling session must NOT
+    // surface under T's descendants result. Append after the main scenario
+    // so the `taskIds` discovery still finds C1/C2 via parent's
+    // `delegate_dispatched`, but the cross-session row is filtered at
+    // query time.
+    const C_LEAK = 'multi-A-delegate-step3_leak';
+    taskEventStore.append({
+      taskId: T,
+      sessionId: SESSION,
+      eventType: 'workflow:delegate_dispatched',
+      payload: { taskId: T, stepId: 'step3_leak', subTaskId: C_LEAK, agentId: 'mentor' },
+      ts: 500,
+    });
+    taskEventStore.append({
+      taskId: C_LEAK,
+      sessionId: 'sess-OTHER',
+      eventType: 'agent:tool_executed',
+      payload: { taskId: C_LEAK, toolName: 'Read', durationMs: 1, isError: false },
+      ts: 510,
+    });
+
+    const res2 = await serverWithStore.handleRequest(
+      req(`/api/v1/tasks/${T}/event-history?includeDescendants=true&limit=5000`),
+    );
+    const body2 = (await res2.json()) as {
+      taskIds: string[];
+      events: Array<{ taskId: string; eventType: string }>;
+    };
+    expect(body2.taskIds).toContain(C_LEAK); // discovered via parent dispatch
+    const leakedToolEvent = body2.events.find(
+      (e) => e.taskId === C_LEAK && e.eventType === 'agent:tool_executed',
+    );
+    expect(leakedToolEvent).toBeUndefined(); // session guard suppressed it
+  });
 });

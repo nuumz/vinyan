@@ -129,3 +129,125 @@ describe('ApprovalGate', () => {
     expect(new Set(events.map((e) => e.taskId))).toEqual(new Set(['task-A', 'task-B']));
   });
 });
+
+describe('ApprovalGate — idempotency on duplicate slot', () => {
+  test('duplicate request for same taskId/default key emits task:approval_required exactly once', async () => {
+    const bus = createBus();
+    const gate = new ApprovalGate(bus, 60_000);
+    const requiredEvents: Array<{ taskId: string; riskScore: number; reason: string }> = [];
+    bus.on('task:approval_required', (p) => requiredEvents.push(p));
+    const dupEvents: Array<{ taskId: string; approvalKey: string; existingRequestedAt: number; ledgerDuplicate: boolean }> = [];
+    bus.on('approval:duplicate_request_ignored', (p) => dupEvents.push(p));
+
+    const p1 = gate.requestApproval('task-1', 0.5, 'first');
+    const p2 = gate.requestApproval('task-1', 0.99, 'second');
+
+    expect(requiredEvents.length).toBe(1);
+    expect(requiredEvents[0]?.reason).toBe('first');
+    expect(dupEvents.length).toBe(1);
+    expect(dupEvents[0]?.ledgerDuplicate).toBe(false);
+    expect(dupEvents[0]?.existingRequestedAt).toBeGreaterThan(0);
+
+    gate.resolve('task-1', 'approved');
+    const [d1, d2] = await Promise.all([p1, p2]);
+    expect(d1).toBe('approved');
+    expect(d2).toBe('approved');
+  });
+
+  test('duplicate request preserves the original requestedAt — no timer reset', async () => {
+    const bus = createBus();
+    const gate = new ApprovalGate(bus, 60_000);
+    const p1 = gate.requestApproval('task-x', 0.5, 'orig');
+    const firstRequestedAt = gate.getPending()[0]?.requestedAt;
+    expect(firstRequestedAt).toBeGreaterThan(0);
+
+    // Wait long enough that Date.now() advances, then duplicate-request.
+    await new Promise((r) => setTimeout(r, 5));
+    const p2 = gate.requestApproval('task-x', 0.99, 'duplicate');
+    const afterDup = gate.getPending();
+    expect(afterDup.length).toBe(1);
+    expect(afterDup[0]?.requestedAt).toBe(firstRequestedAt!);
+    // Reason / riskScore / approvalKey not overwritten by duplicate request.
+    expect(afterDup[0]?.reason).toBe('orig');
+    expect(afterDup[0]?.riskScore).toBe(0.5);
+
+    gate.resolve('task-x', 'rejected');
+    await Promise.all([p1, p2]);
+  });
+
+  test('duplicate waiters all receive rejected on timeout', async () => {
+    const bus = createBus();
+    const gate = new ApprovalGate(bus, 50);
+    const requiredEvents: Array<unknown> = [];
+    bus.on('task:approval_required', (p) => requiredEvents.push(p));
+    const resolvedEvents: Array<{ taskId: string; decision: string; source: string }> = [];
+    bus.on('task:approval_resolved', (p) => resolvedEvents.push(p));
+
+    const promises = [
+      gate.requestApproval('task-t', 0.5, 'r1'),
+      gate.requestApproval('task-t', 0.5, 'r2'),
+      gate.requestApproval('task-t', 0.5, 'r3'),
+    ];
+    expect(requiredEvents.length).toBe(1);
+
+    const decisions = await Promise.all(promises);
+    expect(decisions).toEqual(['rejected', 'rejected', 'rejected']);
+    // Single timeout event — not three.
+    expect(resolvedEvents.length).toBe(1);
+    expect(resolvedEvents[0]).toEqual({ taskId: 'task-t', decision: 'rejected', source: 'timeout' });
+  });
+
+  test('clear settles all duplicate waiters as rejected', async () => {
+    const bus = createBus();
+    const gate = new ApprovalGate(bus, 60_000);
+    const promises = [
+      gate.requestApproval('task-c', 0.5, 'a'),
+      gate.requestApproval('task-c', 0.5, 'b'),
+    ];
+    expect(gate.getPending().length).toBe(1);
+
+    gate.clear();
+    const decisions = await Promise.all(promises);
+    expect(decisions).toEqual(['rejected', 'rejected']);
+    expect(gate.getPending().length).toBe(0);
+  });
+
+  test('distinct approvalKey for same taskId opens a separate slot', async () => {
+    const bus = createBus();
+    const gate = new ApprovalGate(bus, 60_000);
+    const requiredEvents: Array<{ taskId: string }> = [];
+    bus.on('task:approval_required', (p) => requiredEvents.push(p));
+
+    const pDefault = gate.requestApproval('task-k', 0.5, 'default reason');
+    const pSpec = gate.requestApproval('task-k', 0.5, 'spec reason', { approvalKey: 'spec' });
+
+    // Two distinct slots — two events fire.
+    expect(requiredEvents.length).toBe(2);
+    expect(gate.getPending().length).toBe(2);
+    const keys = gate.getPending().map((p) => p.approvalKey).sort();
+    expect(keys).toEqual(['default', 'spec']);
+
+    // Resolving the default slot does NOT settle the spec slot.
+    gate.resolve('task-k', 'approved');
+    expect(await pDefault).toBe('approved');
+    expect(gate.hasPending('task-k')).toBe(true);
+
+    gate.resolve('task-k', 'rejected', undefined, 'spec');
+    expect(await pSpec).toBe('rejected');
+    expect(gate.hasPending('task-k')).toBe(false);
+  });
+
+  test('resolve(default) does not settle a spec-keyed slot — distinct slots stay isolated', async () => {
+    const bus = createBus();
+    const gate = new ApprovalGate(bus, 60_000);
+    const pSpec = gate.requestApproval('task-iso', 0.5, 'spec', { approvalKey: 'spec' });
+
+    // No default slot exists — resolving by default key returns false.
+    expect(gate.resolve('task-iso', 'approved')).toBe(false);
+    // The spec slot is still pending.
+    expect(gate.hasPending('task-iso')).toBe(true);
+
+    gate.resolve('task-iso', 'approved', undefined, 'spec');
+    expect(await pSpec).toBe('approved');
+  });
+});

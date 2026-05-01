@@ -275,6 +275,48 @@ describe('executeSpecPhase — behavior', () => {
     }
   });
 
+  test('parallel executeSpecPhase invocations for same taskId share one approval slot', async () => {
+    // Regression: two phase invocations entering the gate for the same
+    // taskId/default approvalKey must surface ONE user-facing approval
+    // (not two), preserve the original requestedAt (no timer reset
+    // visible as the approval card's elapsed counter snapping back),
+    // and have both waiters settle on a single human resolve. This is
+    // the runtime-behavior fix for the duplicate-Spec-approval bug.
+    const input = makeInput({ constraints: [SPEC_PHASE_CONSTRAINTS.enable] });
+    const drafter: SpecDrafter = { draft: async () => makeSpec() };
+    const { ctx, bus, approvalGate } = makeContext(input, drafter, true);
+
+    let requiredCount = 0;
+    bus.on('task:approval_required', () => {
+      requiredCount++;
+    });
+    let duplicateCount = 0;
+    bus.on('approval:duplicate_request_ignored', () => {
+      duplicateCount++;
+    });
+
+    // Fire both invocations on the same tick — they race through the
+    // drafter's microtask and meet at the gate.
+    const p1 = executeSpecPhase(ctx, makeRouting(1), makeUnderstanding(), { drafter });
+    const p2 = executeSpecPhase(ctx, makeRouting(1), makeUnderstanding(), { drafter });
+
+    // Flush microtasks until both phase calls have reached the gate.
+    // Drafter resolves on the first microtask; the awaitable
+    // requestApproval registers the second waiter on the next.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(approvalGate!.getPendingIds()).toEqual([input.id]);
+    expect(approvalGate!.getPending().length).toBe(1);
+    expect(requiredCount).toBe(1);
+    expect(duplicateCount).toBe(1);
+
+    // Single resolve unblocks both phase invocations — neither hangs.
+    expect(approvalGate!.resolve(input.id, 'approved')).toBe(true);
+    const [out1, out2] = await Promise.all([p1, p2]);
+    expect(out1.action).toBe('continue');
+    expect(out2.action).toBe('continue');
+  });
+
   test('approval acceptance stamps approvedBy=human + approvedAt', async () => {
     const input = makeInput({ constraints: [SPEC_PHASE_CONSTRAINTS.enable] });
     const drafter: SpecDrafter = { draft: async () => makeSpec() };

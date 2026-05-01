@@ -24,6 +24,7 @@ import type {
   SemanticTaskUnderstanding,
   TaskInput,
 } from '../types.ts';
+import { parseCollaborationDirective } from './collaboration-parser.ts';
 
 /**
  * Plain fallback mapping used when the LLM tier is unavailable or when
@@ -84,6 +85,10 @@ export function enforceSubTaskLeafStrategy(
     directToolCall: _directToolCall,
     externalCodingCli: _externalCodingCli,
     workflowPrompt: _workflowPrompt,
+    // Collaboration directive is a TOP-LEVEL contract — a delegated sub-task
+    // must never see it, otherwise the collaboration runner would recursively
+    // open a room inside an already-running participant turn.
+    collaboration: _collaboration,
     ...leaf
   } = resolution;
   return {
@@ -230,7 +235,13 @@ const MULTI_AGENT_THAI =
 const MULTI_AGENT_ENGLISH =
   /\b(?:multiple|several|two|three|four|five|many|\d+)\s+agents?\b|\bsplit\s+(?:into|among|across)\s+(?:\d+\s+)?agents?\b|\bagents?\s+(?:compete|debate|battle|cooperate|coordinate|race|debate)\b|\b(?:have|let|spawn)\s+(?:\d+\s+)?agents?\s+(?:compete|debate|work|answer|race)\b/i;
 
-function matchesMultiAgentDelegation(text: string): boolean {
+/**
+ * Exported so `intent/collaboration-parser.ts` can gate its richer extraction
+ * on the same structural anchor. Keep the predicate's caller list small —
+ * downstream consumers should call `parseCollaborationDirective` instead and
+ * rely on its `null` return for negative cases.
+ */
+export function matchesMultiAgentDelegation(text: string): boolean {
   // Thai pattern requires the multiplicity prefix AND "agent" — the prefix
   // alone is too noisy. The English pattern is more selective by structure.
   // Both fire only when there is a clear plural-agent or delegation signal.
@@ -282,12 +293,20 @@ export function composeDeterministicCandidate(
   // `agentic-workflow` here gives coordinator the delegate_task capability so
   // the request is fulfilled instead of mocked in prose. Top-level only.
   if (!isSubTask && matchesMultiAgentDelegation(input.goal)) {
+    // Phase 1: extract the structured CollaborationDirective from the prompt
+    // text. When present, downstream wiring (Phase 3) routes the strategy
+    // through the Room text-answer dispatcher so the same N participants
+    // persist across rebuttal rounds. When the parser cannot extract a
+    // count, we still force agentic-workflow (legacy behaviour) but the
+    // collaboration field is left undefined and the planner path runs.
+    const collaboration = parseCollaborationDirective(input.goal);
     return {
       strategy: 'agentic-workflow',
       refinedGoal: input.goal,
       confidence: 0.9,
-      reasoning:
-        'Deterministic multi-agent delegation pattern matched (plural/numbered "agents" + delegation/competition verb) — agentic-workflow forced so coordinator has delegate_task access.',
+      reasoning: collaboration
+        ? `Deterministic multi-agent collaboration directive parsed (count=${collaboration.requestedPrimaryParticipantCount}, mode=${collaboration.interactionMode}, rebuttalRounds=${collaboration.rebuttalRounds}) — agentic-workflow forced; collaboration runner will dispatch a persistent-participant room.`
+        : 'Deterministic multi-agent delegation pattern matched (plural/numbered "agents" + delegation/competition verb) — agentic-workflow forced so coordinator has delegate_task access.',
       reasoningSource: 'deterministic',
       type: 'known',
       deterministicCandidate: {
@@ -296,6 +315,7 @@ export function composeDeterministicCandidate(
         source: 'multi-agent-delegation-pattern',
         ambiguous: false,
       },
+      ...(collaboration ? { collaboration } : {}),
     };
   }
 

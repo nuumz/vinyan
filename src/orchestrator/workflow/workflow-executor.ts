@@ -434,6 +434,8 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
 
   const rawPlan = await planWorkflow(plannerDeps, {
     goal: input.goal,
+    taskId: input.id,
+    sessionId: input.sessionId,
     targetFiles: input.targetFiles,
     constraints: input.constraints,
     acceptanceCriteria: input.acceptanceCriteria,

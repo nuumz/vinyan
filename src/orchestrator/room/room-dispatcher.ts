@@ -46,6 +46,7 @@ import { RoomLedger } from './room-ledger.ts';
 import { type GoalVerifier, type ParticipantResult, RoomSupervisor } from './room-supervisor.ts';
 import {
   BlackboardScopeViolation,
+  effectiveRoleClass,
   type RoleSpec,
   RoomAdmissionFailure,
   type RoomContract,
@@ -137,6 +138,46 @@ function sanitizeOverlayId(composite: string): string {
   return composite.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+/**
+ * Per-round role gate (Phase 2 multi-agent debate fix).
+ *
+ * In **mutation mode** (default, legacy) every role acts every round —
+ * this matches the existing creative-writing / spec / brainstorm room
+ * behaviour, which the mutation-room presets and tests depend on.
+ *
+ * In **text-answer mode** the gate enforces the debate-room shape:
+ *   - `primary-participant` and `oversight` act in rounds [0,
+ *     `rebuttalRounds`] inclusive — i.e., one initial round plus the
+ *     requested rebuttal rounds. They do NOT act on the synthesis
+ *     round at the tail.
+ *   - `integrator` (text-answer) acts ONLY on the final round, after
+ *     all primaries have spoken their last rebuttal.
+ *   - Mutation-class roles in a text-answer contract are unexpected;
+ *     they fall through to "act every round" so a misconfigured
+ *     contract degrades gracefully rather than silently dropping the
+ *     role.
+ *
+ * Pure: depends only on the role and contract shape, never on
+ * participant state. Re-evaluating with the same inputs yields the same
+ * answer (A3).
+ */
+function shouldRoleActThisRound(role: RoleSpec, round: number, contract: RoomContract): boolean {
+  if (contract.outputMode !== 'text-answer') return true;
+  const cls = effectiveRoleClass(role);
+  const primaryRoundsRequired = 1 + (contract.rebuttalRounds ?? 0);
+  if (cls === 'integrator') {
+    // Final-round only. The integrator runs once after all primaries
+    // have completed their `1 + rebuttalRounds` turns.
+    return round === contract.maxRounds - 1;
+  }
+  if (cls === 'primary-participant' || cls === 'oversight') {
+    return round < primaryRoundsRequired;
+  }
+  // Mutation-class roles in a text-answer contract — unexpected but
+  // tolerate by falling back to legacy "act every round".
+  return true;
+}
+
 export class RoomDispatcher {
   private readonly clock: () => number;
 
@@ -212,6 +253,14 @@ export class RoomDispatcher {
     outer: for (let round = 0; round < input.contract.maxRounds; round++) {
       const tokensAtRoundStart = state.tokensConsumed;
       for (const role of input.contract.roles) {
+        // Phase 2 (multi-agent debate): in text-answer mode, primary
+        // participants are gated to rounds [0, rebuttalRounds] inclusive
+        // and the text-answer integrator runs ONLY on the final round
+        // (after all primaries have done their last rebuttal). In
+        // mutation mode this gate is a no-op — every role acts every
+        // round, preserving the legacy room-selector / creative-writing
+        // / brainstorm behaviour.
+        if (!shouldRoleActThisRound(role, round, input.contract)) continue;
         const participantId = this.participantIdFor(input.contract.roomId, role.name);
         const participant = state.participants.get(participantId);
         if (!participant || participant.status === 'failed') continue;
@@ -478,11 +527,19 @@ export class RoomDispatcher {
     const syntheticId = sanitizeOverlayId(`${input.parentInput.id}__room__${role.name}__r${round}`);
     const roomContext = this.buildRoomContext(blackboard, ledger, role, round, input.contract);
     const existingConstraints = input.parentInput.constraints ?? [];
+    // Phase 3 — when the role pins a personaId, route the sub-task to that
+    // persona explicitly. Without this override, every role inherits the
+    // parent task's agentId (typically `coordinator`) and the debate-room
+    // would render one persona answering N times instead of N distinct
+    // personas. Mutation-room presets that don't set personaId fall back to
+    // the parent's agentId — preserving legacy behaviour.
+    const overrideAgentId = role.personaId;
     const syntheticInput: TaskInput = {
       ...input.parentInput,
       id: syntheticId,
       goal: this.composeRoleGoal(input.parentInput.goal, role, round),
       constraints: roomContext ? [...existingConstraints, `ROOM_CONTEXT:${roomContext}`] : existingConstraints,
+      ...(overrideAgentId ? { agentId: overrideAgentId } : {}),
     };
     const roleRouting: RoutingDecision = {
       ...input.routing,
@@ -504,6 +561,15 @@ export class RoomDispatcher {
   }
 
   private composeRoleGoal(parentGoal: string, role: RoleSpec, round: number): string {
+    // Phase 2 (text-answer mode): primary participants answer the user's
+    // goal directly. Prepending "[Room role: primary-1 | round 1]" framing
+    // would make the participant explain itself in those terms, leaking
+    // orchestration mechanics into the user-facing answer. The room
+    // dispatcher's `buildRoomContext` is the right place for shared
+    // discussion context — `composeRoleGoal` should stay clean for
+    // primary participants. Oversight + integrator keep the framing.
+    const cls = effectiveRoleClass(role);
+    if (cls === 'primary-participant') return parentGoal;
     return `[Room role: ${role.name} | round ${round + 1}] ${role.responsibility}\n\nUnderlying goal: ${parentGoal}`;
   }
 
@@ -513,6 +579,13 @@ export class RoomDispatcher {
    * the first drafter runs without injected context. For subsequent participants
    * and rounds, the context includes prior proposals, concerns, and decisions
    * so the agent can make informed contributions.
+   *
+   * Phase 2 (text-answer mode): branches to a discussion-transcript renderer
+   * that reads `discussion/${peerName}/round-${n}` blackboard entries and
+   * EXCLUDES the current participant's own prior turns (so a participant
+   * reads peers, not itself). Round 0 returns `null` so primaries answer
+   * independently. The text-answer integrator sees ALL discussion entries
+   * including its own prior turns (rare; integrator usually runs once).
    */
   private buildRoomContext(
     blackboard: RoomBlackboard,
@@ -521,6 +594,9 @@ export class RoomDispatcher {
     round: number,
     contract: RoomContract,
   ): string | null {
+    if (contract.outputMode === 'text-answer') {
+      return this.buildTextAnswerRoomContext(blackboard, currentRole, round, contract);
+    }
     if (ledger.size() === 0) return null;
 
     const lines: string[] = ['## Room Context (prior activity)'];
@@ -585,6 +661,83 @@ export class RoomDispatcher {
     }
 
     return lines.length <= 2 ? null : lines.join('\n');
+  }
+
+  /**
+   * Text-answer room context — renders a shared discussion transcript so a
+   * primary participant on a rebuttal round can read peers' prior answers,
+   * and the integrator (final round) can read every primary's full
+   * trajectory.
+   *
+   * Excludes the current participant's own prior turns: a participant
+   * reading its own answer back would degenerate into self-affirmation
+   * loops; the rebuttal value comes from reading PEERS.
+   *
+   * Round 0 returns `null` so primaries answer independently — this is the
+   * "competition" baseline before debate begins. The integrator (which only
+   * runs on the final round per `shouldRoleActThisRound`) gets the full
+   * transcript including its own prior turns (rare; typically one turn).
+   *
+   * Output cap: 1200 chars per peer-round entry to keep the room context
+   * within the participant's prompt budget. Truncation marker `…[truncated]`
+   * makes silent truncation impossible to miss in trace inspection.
+   */
+  private buildTextAnswerRoomContext(
+    blackboard: RoomBlackboard,
+    currentRole: RoleSpec,
+    round: number,
+    contract: RoomContract,
+  ): string | null {
+    if (round === 0) return null;
+    const cls = effectiveRoleClass(currentRole);
+    const isIntegrator = cls === 'integrator';
+    const lines: string[] = ['## Shared Discussion (prior rounds)'];
+    const totalPrimaryRounds = 1 + (contract.rebuttalRounds ?? 0);
+    if (isIntegrator) {
+      lines.push(
+        `You are the **integrator**. Synthesize a single coherent answer from the ` +
+          `primary participants' transcripts below. The user's original goal is in your ` +
+          `task description; here is what each primary participant said across their ` +
+          `${totalPrimaryRounds} round(s).`,
+      );
+    } else {
+      lines.push(
+        `You are **${currentRole.name}** in round ${round + 1} of ${totalPrimaryRounds}. ` +
+          `Below are answers from the OTHER primary participants in prior rounds. ` +
+          `Use them to refine, rebut, or strengthen your own answer — do NOT simply ` +
+          `re-state your prior turn. Other participants will see your new answer in the ` +
+          `next round.`,
+      );
+    }
+    lines.push('');
+
+    const allEntries = Array.from(blackboard.readAll().entries());
+    const primaryParticipantNames = contract.roles
+      .filter((r) => effectiveRoleClass(r) === 'primary-participant')
+      .map((r) => r.name);
+
+    let renderedAny = false;
+    for (const peerName of primaryParticipantNames) {
+      // Skip current participant's own prior turns (unless we are the
+      // integrator, who should read everyone).
+      if (!isIntegrator && peerName === currentRole.name) continue;
+      const peerEntries = allEntries
+        .filter(([k]) => k.startsWith(`discussion/${peerName}/round-`))
+        .sort(([a], [b]) => a.localeCompare(b));
+      if (peerEntries.length === 0) continue;
+      lines.push(`### ${peerName}`);
+      for (const [key, entry] of peerEntries) {
+        const roundLabel = key.replace(`discussion/${peerName}/round-`, 'round ');
+        const value = typeof entry.value === 'string' ? entry.value : JSON.stringify(entry.value);
+        const capped = value.length > 1200 ? `${value.slice(0, 1200)}…[truncated]` : value;
+        lines.push(`**${roundLabel}**:\n${capped}`);
+        lines.push('');
+        renderedAny = true;
+      }
+    }
+
+    if (!renderedAny) return null;
+    return lines.join('\n');
   }
 
   private cloneContractForRole(

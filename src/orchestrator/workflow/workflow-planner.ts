@@ -37,6 +37,19 @@ export interface WorkflowPlannerDeps {
 
 export interface PlannerOptions {
   goal: string;
+  /**
+   * Identity of the task this plan is being created for. Threaded into the
+   * `workflow:plan_created` audit event so `TaskEventRecorder` can persist
+   * the row keyed by `task_id` (without it the recorder drops the event at
+   * its `!ids.taskId` guard).
+   */
+  taskId: string;
+  /**
+   * Optional session id. When set, lands on `task_events.session_id` directly
+   * so historical replay can scope the planner-output row by session without
+   * waiting for the recorder's session-cache backfill from a downstream event.
+   */
+  sessionId?: string;
   targetFiles?: string[];
   taskSignature?: string;
   constraints?: string[];
@@ -105,7 +118,17 @@ Creative writing rules:
 - If the plan delegates internally, the final synthesis must present the result or the necessary clarification questions to the user; do not leak handoff mechanics.
 - Do NOT use developer, architect, reviewer, full-pipeline, direct-tool, code mutation, tests, or implementation steps unless the user explicitly asks for software/code.
 
-Multi-agent rules (when the user asks for "N agents" / "have agents debate/compete/collaborate" / "แบ่ง agent N ตัว"):
+Multi-agent rules (FALLBACK PATH — when the user asks for "N agents" / "have agents debate/compete/collaborate" / "แบ่ง agent N ตัว"):
+NOTE: prompts that carry a structured count ARE intercepted upstream by the
+deterministic CollaborationDirective parser (intent/collaboration-parser.ts)
+and routed through the persistent-participant collaboration runner
+(workflow/collaboration-runner.ts). The rules below ONLY fire for prompts
+that match the multi-agent regex but carry NO extractable count (e.g.
+"have agents debate" with no number). Do NOT remove these rules under
+the assumption they are dead code — they are the planner's fallback for
+the no-count branch. The runner-vs-planner boundary is enforced in
+core-loop.ts; if you tighten the parser to catch more shapes, this
+fallback shrinks proportionally but should remain.
 - Produce N \`delegate-sub-agent\` steps, ONE per requested persona.
 - EACH delegate step MUST set \`agentId\` to a distinct id from the [AVAILABLE AGENTS] roster shown below — DO NOT invent ids and DO NOT reuse the same id across multiple steps in the same multi-agent plan.
 - If the user asks for a specific persona ("ให้ developer ตอบ", "have the architect answer"), match that persona name to the closest \`agentId\` in the roster.
@@ -136,8 +159,31 @@ Guidelines:
 - Dependencies form a DAG — no cycles`;
 
 export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptions): Promise<WorkflowPlan> {
+  // Single emit site for `workflow:plan_created`. Every exit path of this
+  // function flows through `finalize()` so the audit row is recorded for both
+  // the LLM-success path (origin='llm') and the deterministic fallback path
+  // (origin='fallback', no provider OR both LLM attempts failed). Keeping
+  // emit centralized prevents the retry loop from double-emitting on its
+  // second iteration if the structure is later edited.
+  const finalize = (plan: WorkflowPlan, origin: 'llm' | 'fallback', attempts: number): WorkflowPlan => {
+    deps.bus?.emit('workflow:plan_created', {
+      taskId: opts.taskId,
+      sessionId: opts.sessionId,
+      goal: opts.goal,
+      origin,
+      attempts,
+      steps: plan.steps.map((s) => ({
+        id: s.id,
+        description: s.description,
+        strategy: s.strategy,
+        dependencies: s.dependencies ?? [],
+      })),
+    });
+    return plan;
+  };
+
   const provider = deps.llmRegistry?.selectByTier('balanced') ?? deps.llmRegistry?.selectByTier('fast');
-  if (!provider) return fallbackPlan(opts.goal);
+  if (!provider) return finalize(fallbackPlan(opts.goal), 'fallback', 0);
 
   const knowledgeContext = await buildKnowledgeContext(deps.knowledgeDeps, {
     targetFiles: opts.targetFiles,
@@ -228,20 +274,13 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
       // the plan is handed to the executor so what gets persisted is
       // exactly what the executor will dispatch.
       const plan = normalizeWorkflowPlan(sanitized);
-
-      deps.bus?.emit('workflow:plan_created', {
-        goal: opts.goal,
-        stepCount: plan.steps.length,
-        strategies: plan.steps.map((s) => s.strategy),
-      });
-
-      return plan;
+      return finalize(plan, 'llm', attempt + 1);
     } catch {
       // retry once
     }
   }
 
-  return fallbackPlan(opts.goal);
+  return finalize(fallbackPlan(opts.goal), 'fallback', 2);
 }
 
 /**

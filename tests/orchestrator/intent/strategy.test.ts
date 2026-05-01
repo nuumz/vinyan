@@ -326,6 +326,39 @@ describe('composeDeterministicCandidate — multi-agent delegation pre-rule', ()
     expect(result.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
     expect(result.strategy).not.toBe('agentic-workflow');
   });
+
+  it('attaches a CollaborationDirective when the prompt carries count + rounds', () => {
+    // Phase 1 wiring: the multi-agent branch parses a structured directive
+    // and exposes it on IntentResolution so Phase 3's collaboration runner
+    // can route to the Room dispatcher (text-answer mode) without going
+    // through the workflow planner.
+    const result = composeDeterministicCandidate(
+      input('แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.collaboration).toBeDefined();
+    expect(result.collaboration?.requestedPrimaryParticipantCount).toBe(3);
+    expect(result.collaboration?.rebuttalRounds).toBe(2);
+    expect(result.collaboration?.interactionMode).toBe('debate');
+    expect(result.collaboration?.emitCompetitionVerdict).toBe(true);
+    // Reasoning string surfaces the parsed shape so trace dashboards can
+    // tell the directive-driven path apart from the legacy planner path.
+    expect(result.reasoning).toMatch(/collaboration directive/i);
+  });
+
+  it('omits collaboration when the regex matches but no count is extractable', () => {
+    // "agents debate" matches the structural English regex but carries no
+    // count anchor — the deterministic candidate still forces
+    // agentic-workflow (legacy planner path) but does NOT attach a
+    // directive, so Phase 3 routing keeps using the workflow planner.
+    const result = composeDeterministicCandidate(
+      input('agents debate sometimes'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.collaboration).toBeUndefined();
+  });
 });
 
 describe('composeDeterministicCandidate — sub-task recursion guard (STU mapper)', () => {
@@ -432,5 +465,39 @@ describe('enforceSubTaskLeafStrategy', () => {
     expect(result).toBe(resolution);
     expect(result.strategy).toBe('agentic-workflow');
     expect(result.workflowPrompt).toBe('top-level workflow');
+  });
+
+  it('strips the CollaborationDirective from a demoted sub-task leaf', () => {
+    // The collaboration runner is a TOP-LEVEL contract — a sub-task that
+    // somehow inherits a directive (e.g. via clarification re-resolution
+    // during a delegated child) must not trigger another room dispatch
+    // inside the parent's running participant turn. The leaf guard demotes
+    // strategy AND clears the directive in one pass.
+    const resolution: IntentResolution = {
+      strategy: 'agentic-workflow',
+      refinedGoal: 'แบ่ง Agent 3ตัว แข่งกันถามตอบ',
+      workflowPrompt: 'nested workflow',
+      confidence: 0.9,
+      reasoning: 'directive carried through',
+      reasoningSource: 'deterministic',
+      type: 'known',
+      collaboration: {
+        requestedPrimaryParticipantCount: 3,
+        interactionMode: 'debate',
+        rebuttalRounds: 2,
+        sharedDiscussion: true,
+        reviewerPolicy: 'none',
+        managerClarificationAllowed: true,
+        emitCompetitionVerdict: true,
+        source: 'pre-llm-parser',
+        matchedFragments: { count: '3ตัว', rounds: '2รอบ' },
+      },
+    };
+
+    const result = enforceSubTaskLeafStrategy({ parentTaskId: 'parent-1' }, resolution);
+
+    expect(result.strategy).toBe('conversational');
+    expect(result.collaboration).toBeUndefined();
+    expect(result.workflowPrompt).toBeUndefined();
   });
 });

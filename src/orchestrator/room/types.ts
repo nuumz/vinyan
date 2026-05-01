@@ -11,9 +11,45 @@
  * Related: docs/design/agent-conversation.md
  */
 import { z } from 'zod/v4';
+import { isPersonaIdShape, type PersonaId } from '../../core/agent-vocabulary.ts';
 import type { ProposedMutation } from '../agent/session-overlay.ts';
 
 // ── RoleSpec — one participant's responsibility envelope ────────────
+
+/**
+ * Discriminator that drives supervisor dispatch + dispatcher gating in
+ * room-supervisor / room-dispatcher. The first three values describe the
+ * legacy mutation-room shape (drafter/critic/integrator); the last three
+ * describe the text-answer shape introduced in Phase 2 of the multi-agent
+ * debate fix.
+ *
+ * When `RoleSpec.roleClass` is omitted, the supervisor derives the class
+ * from `RoleSpec.name` for backward compatibility:
+ *   - name === 'critic'              → 'mutation-critic'
+ *   - name === 'integrator'          → 'mutation-integrator'
+ *   - name starts with 'drafter-'    → 'mutation-drafter'
+ *   - anything else                  → 'mutation-drafter' (legacy default)
+ *
+ * New presets MUST set `roleClass` explicitly. The derived defaults exist
+ * solely to keep the existing room-selector / creative-writing-room /
+ * brainstorm-room presets working without modification.
+ */
+export type RoleClass =
+  | 'mutation-drafter'
+  | 'mutation-critic'
+  | 'mutation-integrator'
+  | 'primary-participant'
+  | 'oversight'
+  | 'integrator';
+
+export const RoleClassSchema = z.enum([
+  'mutation-drafter',
+  'mutation-critic',
+  'mutation-integrator',
+  'primary-participant',
+  'oversight',
+  'integrator',
+]);
 
 export const RoleSpecSchema = z.object({
   /** Stable role name, e.g. 'drafter-0' / 'critic' / 'integrator'. */
@@ -27,9 +63,47 @@ export const RoleSpecSchema = z.object({
   /** When true, the role's participant keeps file_write capability;
    *  when false, its contract clone drops file_write (critic default). */
   canWriteFiles: z.boolean(),
+  /**
+   * Phase 2 (multi-agent debate fix) — explicit role-class discriminator.
+   * See {@link RoleClass} for the derivation rules when omitted.
+   * Text-answer presets MUST set this; mutation-room presets MAY omit it.
+   */
+  roleClass: RoleClassSchema.optional(),
+  /**
+   * Phase 3 — explicit persona binding for this role's runtime sub-task.
+   * When set, the dispatcher's `runParticipant` passes this id as
+   * `TaskInput.agentId` so the persona's soul + capabilities load instead
+   * of inheriting whatever agentId the parent task carried. Required for
+   * debate-room contracts where each primary participant is a distinct
+   * persona — without it every role would inherit the parent's agentId
+   * (typically `coordinator`) and the user would see one persona answering
+   * three times.
+   *
+   * Mutation-room presets MAY omit this — the dispatcher falls back to
+   * `input.parentInput.agentId` for backward compatibility.
+   */
+  personaId: z
+    .string()
+    .refine(isPersonaIdShape, 'invalid PersonaId shape — must match /^[a-z][a-z0-9-]{0,63}$/')
+    .transform((v) => v as PersonaId)
+    .optional(),
 });
 
 export type RoleSpec = z.infer<typeof RoleSpecSchema>;
+
+/**
+ * Derive the effective role class from a RoleSpec. Pure helper — used by
+ * both the supervisor (dispatch + convergence) and the dispatcher
+ * (per-round gating + room-context framing). Single source of truth so
+ * the two layers can never disagree on what class a role is.
+ */
+export function effectiveRoleClass(role: Pick<RoleSpec, 'name' | 'roleClass'>): RoleClass {
+  if (role.roleClass) return role.roleClass;
+  if (role.name === 'critic') return 'mutation-critic';
+  if (role.name === 'integrator') return 'mutation-integrator';
+  if (role.name.startsWith('drafter-')) return 'mutation-drafter';
+  return 'mutation-drafter';
+}
 
 // ── RoomContract — the instrument the Supervisor enforces ───────────
 
@@ -62,6 +136,25 @@ export const RoomContractSchema = z.object({
    * converged close. Keys NOT in this list are room-scoped only.
    */
   teamSharedKeys: z.array(z.string()).optional(),
+  /**
+   * Phase 2 (multi-agent debate fix) — drives convergence + role gating
+   * + room-context framing.
+   *   - 'mutation' (default) preserves the legacy code-mutation room
+   *     behaviour: convergence requires staged mutations + goal-alignment
+   *     verifier; every role acts every round.
+   *   - 'text-answer' enables the persistent-participant Q&A room used
+   *     by the collaboration runner: convergence requires every primary
+   *     participant to have spoken `1 + rebuttalRounds` turns and (if
+   *     present) the integrator role to have spoken once.
+   */
+  outputMode: z.enum(['mutation', 'text-answer']).optional(),
+  /**
+   * Phase 2 — number of rebuttal rounds in text-answer mode (rounds AFTER
+   * the initial round in which the same participants refine their answers
+   * with shared transcript). Mirrors `CollaborationDirective.rebuttalRounds`.
+   * Ignored in mutation mode.
+   */
+  rebuttalRounds: z.number().int().nonnegative().optional(),
 });
 
 export type RoomContract = z.infer<typeof RoomContractSchema>;

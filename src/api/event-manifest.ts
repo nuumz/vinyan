@@ -139,6 +139,10 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'workflow:winner_determined', sse: true, record: true, scope: 'task' },
 
   // ── Workflow: approval gate + step transitions + delegation ─────────
+  // Pre-finalization planner output (before research injection / stage
+  // manifest mutates the plan). Recorded so replay can diff "what the
+  // planner proposed" against "what the executor ran" (in plan_ready).
+  { event: 'workflow:plan_created', sse: true, record: true, scope: 'task' },
   { event: 'workflow:plan_ready', sse: true, record: true, scope: 'task' },
   { event: 'workflow:plan_approved', sse: true, record: true, scope: 'task' },
   { event: 'workflow:plan_rejected', sse: true, record: true, scope: 'task' },

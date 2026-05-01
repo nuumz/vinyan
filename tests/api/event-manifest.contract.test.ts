@@ -37,6 +37,7 @@ import { RECORDED_EVENTS as RECORDER_EXPORTED } from '../../src/orchestrator/obs
  * will fail the build otherwise).
  */
 const UI_VISIBLE_WORKFLOW_EVENTS = [
+  'workflow:plan_created',
   'workflow:step_start',
   'workflow:step_complete',
   'workflow:step_fallback',

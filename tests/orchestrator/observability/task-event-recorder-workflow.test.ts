@@ -132,6 +132,37 @@ describe('TaskEventRecorder — workflow event coverage', () => {
     expect(replay).toEqual(['workflow:step_start', 'workflow:step_complete', 'workflow:step_start']);
   });
 
+  test('persists workflow:plan_created with taskId/sessionId/origin/attempts/steps', () => {
+    bus.emit('workflow:plan_created', {
+      taskId: 't-plan',
+      sessionId: 's-plan',
+      goal: 'investigate auth bug',
+      origin: 'llm',
+      attempts: 1,
+      steps: [
+        { id: 'step1', description: 'read auth files', strategy: 'knowledge-query', dependencies: [] },
+        { id: 'step2', description: 'reason about bug', strategy: 'llm-reasoning', dependencies: ['step1'] },
+      ],
+    });
+    handle.flush();
+
+    const events = store.listForTask('t-plan');
+    expect(events.map((e) => e.eventType)).toContain('workflow:plan_created');
+    const created = events.find((e) => e.eventType === 'workflow:plan_created');
+    expect(created?.sessionId).toBe('s-plan');
+    const payload = created?.payload as {
+      goal: string;
+      origin: string;
+      attempts: number;
+      steps: Array<{ id: string; dependencies: string[] }>;
+    };
+    expect(payload.goal).toBe('investigate auth bug');
+    expect(payload.origin).toBe('llm');
+    expect(payload.attempts).toBe(1);
+    expect(payload.steps).toHaveLength(2);
+    expect(payload.steps[1]!.dependencies).toEqual(['step1']);
+  });
+
   test('non-recorded events are never subscribed to (RECORDED_EVENTS allow-list)', () => {
     // Belt-and-suspenders for the manifest contract: events flagged
     // `record: false` (e.g. evolution:rulePromoted, scope='global') must

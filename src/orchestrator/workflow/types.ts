@@ -152,6 +152,23 @@ export interface WorkflowResult {
   synthesizedOutput: string;
   totalTokensConsumed: number;
   totalDurationMs: number;
+  /**
+   * Phase 4 (multi-agent debate fix) — set by the collaboration runner
+   * when an in-process clarification wait timed out. The caller (core-loop's
+   * agentic-workflow branch) maps presence of this field to
+   * `TaskResult.status='input-required'` + `TaskResult.clarificationNeeded`,
+   * so the next user turn can answer the question and restart a fresh
+   * collaboration room with the answer in the new prompt context.
+   *
+   * Absent for the workflow-executor path (which has its own
+   * human-input step that does not surface this shape).
+   */
+  clarificationNeeded?: {
+    participantId: string;
+    participantRole: string;
+    round: number;
+    questions: string[];
+  };
 }
 
 export const WorkflowStepSchema = z.object({

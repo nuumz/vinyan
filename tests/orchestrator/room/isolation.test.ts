@@ -17,10 +17,14 @@ const ROOM_DIR = join(SRC, 'orchestrator', 'room');
 
 /** Files outside src/orchestrator/room/ that ARE allowed to import from it.
  *  R1 wiring: factory.ts + task-decomposer.ts import room-dispatcher + room-selector.
- *  R2 persistence: room-store.ts imports room/types for LedgerEntry. */
+ *  R2 persistence: room-store.ts imports room/types for LedgerEntry.
+ *  Phase 3 multi-agent debate: collaboration-runner.ts is the persistent-
+ *  participant text-answer entry point; it consumes RoomSupervisor +
+ *  RoomLedger + RoomBlackboard + the debate-room preset. */
 const ALLOWLIST: string[] = [
   'src/orchestrator/factory.ts',
   'src/orchestrator/task-decomposer.ts',
+  'src/orchestrator/workflow/collaboration-runner.ts',
   'src/db/room-store.ts',
 ];
 

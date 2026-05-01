@@ -1859,6 +1859,44 @@ export interface VinyanBusEvents {
     convergence: 'converged' | 'partial' | 'open';
   };
 
+  /**
+   * Phase 4 (multi-agent debate fix) — a primary participant in a
+   * collaboration room asked the orchestrator for clarification before it
+   * could continue answering. The collaboration runner pauses and awaits
+   * a `room:participant_clarification_provided` event with the matching
+   * `taskId` + `participantId` (mirrors the workflow `human_input` gate
+   * pattern). On receiving the answer the SAME participant resumes its
+   * SAME round — no new participant identity is created.
+   */
+  'room:participant_clarification_needed': {
+    taskId: string;
+    sessionId?: string;
+    roomId: string;
+    /** Stable participant id `${roomId}::${roleName}`. Use this to scope
+     *  the answer back to the right participant. */
+    participantId: string;
+    /** Stable role name (= persona id for debate-room contracts). */
+    participantRole: string;
+    /** Round index 0..rebuttalRounds (0 = initial answers). */
+    round: number;
+    questions: string[];
+    /** How long the runner will wait before surfacing input-required
+     *  to the user as a degraded path (next turn restarts a fresh room
+     *  with the answer in the new prompt context). */
+    timeoutMs: number;
+  };
+  /**
+   * Phase 4 — UI / API client supplies the user's answer to a prior
+   * `room:participant_clarification_needed`. The runner resumes the same
+   * participant in the same round with the answer threaded into the
+   * sub-task goal.
+   */
+  'room:participant_clarification_provided': {
+    taskId: string;
+    participantId: string;
+    answer: string;
+  };
+
   // Wave A: Error attribution — A7 learning loop closure
   'learning:error_attributed': {
     taskId: string;
@@ -1881,7 +1919,37 @@ export interface VinyanBusEvents {
   'a2a:roomMessage': { roomId: string; senderId: string; messageType: string; summary: string };
 
   // Workflow orchestration — self-orchestrating agent workflow planner + executor
-  'workflow:plan_created': { goal: string; stepCount: number; strategies: string[] };
+  /**
+   * Fires exactly once per `planWorkflow()` invocation, when the planner has
+   * finalized a plan to hand back to the executor. Captures the
+   * **pre-finalization** planner output — BEFORE the executor injects
+   * research steps or builds the stage manifest. The post-finalization plan
+   * that actually executes is in `workflow:plan_ready`; the two `steps[]`
+   * arrays will diverge whenever research injection prepends a step.
+   *
+   * Recorded for audit / replay so a debugger can compare what the planner
+   * proposed vs. what the executor ran. Fires for both the LLM-success path
+   * and the deterministic `fallbackPlan` path; `origin` distinguishes them.
+   */
+  'workflow:plan_created': {
+    taskId: string;
+    sessionId?: string;
+    goal: string;
+    /** 'llm' = WorkflowPlanSchema.parse succeeded; 'fallback' = both attempts failed. */
+    origin: 'llm' | 'fallback';
+    /**
+     * Number of LLM attempts made: 0 if no provider was available,
+     * 1 if the first call succeeded, 2 if a retry was needed (whether the
+     * retry succeeded or both attempts failed and we fell back).
+     */
+    attempts: number;
+    steps: Array<{
+      id: string;
+      description: string;
+      strategy: string;
+      dependencies: string[];
+    }>;
+  };
   /**
    * Phase E: fires once per task after the plan has been finalized (research
    * injection applied) and BEFORE any step executes. UIs use this to render a

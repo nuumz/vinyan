@@ -93,6 +93,8 @@ export function mergeDeterministicAndLLM(
       reason: `LLM confidence ${llmConfidence.toFixed(2)} below threshold ${LLM_UNCERTAIN_THRESHOLD}`,
       clarificationRequest: request,
     });
+    // `...det` already preserves `collaboration` — the spread is the load-
+    // bearing part. No explicit carry needed in this branch.
     return {
       resolution: {
         ...det,
@@ -126,6 +128,12 @@ export function mergeDeterministicAndLLM(
         reasoning: `A5 carve-out: rule=direct-tool had no resolved command (hollow); LLM=${llm.strategy} accepted as refinement. ${llm.reasoning}`,
         reasoningSource: 'merged',
         deterministicCandidate: det.deterministicCandidate,
+        // The hollow-rule carve-out only fires for `direct-tool`, which is
+        // mutually exclusive with the multi-agent-collaboration branch; so
+        // `det.collaboration` is virtually never set here. Carry it anyway
+        // for shape consistency — if a future deterministic source ever
+        // produces both, the LLM's refinement should NOT drop the directive.
+        ...(det.collaboration ? { collaboration: det.collaboration } : {}),
       },
       type: 'known',
     };
@@ -164,6 +172,13 @@ export function mergeDeterministicAndLLM(
   // Case 3: Agreement or LLM refinement — accept LLM's richer payload.
   // Confidence = max of the two (they agree), but never below the
   // deterministic floor.
+  //
+  // Carry `det.collaboration` through. The deterministic multi-agent rule
+  // emits at confidence 0.9, which usually bypasses the LLM advisory tier
+  // entirely — but the merge function can still be invoked on
+  // re-resolution paths (clarification answers, replans). The LLM does
+  // NOT emit a CollaborationDirective; dropping the deterministic one
+  // here would silently regress the user back to the flat workflow path.
   const mergedStrategy = llm.strategy;
   const mergedConfidence = Math.max(det.confidence ?? 0, llmConfidence);
   return {
@@ -176,6 +191,7 @@ export function mergeDeterministicAndLLM(
       reasoning: llm.reasoning,
       reasoningSource: 'merged',
       deterministicCandidate: det.deterministicCandidate,
+      ...(det.collaboration ? { collaboration: det.collaboration } : {}),
     },
     type: 'known',
   };

@@ -257,6 +257,20 @@ export interface IntentResolution {
     requiresVerification?: boolean;
     reason: string;
   };
+  /**
+   * Multi-agent collaboration shape extracted from the prompt by the
+   * deterministic pre-LLM `parseCollaborationDirective` (see
+   * `intent/collaboration-parser.ts`). Present ONLY when the goal carries a
+   * structural multi-agent quantifier + verb anchor AND a count is
+   * extractable. Top-level only — sub-tasks (`parentTaskId` set) clear
+   * this field via `enforceSubTaskLeafStrategy` so a delegated sub-task
+   * cannot recursively re-enter the collaboration runner.
+   *
+   * Phase 1: presence-only; no runtime dispatch change yet.
+   * Phase 3: presence routes the agentic-workflow strategy through the
+   * Room dispatcher (text-answer mode) instead of `executeWorkflow`.
+   */
+  collaboration?: import('./intent/collaboration-parser.ts').CollaborationDirective;
 }
 
 /** Read-only tools available for non-mutating reasoning tasks. */

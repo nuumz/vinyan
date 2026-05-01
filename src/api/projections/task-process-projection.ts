@@ -378,6 +378,11 @@ export const PROJECTION_INTERPRETED_EVENTS: ReadonlySet<string> = new Set([
  * test).
  */
 export const PROJECTION_IGNORED_EVENTS: ReadonlyMap<string, string> = new Map<string, string>([
+  // Workflow planner pre-finalization audit row.
+  [
+    'workflow:plan_created',
+    'pre-finalization planner output — recorded for audit/replay diff against the executor run-time plan in workflow:plan_ready; the rendered plan surface is built from plan_ready + stage_manifest events post-finalization',
+  ],
   // Task lifecycle (audit-only events that don't change projection state)
   [
     'task:stage_update',

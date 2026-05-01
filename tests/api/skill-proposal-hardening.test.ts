@@ -284,6 +284,198 @@ describe('G2 — optimistic locking on /draft', () => {
   });
 });
 
+describe('G2-extension — latestRevision on the proposal entity', () => {
+  test('GET /:id returns latestRevision = 1 right after create', async () => {
+    const create = await server.handleRequest(
+      authedReq('/api/v1/skill-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposedName: 'g2x-fresh',
+          proposedCategory: 'refactor',
+          skillMd: SAFE_MD,
+        }),
+      }),
+    );
+    const created = (await create.json()) as { proposal: { id: string; latestRevision: number } };
+    expect(created.proposal.latestRevision).toBe(1);
+
+    const detail = await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${created.proposal.id}`),
+    );
+    const body = (await detail.json()) as { proposal: { latestRevision: number } };
+    expect(body.proposal.latestRevision).toBe(1);
+  });
+
+  test('latestRevision reflects post-PATCH revision count', async () => {
+    const create = await server.handleRequest(
+      authedReq('/api/v1/skill-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposedName: 'g2x-bumps',
+          proposedCategory: 'refactor',
+          skillMd: SAFE_MD,
+        }),
+      }),
+    );
+    const created = (await create.json()) as { proposal: { id: string } };
+    // Three patches → revisions 2, 3, 4.
+    for (let i = 0; i < 3; i += 1) {
+      await server.handleRequest(
+        authedReq(`/api/v1/skill-proposals/${created.proposal.id}/draft`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            skillMd: `${SAFE_MD}\nedit-${i}`,
+            actor: 'alice',
+            reason: `edit ${i}`,
+          }),
+        }),
+      );
+    }
+    const detail = await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${created.proposal.id}`),
+    );
+    const body = (await detail.json()) as { proposal: { latestRevision: number } };
+    expect(body.proposal.latestRevision).toBe(4);
+  });
+
+  test('list endpoint includes latestRevision per proposal', async () => {
+    // Seed two proposals + bump one.
+    await server.handleRequest(
+      authedReq('/api/v1/skill-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposedName: 'g2x-list-a',
+          proposedCategory: 'refactor',
+          skillMd: SAFE_MD,
+        }),
+      }),
+    );
+    const createB = await server.handleRequest(
+      authedReq('/api/v1/skill-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposedName: 'g2x-list-b',
+          proposedCategory: 'refactor',
+          skillMd: SAFE_MD,
+        }),
+      }),
+    );
+    const b = (await createB.json()) as { proposal: { id: string } };
+    await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${b.proposal.id}/draft`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          skillMd: `${SAFE_MD}\nbump`,
+          actor: 'alice',
+          reason: 'bump',
+        }),
+      }),
+    );
+    const list = await server.handleRequest(authedReq('/api/v1/skill-proposals?limit=200'));
+    const body = (await list.json()) as {
+      proposals: Array<{ proposedName: string; latestRevision: number }>;
+    };
+    const a = body.proposals.find((p) => p.proposedName === 'g2x-list-a');
+    const bRow = body.proposals.find((p) => p.proposedName === 'g2x-list-b');
+    expect(a?.latestRevision).toBe(1);
+    expect(bRow?.latestRevision).toBe(2);
+  });
+});
+
+describe('G3 — revision endpoint immediately reflects PATCH (data freshness)', () => {
+  test('PATCH followed by GET /revisions returns the new revision in the same request flow', async () => {
+    const create = await server.handleRequest(
+      authedReq('/api/v1/skill-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposedName: 'g3-fresh',
+          proposedCategory: 'refactor',
+          skillMd: SAFE_MD,
+        }),
+      }),
+    );
+    const created = (await create.json()) as { proposal: { id: string } };
+    await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${created.proposal.id}/draft`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          skillMd: `${SAFE_MD}\nfresh`,
+          actor: 'alice',
+          reason: 'freshness check',
+        }),
+      }),
+    );
+    // No delay — the GET should see revision 2 immediately. If the
+    // PATCH wasn't persisted before the response returned, this would
+    // be racy.
+    const list = await server.handleRequest(
+      authedReq(`/api/v1/skill-proposals/${created.proposal.id}/revisions`),
+    );
+    const body = (await list.json()) as {
+      revisions: Array<{ revision: number; reason: string | null }>;
+    };
+    expect(body.revisions[0]?.revision).toBe(2);
+    expect(body.revisions[0]?.reason).toBe('freshness check');
+  });
+});
+
+describe('G8 — transactional recordSuccess rolls back on outer-tx failure', () => {
+  test('increment rolls back when wrapping transaction throws', () => {
+    const localDb = new Database(':memory:');
+    localDb.exec('PRAGMA journal_mode = WAL');
+    new MigrationRunner().migrate(localDb, ALL_MIGRATIONS);
+    const stateStore = new SkillAutogenStateStore(localDb);
+    const bootId = stateStore.reconcile().bootId;
+
+    // Establish a baseline: one persisted increment.
+    stateStore.recordSuccess({
+      profile: 'g8',
+      signatureKey: 'sig:tx',
+      bootId,
+      taskId: 't0',
+    });
+    expect(stateStore.get('g8', 'sig:tx')!.successes).toBe(1);
+
+    // Wrap a recordSuccess inside an outer transaction that throws
+    // AFTER the inner increment lands. SQLite's nested-transaction
+    // (SAVEPOINT) semantics roll the inner write back together with
+    // the outer rollback, so the persisted counter is unchanged.
+    expect(() => {
+      localDb.transaction(() => {
+        stateStore.recordSuccess({
+          profile: 'g8',
+          signatureKey: 'sig:tx',
+          bootId,
+          taskId: 't1',
+        });
+        throw new Error('outer-tx-rollback');
+      })();
+    }).toThrow('outer-tx-rollback');
+
+    // Counter unchanged — the inner write was reverted.
+    expect(stateStore.get('g8', 'sig:tx')!.successes).toBe(1);
+    localDb.close();
+  });
+
+  test('successive serial increments accumulate cleanly (no lost updates)', () => {
+    const localDb = new Database(':memory:');
+    localDb.exec('PRAGMA journal_mode = WAL');
+    new MigrationRunner().migrate(localDb, ALL_MIGRATIONS);
+    const stateStore = new SkillAutogenStateStore(localDb);
+    const bootId = stateStore.reconcile().bootId;
+    for (let i = 0; i < 50; i += 1) {
+      stateStore.recordSuccess({
+        profile: 'g8',
+        signatureKey: 'sig:serial',
+        bootId,
+        taskId: `t-${i}`,
+      });
+    }
+    expect(stateStore.get('g8', 'sig:serial')!.successes).toBe(50);
+    localDb.close();
+  });
+});
+
 describe('G6 — revision retention cap', () => {
   test('keeps revision 1 + most recent (cap - 1) revisions', async () => {
     const create = await server.handleRequest(

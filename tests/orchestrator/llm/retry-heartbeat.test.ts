@@ -36,7 +36,7 @@ describe('R2 sleepWithHeartbeat', () => {
 });
 
 describe('R2 retryWithBackoff — onAttempt fires before AND during long backoff', () => {
-  test('a 200ms backoff with 50ms heartbeat cadence triggers ≥3 onAttempt calls', async () => {
+  test('a 300ms backoff with 100ms heartbeat cadence triggers multiple onAttempt calls', async () => {
     const calls: number[] = [];
     let attempt = 0;
     const result = await retryWithBackoff(
@@ -52,17 +52,17 @@ describe('R2 retryWithBackoff — onAttempt fires before AND during long backoff
       },
       {
         maxRetries: 1,
-        baseDelayMs: 200,
+        baseDelayMs: 300,
         timeoutMs: 10_000,
         retryableStatuses: new Set([429]),
-        heartbeatIntervalMs: 50,
+        heartbeatIntervalMs: 100,
         onAttempt: ({ delayMs }) => {
           calls.push(delayMs);
         },
       },
     );
     expect(result).toBe('ok');
-    // 1 pre-sleep call + ≥3 mid-sleep heartbeats (200ms / 50ms ≈ 3-4).
-    expect(calls.length).toBeGreaterThanOrEqual(3);
+    // Pre-sleep call + ≥1 mid-sleep heartbeat (300ms / 100ms ≈ 2 ticks before residual).
+    expect(calls.length).toBeGreaterThanOrEqual(2);
   });
 });

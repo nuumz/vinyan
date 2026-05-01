@@ -18,6 +18,20 @@ import { memorySafetyVerdict } from '../memory/snapshot.ts';
 export type SkillProposalStatus = 'pending' | 'approved' | 'rejected' | 'quarantined';
 export type SkillProposalTrust = 'quarantined' | 'community' | 'trusted' | 'official' | 'builtin';
 
+/**
+ * Correlated subquery returning the latest revision number for a
+ * proposal. Inlined into every SELECT so the entity carries
+ * `latestRevision` without an extra round-trip — the editor uses it
+ * as the optimistic-lock baseline (G2-extension), so it must be
+ * present on the proposal entity itself, not on a separate revisions
+ * query that loads asynchronously.
+ */
+const LATEST_REVISION_SUBQUERY = `(
+  SELECT COALESCE(MAX(r.revision), 1)
+  FROM skill_proposal_revisions r
+  WHERE r.profile = skill_proposals.profile AND r.proposal_id = skill_proposals.id
+) AS latest_revision`;
+
 export interface SkillProposal {
   readonly id: string;
   readonly profile: string;
@@ -36,6 +50,17 @@ export interface SkillProposal {
   readonly decidedAt: number | null;
   readonly decidedBy: string | null;
   readonly decisionReason: string | null;
+  /**
+   * Latest revision number for this proposal (G2-extension).
+   *
+   * Computed via correlated subquery on every read. The editor uses
+   * this value as the `expectedRevision` baseline for optimistic
+   * locking — having it on the proposal entity itself avoids the
+   * race window where a separate `useSkillProposalRevisions` query
+   * is still loading and the operator could submit a PATCH without
+   * the optimistic-lock token.
+   */
+  readonly latestRevision: number;
 }
 
 export interface CreateSkillProposalInput {
@@ -74,6 +99,8 @@ interface SkillProposalRow {
   decided_at: number | null;
   decided_by: string | null;
   decision_reason: string | null;
+  /** Computed via correlated subquery — `MAX(revision)` from `skill_proposal_revisions`. */
+  latest_revision: number;
 }
 
 export interface SkillProposalRevision {
@@ -384,14 +411,22 @@ export class SkillProposalStore {
 
   get(id: string, profile: string): SkillProposal | null {
     const row = this.db
-      .prepare(`SELECT * FROM skill_proposals WHERE id = ? AND profile = ?`)
+      .prepare(
+        `SELECT skill_proposals.*, ${LATEST_REVISION_SUBQUERY}
+           FROM skill_proposals
+          WHERE id = ? AND profile = ?`,
+      )
       .get(id, profile) as SkillProposalRow | null;
     return row ? rowToProposal(row) : null;
   }
 
   findByName(profile: string, proposedName: string): SkillProposal | null {
     const row = this.db
-      .prepare(`SELECT * FROM skill_proposals WHERE profile = ? AND proposed_name = ?`)
+      .prepare(
+        `SELECT skill_proposals.*, ${LATEST_REVISION_SUBQUERY}
+           FROM skill_proposals
+          WHERE profile = ? AND proposed_name = ?`,
+      )
       .get(profile, proposedName) as SkillProposalRow | null;
     return row ? rowToProposal(row) : null;
   }
@@ -406,7 +441,8 @@ export class SkillProposalStore {
     const limitClause = typeof opts.limit === 'number' && opts.limit > 0 ? ` LIMIT ${Math.floor(opts.limit)}` : '';
     const rows = this.db
       .prepare(
-        `SELECT * FROM skill_proposals
+        `SELECT skill_proposals.*, ${LATEST_REVISION_SUBQUERY}
+           FROM skill_proposals
           WHERE ${where.join(' AND ')}
           ORDER BY created_at DESC${limitClause}`,
       )
@@ -508,6 +544,13 @@ function rowToProposal(row: SkillProposalRow): SkillProposal {
     decidedAt: row.decided_at,
     decidedBy: row.decided_by,
     decisionReason: row.decision_reason,
+    // Defensive — defaults to 1 (the always-present create row) when
+    // the correlated subquery produced NULL (no revision rows yet,
+    // which is impossible after mig 032 + create() but the subquery
+    // uses COALESCE for safety).
+    latestRevision: typeof row.latest_revision === 'number' && row.latest_revision > 0
+      ? row.latest_revision
+      : 1,
   };
 }
 

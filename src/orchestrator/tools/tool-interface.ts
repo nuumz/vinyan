@@ -52,6 +52,15 @@ export interface ToolContext {
    * direct CLI tool calls and tests run without one.
    */
   taskId?: string;
+  /**
+   * R4 — runtime capability token issued by `delegation-router` when the
+   * task is a delegated sub-task. When present, the executor consults
+   * `checkCapability(...)` before running mutation-class tools so the
+   * subagentType contract is enforced at runtime, not just at
+   * delegation validation time. Top-level (non-delegated) tasks omit
+   * this — caller owns the policy. See `src/core/capability-token.ts`.
+   */
+  capabilityToken?: import('../../core/capability-token.ts').CapabilityToken;
   onDelegate?: (req: {
     goal: string;
     targetFiles: string[];

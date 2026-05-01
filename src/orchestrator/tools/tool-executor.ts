@@ -7,6 +7,7 @@
  * Source of truth: spec/tdd.md §18.1, §18.4
  */
 import { createHash } from 'crypto';
+import { checkCapability } from '../../core/capability-token.ts';
 import type { Evidence } from '../../core/types.ts';
 import type { ToolCall, ToolResult } from '../types.ts';
 import { BUILT_IN_TOOLS } from './built-in-tools.ts';
@@ -41,6 +42,28 @@ export class ToolExecutor {
           tool: call.tool,
           status: 'denied',
           error: `Unknown tool: ${call.tool}`,
+          durationMs: 0,
+        });
+        continue;
+      }
+
+      // R4 — runtime capability check. When a token is present (this is
+      // a delegated sub-task), enforce subagentType / allowedTools /
+      // forbiddenTools / allowedPaths BEFORE the tool's own validator
+      // runs. Top-level tasks pass no token and the check is a pass-
+      // through (returns ok: true with tokenId: null).
+      const targetPath = typeof call.parameters.path === 'string' ? call.parameters.path : undefined;
+      const capCheck = checkCapability({
+        token: context.capabilityToken,
+        toolName: call.tool,
+        ...(targetPath !== undefined ? { targetPath } : {}),
+      });
+      if (!capCheck.ok) {
+        results.push({
+          callId: call.id,
+          tool: call.tool,
+          status: 'denied',
+          error: `capability_token: ${capCheck.reason} — ${capCheck.detail}`,
           durationMs: 0,
         });
         continue;

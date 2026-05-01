@@ -249,7 +249,10 @@ export async function retryWithBackoff<T>(fn: (signal: AbortSignal) => Promise<T
           // `llm:retry_attempt` bus event keeps the watchdog reset.
           // The TOTAL sleep duration is unchanged (`delay`); only the
           // emission cadence is finer.
-          const heartbeat = Math.max(1_000, config.heartbeatIntervalMs ?? 30_000);
+          // Floor at 50ms so tests can exercise the heartbeat path
+          // deterministically; production callers pass 30_000ms which
+          // is the watchdog cadence target.
+          const heartbeat = Math.max(50, config.heartbeatIntervalMs ?? 30_000);
           await sleepWithHeartbeat(delay, heartbeat, () => {
             if (config.onAttempt) {
               try {

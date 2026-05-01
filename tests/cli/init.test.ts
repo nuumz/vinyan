@@ -21,7 +21,7 @@ describe('vinyan init', () => {
 
     const result = init(tempDir, { userSkillsDir: false });
     expect(result.created).toBe(true);
-    expect(result.starterPackCopied).toBeUndefined(); // userSkillsDir: false → no seeding
+    expect(result.systemSkillsCopied).toBeUndefined(); // userSkillsDir: false → no seeding
     expect(existsSync(join(tempDir, 'vinyan.json'))).toBe(true);
 
     const config = JSON.parse(readFileSync(join(tempDir, 'vinyan.json'), 'utf-8'));
@@ -55,14 +55,22 @@ describe('vinyan init', () => {
     expect(existsSync(join(tempDir, '.vinyan', 'skills'))).toBe(true);
   });
 
-  test('init seeds starter pack into the supplied user skills dir', () => {
+  test('init seeds system-skill pack into the supplied user skills dir', () => {
     const userDir = mkdtempSync(join(tmpdir(), 'vinyan-init-userdir-'));
     rmSync(userDir, { recursive: true, force: true });
     try {
       const result = init(tempDir, { userSkillsDir: userDir });
       expect(result.created).toBe(true);
-      expect(result.starterPackCopied?.length ?? 0).toBeGreaterThan(0);
-      expect(existsSync(join(userDir, 'code-review', 'SKILL.md'))).toBe(true);
+      // 14 broad system skills should land. The exact count is locked in the
+      // dedicated system-skill-pack test; here we just verify >0 and the
+      // presence of representative names from across the cognitive surface.
+      expect(result.systemSkillsCopied?.length ?? 0).toBeGreaterThanOrEqual(14);
+      expect(existsSync(join(userDir, 'workflow-intake', 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(userDir, 'planning-contract', 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(userDir, 'recovery-replan', 'SKILL.md'))).toBe(true);
+      // Retired code-centric starters must NOT be in the default seed.
+      expect(existsSync(join(userDir, 'code-review', 'SKILL.md'))).toBe(false);
+      expect(existsSync(join(userDir, 'debug-trace', 'SKILL.md'))).toBe(false);
     } finally {
       rmSync(userDir, { recursive: true, force: true });
     }

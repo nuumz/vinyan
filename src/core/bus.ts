@@ -542,6 +542,66 @@ export interface VinyanBusEvents {
   'memory:approved': { recordId: string; key?: string };
   'memory:rejected': { recordId: string; key?: string };
 
+  // Memory Wiki — second-brain substrate (src/memory/wiki/)
+  'memory-wiki:source_ingested': {
+    sourceId: string;
+    kind: string;
+    profile: string;
+    contentHash: string;
+  };
+  'memory-wiki:page_proposed': {
+    pageId: string;
+    profile: string;
+    type: string;
+    title: string;
+    actor: string;
+  };
+  'memory-wiki:page_written': {
+    pageId: string;
+    profile: string;
+    type: string;
+    lifecycle: string;
+    evidenceTier: string;
+    created: boolean;
+    actor: string;
+  };
+  'memory-wiki:page_rejected': {
+    pageId: string;
+    reason: string;
+    detail: string;
+    actor: string;
+  };
+  'memory-wiki:claim_validated': {
+    pageId: string;
+    previousLifecycle: string;
+    newLifecycle: string;
+  };
+  'memory-wiki:claim_rejected': {
+    pageId: string;
+    reason: string;
+  };
+  'memory-wiki:context_pack_built': {
+    profile: string;
+    pageCount: number;
+    tokenEstimate: number;
+    taskId?: string;
+  };
+  'memory-wiki:lint_started': { profile: string };
+  'memory-wiki:lint_completed': {
+    profile: string;
+    total: number;
+    errors: number;
+    warnings: number;
+  };
+  'memory-wiki:stale_detected': { pageId: string; reason: string };
+  'memory-wiki:consolidation_completed': {
+    profile: string;
+    promoted: number;
+    demoted: number;
+    archived: number;
+    mirrored: number;
+  };
+
   // Phase E: File invalidation relay
   'file:hashChanged': { filePath: string; newHash: string; previousHash?: string };
 

@@ -3,10 +3,9 @@
  */
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import type { VinyanConfig } from '../config/schema.ts';
-import { ensureStarterPack } from './skills-simple.ts';
+import { ensureSystemSkillPack, locateBundledSkillsDir } from './skills-simple.ts';
 
 interface ProjectInfo {
   hasTypeScript: boolean;
@@ -73,37 +72,17 @@ export interface InitResult {
   created: boolean;
   configPath: string;
   reason?: string;
-  starterPackCopied?: readonly string[];
-}
-
-/** Maximum directory levels to walk up when searching for `templates/skills/`. */
-const MAX_TEMPLATE_SEARCH_DEPTH = 6;
-
-/**
- * Locate the bundled `templates/skills/` directory. Walks up from this file's
- * location until it finds a sibling `templates/` (works in both source and
- * shipped builds).
- */
-function locateTemplatesDir(): string | null {
-  const startDir = dirname(fileURLToPath(import.meta.url));
-  let cur = startDir;
-  for (let i = 0; i < MAX_TEMPLATE_SEARCH_DEPTH; i++) {
-    const candidate = join(cur, 'templates', 'skills');
-    if (existsSync(candidate)) return candidate;
-    const parent = dirname(cur);
-    if (parent === cur) break;
-    cur = parent;
-  }
-  return null;
+  /** Names of system skills seeded into the user dir on first init, if any. */
+  systemSkillsCopied?: readonly string[];
 }
 
 export interface InitOptions {
   /** Overwrite existing vinyan.json. */
   force?: boolean;
   /**
-   * Override the user-global `~/.vinyan/skills/` location for starter pack
+   * Override the user-global `~/.vinyan/skills/` location for system-skill
    * seeding. Mainly for tests so they don't pollute the real home dir.
-   * Set to `false` to skip starter-pack seeding entirely.
+   * Set to `false` to skip system-skill seeding entirely.
    */
   userSkillsDir?: string | false;
 }
@@ -131,22 +110,23 @@ export function init(workspacePath: string, optsOrForce: InitOptions | boolean =
   // `~/.claude/skills/` convention at the project scope.
   mkdirSync(join(workspacePath, '.vinyan', 'skills'), { recursive: true });
 
-  // Seed user-global ~/.vinyan/skills/ with the starter pack on first init.
-  // Idempotent — won't overwrite an already-populated dir. Tests pass a temp
+  // Seed user-global ~/.vinyan/skills/ with the system-skill pack on first
+  // init. Idempotent — won't overwrite an already-populated dir. Existing
+  // users can opt in via `vinyan skills install-system`. Tests pass a temp
   // dir or `false` to opt out.
-  let starterPackCopied: readonly string[] | undefined;
+  let systemSkillsCopied: readonly string[] | undefined;
   if (opts.userSkillsDir !== false) {
-    const templatesRoot = locateTemplatesDir();
+    const templatesRoot = locateBundledSkillsDir('skills');
     const userDir = opts.userSkillsDir ?? join(homedir(), '.vinyan', 'skills');
     if (templatesRoot) {
-      const result = ensureStarterPack(templatesRoot, userDir);
+      const result = ensureSystemSkillPack(templatesRoot, userDir);
       if (result.copied.length > 0) {
-        starterPackCopied = result.copied;
+        systemSkillsCopied = result.copied;
       }
     }
   }
 
-  return starterPackCopied
-    ? { created: true, configPath, starterPackCopied }
+  return systemSkillsCopied
+    ? { created: true, configPath, systemSkillsCopied }
     : { created: true, configPath };
 }

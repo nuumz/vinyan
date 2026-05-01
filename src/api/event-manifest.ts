@@ -179,6 +179,22 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'memory:approved', sse: true, record: false, scope: 'global', sessionBypass: true },
   { event: 'memory:rejected', sse: true, record: false, scope: 'global', sessionBypass: true },
 
+  // ── Memory Wiki — second brain substrate ────────────────────────────
+  // Global / session-bypass: wiki ops are workspace-wide knowledge updates,
+  // not bound to a single in-flight task. UI surfaces them in a dedicated
+  // panel rather than the per-task event stream.
+  { event: 'memory-wiki:source_ingested', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'memory-wiki:page_proposed', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'memory-wiki:page_written', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'memory-wiki:page_rejected', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'memory-wiki:claim_validated', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'memory-wiki:claim_rejected', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'memory-wiki:context_pack_built', sse: false, record: false, scope: 'global' },
+  { event: 'memory-wiki:lint_started', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'memory-wiki:lint_completed', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'memory-wiki:stale_detected', sse: true, record: false, scope: 'global', sessionBypass: true },
+  { event: 'memory-wiki:consolidation_completed', sse: true, record: false, scope: 'global', sessionBypass: true },
+
   // ── External Coding CLI (provider-neutral) ──────────────────────────
   // Every UI-visible event the ExternalCodingCliController emits. Recorded
   // for historical replay so a task event-history endpoint can reconstruct

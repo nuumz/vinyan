@@ -29,6 +29,7 @@ import { isValidProfileName } from '../orchestrator/types.ts';
 import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { handleCodingCliRoute } from './coding-cli-routes.ts';
+import { handleMemoryWikiRoute, type MemoryWikiRouteDeps } from './memory-wiki-routes.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
 import type { Session, SessionManager } from './session-manager.ts';
 import { createSessionSSEStream, createSSEStream } from './sse.ts';
@@ -141,6 +142,13 @@ export interface APIServerDeps {
    * this value. Defaults to `'default'` when not set.
    */
   defaultProfile?: string;
+  /**
+   * Memory Wiki / Second Brain — wired together as one bundle so the
+   * `/api/v1/memory-wiki/*` surface can compose store + writer +
+   * retriever + ingestor + (optional) lint + consolidation. Omit to
+   * disable the surface; the route returns 503 in that case.
+   */
+  memoryWiki?: MemoryWikiRouteDeps;
 }
 
 type EngineListEntry = EngineProfile & { stats?: EngineStats };
@@ -342,6 +350,16 @@ export class VinyanAPIServer {
         controller,
         store: this.deps.codingCliStore,
       });
+      if (handled) return handled;
+    }
+
+    // ── Memory Wiki ─────────────────────────────────────────────────────
+    if (path.startsWith('/api/v1/memory-wiki')) {
+      const wiki = this.deps.memoryWiki;
+      if (!wiki) {
+        return jsonResponse({ error: 'memory-wiki not configured' }, 503);
+      }
+      const handled = await handleMemoryWikiRoute(method, path, req, wiki);
       if (handled) return handled;
     }
 

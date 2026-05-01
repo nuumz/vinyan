@@ -1,6 +1,6 @@
 /**
- * `vinyan skills new|list|show|search|edit|mode` — Claude-Code-style CLI
- * for the hybrid skill redesign's simple layer.
+ * `vinyan skills new|list|show|search|edit|remove|mode|install-system|install-examples`
+ * — Claude-Code-style CLI for the hybrid skill redesign's simple layer.
  *
  * Authoring contract: drop a markdown file with `name + description` in the
  * frontmatter, the rest is body. No Zod schema, no tier ladder, no
@@ -19,6 +19,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import { loadSimpleSkills, parseFrontmatter, type SimpleSkill } from '../skills/simple/loader.ts';
 import { matchSkillsForTask } from '../skills/simple/matcher.ts';
@@ -27,6 +28,13 @@ type Scope = 'user' | 'project';
 
 interface CommandOptions {
   workspace: string;
+  /**
+   * Override the user-global `~/.vinyan/skills/` location. Mainly for tests
+   * since Bun caches `os.homedir()` from process start and mutating
+   * `process.env.HOME` at runtime does not change it. Production callers
+   * leave this undefined.
+   */
+  userSkillsDir?: string;
 }
 
 export async function runSkillsSimpleCommand(args: readonly string[], opts: CommandOptions): Promise<void> {
@@ -48,9 +56,13 @@ export async function runSkillsSimpleCommand(args: readonly string[], opts: Comm
       return runRemove(args.slice(1), opts);
     case 'mode':
       return runMode(args.slice(1), opts);
+    case 'install-system':
+      return runInstallSystem(args.slice(1), opts);
+    case 'install-examples':
+      return runInstallExamples(args.slice(1), opts);
     default:
       throw new Error(
-        `Unknown skill subcommand '${sub}'. Available: new, list, show, search, edit, remove, mode.`,
+        `Unknown skill subcommand '${sub}'. Available: new, list, show, search, edit, remove, mode, install-system, install-examples.`,
       );
   }
 }
@@ -120,7 +132,10 @@ function runList(args: readonly string[], opts: CommandOptions): void {
   const agentFilter = flags.agent;
   if (agentFilter && agentFilter !== 'ALL') validateAgentId(agentFilter);
 
-  const result = loadSimpleSkills({ workspace: opts.workspace });
+  const result = loadSimpleSkills({
+    workspace: opts.workspace,
+    ...(opts.userSkillsDir !== undefined ? { userSkillsDir: opts.userSkillsDir } : {}),
+  });
   let filtered = result.skills;
   if (agentFilter === 'ALL') {
     // Pass — show every skill including all per-agent variants.
@@ -185,6 +200,7 @@ function runShow(args: readonly string[], opts: CommandOptions): void {
     validateAgentId(flags.agent);
     findOpts.agent = flags.agent;
   }
+  if (opts.userSkillsDir !== undefined) findOpts.userSkillsDir = opts.userSkillsDir;
   const skill = findByName(name, opts.workspace, findOpts);
   if (!skill) {
     const where = flags.agent ? ` for agent '${flags.agent}'` : '';
@@ -207,7 +223,10 @@ function runSearch(args: readonly string[], opts: CommandOptions): void {
   const query = positional.join(' ').trim();
   if (!query) throw new Error('Usage: vinyan skills search <query terms> [--agent=<id>] [--top-k=N]');
 
-  const result = loadSimpleSkills({ workspace: opts.workspace });
+  const result = loadSimpleSkills({
+    workspace: opts.workspace,
+    ...(opts.userSkillsDir !== undefined ? { userSkillsDir: opts.userSkillsDir } : {}),
+  });
   let pool = result.skills;
   if (flags.agent) {
     validateAgentId(flags.agent);
@@ -253,6 +272,7 @@ function runEdit(args: readonly string[], opts: CommandOptions): void {
     validateAgentId(flags.agent);
     findOpts.agent = flags.agent;
   }
+  if (opts.userSkillsDir !== undefined) findOpts.userSkillsDir = opts.userSkillsDir;
   const skill = findByName(name, opts.workspace, findOpts);
   if (!skill) {
     const where = flags.agent ? ` for agent '${flags.agent}'` : '';
@@ -275,6 +295,7 @@ function runRemove(args: readonly string[], opts: CommandOptions): void {
     validateAgentId(flags.agent);
     findOpts.agent = flags.agent;
   }
+  if (opts.userSkillsDir !== undefined) findOpts.userSkillsDir = opts.userSkillsDir;
   const skill = findByName(name, opts.workspace, findOpts);
   if (!skill) {
     const where = flags.agent ? ` for agent '${flags.agent}'` : '';
@@ -341,7 +362,7 @@ interface ParsedArgs {
 // Bare boolean flags (no value expected). We treat the presence of these as
 // truthy regardless of what comes after — `--force --scope=user` should not
 // swallow `--scope=user` as the value of `--force`.
-const BARE_FLAGS = new Set(['force', 'no-edit']);
+const BARE_FLAGS = new Set(['force', 'no-edit', 'prune-old-starters']);
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
   const positional: string[] = [];
@@ -423,6 +444,8 @@ interface FindByNameOptions {
    * without making them remember which scope/agent it lives under.
    */
   agent?: string | 'shared';
+  /** Test override for the user-global skills dir. */
+  userSkillsDir?: string;
 }
 
 function findByName(
@@ -430,7 +453,10 @@ function findByName(
   workspace: string,
   opts: FindByNameOptions = {},
 ): SimpleSkill | null {
-  const result = loadSimpleSkills({ workspace });
+  const result = loadSimpleSkills({
+    workspace,
+    ...(opts.userSkillsDir !== undefined ? { userSkillsDir: opts.userSkillsDir } : {}),
+  });
   let candidates = result.skills;
   if (opts.agent === 'shared') {
     candidates = candidates.filter((s) => s.scope === 'user' || s.scope === 'project');
@@ -481,19 +507,85 @@ function openEditor(path: string): void {
 // to consume parseFrontmatter for downstream tooling.
 export { parseFrontmatter };
 
-// ── starter pack copy on first init ───────────────────────────────────
-
-const STARTER_NAMES = ['code-review', 'debug-trace', 'git-commit-message', 'unit-test-plan'] as const;
+// ── system-skill seeding ──────────────────────────────────────────────
 
 /**
- * Idempotent copy: if `~/.vinyan/skills/` is missing OR has zero entries,
- * seed it with the bundled starter pack from `templates/skills/`. Skips when
- * the user has already populated the directory so we never overwrite.
+ * Default system-skill pack shipped with Vinyan. These are broad cognitive
+ * scaffolds (intake, decomposition, dispatch, evidence, planning, verification,
+ * review, recovery, output, learning, governance, budget, collaboration) — NOT
+ * domain or language-specific skills. They live as plain SimpleSkills under
+ * `~/.vinyan/skills/<name>/` after seeding; users can edit, override, or
+ * remove them like any other skill.
  *
- * Called from `vinyan init` and from factory boot (if user-global dir is
- * empty on first `vinyan run`).
+ * Domain-specific examples (the retired `code-review`/`debug-trace`/
+ * `git-commit-message`/`unit-test-plan` pack) live under
+ * `templates/examples/skills/` and ship via the opt-in
+ * `vinyan skills install-examples` subcommand.
  */
-export function ensureStarterPack(templatesRoot: string, userSkillsDir: string): {
+export const SYSTEM_SKILL_NAMES = [
+  'workflow-intake',
+  'task-decomposition',
+  'persona-dispatch',
+  'capability-mapping',
+  'evidence-gathering',
+  'planning-contract',
+  'verification-strategy',
+  'reviewer-brief',
+  'recovery-replan',
+  'output-contract',
+  'learning-capture',
+  'governance-guardrails',
+  'budget-and-scope',
+  'collaboration-room',
+] as const;
+
+/**
+ * Names retired from the default pack on 2026-04-30 — moved to
+ * `templates/examples/skills/`. `install-system --prune-old-starters` may
+ * remove them from a user's dir, but only when the file content matches the
+ * bundled example byte-for-byte (so user-customised copies are left alone).
+ */
+export const RETIRED_STARTER_NAMES = [
+  'code-review',
+  'debug-trace',
+  'git-commit-message',
+  'unit-test-plan',
+] as const;
+
+/** Maximum directory levels to walk up when searching for `templates/`. */
+const MAX_TEMPLATE_SEARCH_DEPTH = 6;
+
+/**
+ * Locate a bundled templates subdirectory by walking up from this file's
+ * location until it finds a sibling `templates/<...subPath>` (works in both
+ * source and shipped builds). Shared by `vinyan init`, `install-system`, and
+ * `install-examples`.
+ */
+export function locateBundledSkillsDir(
+  ...subPath: readonly string[]
+): string | null {
+  const startDir = dirname(fileURLToPath(import.meta.url));
+  let cur = startDir;
+  for (let i = 0; i < MAX_TEMPLATE_SEARCH_DEPTH; i++) {
+    const candidate = join(cur, 'templates', ...subPath);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
+}
+
+/**
+ * Idempotent first-init seeder: if `~/.vinyan/skills/` is missing OR has zero
+ * entries, seed it with the bundled system-skill pack. Skips when the user
+ * has already populated the directory so we never overwrite.
+ *
+ * Called from `vinyan init`. Existing users who already have skills (the old
+ * starter pack or anything else) do NOT get the system pack auto-installed —
+ * they run `vinyan skills install-system` explicitly.
+ */
+export function ensureSystemSkillPack(templatesRoot: string, userSkillsDir: string): {
   copied: readonly string[];
   reason?: string;
 } {
@@ -514,7 +606,7 @@ export function ensureStarterPack(templatesRoot: string, userSkillsDir: string):
   }
   mkdirSync(userSkillsDir, { recursive: true });
   const copied: string[] = [];
-  for (const name of STARTER_NAMES) {
+  for (const name of SYSTEM_SKILL_NAMES) {
     const src = join(templatesRoot, name, 'SKILL.md');
     if (!existsSync(src)) continue;
     const dstDir = join(userSkillsDir, name);
@@ -523,4 +615,191 @@ export function ensureStarterPack(templatesRoot: string, userSkillsDir: string):
     copied.push(name);
   }
   return { copied };
+}
+
+export interface InstallSkillsResult {
+  readonly copied: readonly string[];
+  readonly skipped: readonly { name: string; reason: string }[];
+}
+
+interface InstallOptions {
+  /** Overwrite existing same-name skills. Default false. */
+  readonly force?: boolean;
+}
+
+/**
+ * Operator-driven name-by-name installer for the system-skill pack. Skips
+ * names that already exist on disk unless `force` is set. Used by
+ * `vinyan skills install-system` so existing users who upgraded from the old
+ * starter pack can opt in without losing customisations.
+ */
+export function installSystemSkills(
+  templatesRoot: string,
+  userSkillsDir: string,
+  opts: InstallOptions = {},
+): InstallSkillsResult {
+  return installNamedSkills(templatesRoot, userSkillsDir, SYSTEM_SKILL_NAMES, opts);
+}
+
+/**
+ * Operator-driven installer for the retired example pack
+ * (`code-review`/`debug-trace`/`git-commit-message`/`unit-test-plan`). Same
+ * semantics as `installSystemSkills`. Lets users opt back in to the old
+ * code-centric starters after the redesign.
+ */
+export function installExampleSkills(
+  examplesRoot: string,
+  userSkillsDir: string,
+  opts: InstallOptions = {},
+): InstallSkillsResult {
+  return installNamedSkills(examplesRoot, userSkillsDir, RETIRED_STARTER_NAMES, opts);
+}
+
+function installNamedSkills(
+  templatesRoot: string,
+  userSkillsDir: string,
+  names: readonly string[],
+  opts: InstallOptions,
+): InstallSkillsResult {
+  if (!existsSync(templatesRoot)) {
+    return {
+      copied: [],
+      skipped: names.map((name) => ({ name, reason: `templates dir missing at ${templatesRoot}` })),
+    };
+  }
+  mkdirSync(userSkillsDir, { recursive: true });
+  const copied: string[] = [];
+  const skipped: { name: string; reason: string }[] = [];
+  for (const name of names) {
+    const src = join(templatesRoot, name, 'SKILL.md');
+    if (!existsSync(src)) {
+      skipped.push({ name, reason: 'template missing' });
+      continue;
+    }
+    const dstDir = join(userSkillsDir, name);
+    const dstFile = join(dstDir, 'SKILL.md');
+    if (existsSync(dstFile) && !opts.force) {
+      skipped.push({ name, reason: 'already exists (use --force to overwrite)' });
+      continue;
+    }
+    mkdirSync(dstDir, { recursive: true });
+    writeFileSync(dstFile, readFileSync(src, 'utf-8'), 'utf-8');
+    copied.push(name);
+  }
+  return { copied, skipped };
+}
+
+/**
+ * Remove retired starter skills from the user's dir IF the on-disk content
+ * matches the bundled example byte-for-byte. User-customised copies are left
+ * alone. Returns the set of names actually removed and those skipped (with
+ * reason).
+ */
+export function pruneRetiredStarters(
+  examplesRoot: string,
+  userSkillsDir: string,
+): { removed: readonly string[]; skipped: readonly { name: string; reason: string }[] } {
+  const removed: string[] = [];
+  const skipped: { name: string; reason: string }[] = [];
+  for (const name of RETIRED_STARTER_NAMES) {
+    const dstFile = join(userSkillsDir, name, 'SKILL.md');
+    if (!existsSync(dstFile)) {
+      skipped.push({ name, reason: 'not present' });
+      continue;
+    }
+    const exemplar = join(examplesRoot, name, 'SKILL.md');
+    if (!existsSync(exemplar)) {
+      skipped.push({ name, reason: 'no bundled exemplar to compare — refusing to delete' });
+      continue;
+    }
+    const onDisk = readFileSync(dstFile, 'utf-8');
+    const bundled = readFileSync(exemplar, 'utf-8');
+    if (onDisk !== bundled) {
+      skipped.push({ name, reason: 'content differs from bundled exemplar — user-customised; refusing to delete' });
+      continue;
+    }
+    rmSync(join(userSkillsDir, name), { recursive: true, force: true });
+    removed.push(name);
+  }
+  return { removed, skipped };
+}
+
+// ── `vinyan skills install-system` ────────────────────────────────────
+
+function runInstallSystem(args: readonly string[], opts: CommandOptions): void {
+  const { flags } = parseArgs(args);
+  const userSkillsDir = flags['user-dir'] ?? opts.userSkillsDir ?? join(homedir(), '.vinyan', 'skills');
+  const templatesRoot = locateBundledSkillsDir('skills');
+  if (!templatesRoot) {
+    throw new Error(
+      'Could not locate bundled templates/skills/ directory next to the Vinyan install. Reinstall or run from the source tree.',
+    );
+  }
+
+  const force = flags.force === 'true';
+  const result = installSystemSkills(templatesRoot, userSkillsDir, { force });
+
+  console.log(`System-skill install → ${userSkillsDir}`);
+  if (result.copied.length > 0) {
+    console.log(`Installed (${result.copied.length}): ${result.copied.join(', ')}`);
+  }
+  if (result.skipped.length > 0) {
+    console.log(`Skipped (${result.skipped.length}):`);
+    for (const s of result.skipped) {
+      console.log(`  - ${s.name}: ${s.reason}`);
+    }
+  }
+  if (result.copied.length === 0 && result.skipped.every((s) => s.reason.startsWith('already exists'))) {
+    console.log('All system skills already present. Re-run with --force to overwrite.');
+  }
+
+  // Optional pruning of retired starters.
+  if (flags['prune-old-starters'] === 'true') {
+    const examplesRoot = locateBundledSkillsDir('examples', 'skills');
+    if (!examplesRoot) {
+      console.warn('[skill:install-system] cannot locate templates/examples/skills/ — skipping prune step.');
+      return;
+    }
+    const pr = pruneRetiredStarters(examplesRoot, userSkillsDir);
+    if (pr.removed.length > 0) {
+      console.log(`Pruned retired starters (${pr.removed.length}): ${pr.removed.join(', ')}`);
+    }
+    const skippedKept = pr.skipped.filter((s) => !s.reason.startsWith('not present'));
+    if (skippedKept.length > 0) {
+      console.log('Kept (user-customised or no exemplar):');
+      for (const s of skippedKept) {
+        console.log(`  - ${s.name}: ${s.reason}`);
+      }
+    }
+  }
+}
+
+// ── `vinyan skills install-examples` ──────────────────────────────────
+
+function runInstallExamples(args: readonly string[], opts: CommandOptions): void {
+  const { flags } = parseArgs(args);
+  const userSkillsDir = flags['user-dir'] ?? opts.userSkillsDir ?? join(homedir(), '.vinyan', 'skills');
+  const examplesRoot = locateBundledSkillsDir('examples', 'skills');
+  if (!examplesRoot) {
+    throw new Error(
+      'Could not locate bundled templates/examples/skills/ directory next to the Vinyan install. Reinstall or run from the source tree.',
+    );
+  }
+
+  const force = flags.force === 'true';
+  const result = installExampleSkills(examplesRoot, userSkillsDir, { force });
+
+  console.log(`Example-skill install → ${userSkillsDir}`);
+  if (result.copied.length > 0) {
+    console.log(`Installed (${result.copied.length}): ${result.copied.join(', ')}`);
+  }
+  if (result.skipped.length > 0) {
+    console.log(`Skipped (${result.skipped.length}):`);
+    for (const s of result.skipped) {
+      console.log(`  - ${s.name}: ${s.reason}`);
+    }
+  }
+  if (result.copied.length === 0 && result.skipped.every((s) => s.reason.startsWith('already exists'))) {
+    console.log('All example skills already present. Re-run with --force to overwrite.');
+  }
 }

@@ -34,6 +34,7 @@ import { migration022 } from './022_a5_oracle_independence.ts';
 import { migration023 } from './023_persona_overclaim.ts';
 import { migration024 } from './024_coding_cli.ts';
 import { migration025 } from './025_task_events_session_backfill.ts';
+import { migration026 } from './026_memory_wiki.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -62,4 +63,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration023,
   migration024,
   migration025,
+  migration026,
 ];

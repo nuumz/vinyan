@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { type SessionDirLayout, sessionFiles } from './paths.ts';
 import { type JsonlLine, type JsonlLineError, JsonlLineZ } from './schemas.ts';
+import { orderedSegmentPaths } from './segments.ts';
 
 export interface ScannedLine {
   line: JsonlLine;
@@ -33,17 +34,40 @@ export interface ScanResult {
 export class JsonlReader {
   constructor(private readonly layout: SessionDirLayout) {}
 
-  /** Stream every line of the session, in append order. */
+  /**
+   * Stream every line of the session, in append order. Phase 5:
+   * iterates sealed segments first (oldest → newest) then the active
+   * `events.jsonl` if present. Backward-compatible — sessions without
+   * a `segments.json` manifest read as a single `events.jsonl`.
+   *
+   * `byteOffset` is **within the current segment file** — not a
+   * global offset across all segments. The recovery scan + cursor
+   * tracking only ever cares about the active segment, so a per-file
+   * offset is the natural unit.
+   */
   *scan(sessionId: string): Generator<ScannedLine | { error: JsonlLineError }, void, void> {
-    const files = sessionFiles(this.layout, sessionId);
-    if (!existsSync(files.events)) return;
-    const raw = readFileSync(files.events, 'utf-8');
+    // Resolve the in-order path list (sealed + active). Empty when the
+    // session has never been written to (file does not exist).
+    const paths = orderedSegmentPaths(this.layout, sessionId);
+    if (paths.length === 0) {
+      // Backward-compat probe — older code referred to `files.events`
+      // directly. orderedSegmentPaths already covers that case.
+      return;
+    }
+    for (const path of paths) {
+      yield* this.scanFile(sessionId, path);
+    }
+  }
+
+  /** Yield every line from a single segment file. */
+  private *scanFile(sessionId: string, path: string): Generator<ScannedLine | { error: JsonlLineError }, void, void> {
+    if (!existsSync(path)) return;
+    const raw = readFileSync(path, 'utf-8');
     const buf = Buffer.from(raw, 'utf-8');
     let cursor = 0;
     const total = buf.length;
     while (cursor < total) {
       const newline = buf.indexOf(0x0a /* \n */, cursor);
-      // No trailing newline — treat as a partial line and stop.
       if (newline === -1) {
         const partial = buf.slice(cursor).toString('utf-8');
         if (partial.length > 0) {

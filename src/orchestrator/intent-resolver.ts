@@ -16,41 +16,19 @@
 
 import { z } from 'zod';
 import type { VinyanBus } from '../core/bus.ts';
+import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import { LRUTTLCache } from './intent/cache.ts';
-import {
-  computeStructuralFeatures,
-  renderStructuralFeatures,
-  type StructuralFeatures,
-} from './intent/features.ts';
+import { classifyExternalCodingCliIntent } from './intent/external-coding-cli-classifier.ts';
+import { detectCodingCliContinuation } from './intent/external-coding-cli-continuation.ts';
+import { computeStructuralFeatures, renderStructuralFeatures, type StructuralFeatures } from './intent/features.ts';
 import {
   buildClarificationRequest,
   formatAgentCatalog,
   formatConversationContext,
   resolveSelectedAgent,
 } from './intent/formatters.ts';
-import {
-  classifyWithFallback,
-  pickPrimaryProvider,
-} from './intent/llm-client.ts';
-import {
-  isLLMRefinement,
-  LLM_UNCERTAIN_THRESHOLD,
-  mergeDeterministicAndLLM,
-} from './intent/merge.ts';
-import {
-  detectRetryContinuation,
-  detectShortAffirmativeContinuation,
-} from './intent/short-affirmative.ts';
-import {
-  buildClassifierUserPrompt,
-  buildComprehensionBlock,
-} from './intent/prompt.ts';
-import {
-  composeDeterministicCandidate,
-  fallbackStrategy,
-  mapUnderstandingToStrategy,
-} from './intent/strategy.ts';
-import type { IntentResolverDeps } from './intent/types.ts';
+import { classifyWithFallback, pickPrimaryProvider } from './intent/llm-client.ts';
+import { isLLMRefinement, LLM_UNCERTAIN_THRESHOLD, mergeDeterministicAndLLM } from './intent/merge.ts';
 import {
   containsShellFallbackChain,
   IntentResponseSchema,
@@ -59,11 +37,12 @@ import {
   stripJsonFences,
   withTimeout,
 } from './intent/parser.ts';
+import { buildClassifierUserPrompt, buildComprehensionBlock } from './intent/prompt.ts';
+import { detectRetryContinuation, detectShortAffirmativeContinuation } from './intent/short-affirmative.ts';
+import { composeDeterministicCandidate, fallbackStrategy, mapUnderstandingToStrategy } from './intent/strategy.ts';
+import type { IntentResolverDeps } from './intent/types.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
 import { classifyDirectTool, resolveCommand } from './tools/direct-tool-resolver.ts';
-import { classifyExternalCodingCliIntent } from './intent/external-coding-cli-classifier.ts';
-import { detectCodingCliContinuation } from './intent/external-coding-cli-continuation.ts';
-import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type {
   AgentSpec,
   CapabilityRequirement,
@@ -75,10 +54,7 @@ import type {
   SemanticTaskUnderstanding,
   TaskInput,
 } from './types.ts';
-import {
-  formatUserContextForPrompt,
-  type UserInterestMiner,
-} from './user-context/user-interest-miner.ts';
+import { formatUserContextForPrompt, type UserInterestMiner } from './user-context/user-interest-miner.ts';
 
 // ---------------------------------------------------------------------------
 // Zod schema for LLM response parsing
@@ -181,8 +157,7 @@ export interface ScheduleStrategyClassification {
   readonly scheduleText: string;
 }
 
-const SCHEDULE_TRIGGER_RE =
-  /\b(every\b|daily\b|weekly\b|at\s+\d|on\s+(mon|tue|wed|thu|fri|sat|sun|weekday|weekend))/i;
+const SCHEDULE_TRIGGER_RE = /\b(every\b|daily\b|weekly\b|at\s+\d|on\s+(mon|tue|wed|thu|fri|sat|sun|weekday|weekend))/i;
 
 /**
  * Return `{ strategy: 'schedule', scheduleText }` when `text` matches the NL
@@ -213,7 +188,6 @@ export function classifyScheduleStrategy(
 // Commit D6: IntentResolverDeps moved to `src/orchestrator/intent/types.ts`
 // and imported at the top. Re-exported for legacy call sites.
 export type { IntentResolverDeps };
-
 
 /**
  * Threshold at which a deterministic candidate is trusted enough to bypass
@@ -348,20 +322,11 @@ function finalizeDeterministicOnly(
 // Commit D6: buildClassifierUserPrompt / buildComprehensionBlock moved to
 // `src/orchestrator/intent/prompt.ts` and imported at the top of this file.
 
-
-export async function resolveIntent(
-  input: TaskInput,
-  deps: IntentResolverDeps,
-): Promise<IntentResolution> {
+export async function resolveIntent(input: TaskInput, deps: IntentResolverDeps): Promise<IntentResolution> {
   const now = deps.now?.() ?? Date.now();
   const understanding = deps.understanding;
 
-  const cacheKey = buildCacheKey(
-    input.goal,
-    deps.sessionId,
-    understanding,
-    deps.comprehension,
-  );
+  const cacheKey = buildCacheKey(input.goal, deps.sessionId, understanding, deps.comprehension);
 
   // [A.0] External Coding CLI deterministic pre-classifier — runs BEFORE
   // the cache lookup. If a stale cache entry from a prior LLM-tier
@@ -548,12 +513,7 @@ export async function resolveIntent(
   // the path looks real (looksLikePath) and rejects bare nouns.
   {
     const directClass = classifyDirectTool(input.goal);
-    if (
-      directClass &&
-      directClass.confidence >= 0.85 &&
-      directClass.type === 'shell_exec' &&
-      directClass.command
-    ) {
+    if (directClass && directClass.confidence >= 0.85 && directClass.type === 'shell_exec' && directClass.command) {
       const { agentId, agentSelectionReason } = resolveSelectedAgent(
         input,
         deps.agents,
@@ -606,12 +566,10 @@ export async function resolveIntent(
   // may contradict the deterministic candidate (which was computed on the
   // original, ambiguous goal). Defer to the LLM so it can honor the reply
   // via the ROUTING RULE emitted in the classifier prompt.
-  const isClarificationAnswer =
-    deps.comprehension?.params.data?.state.isClarificationAnswer === true;
+  const isClarificationAnswer = deps.comprehension?.params.data?.state.isClarificationAnswer === true;
   // Adaptive parameter — falls back to module-scope default when no store
   // is wired (existing callers preserve byte-identical behavior).
-  const skipThreshold =
-    deps.params?.getNumber('intent.deterministic_skip_threshold') ?? DETERMINISTIC_SKIP_THRESHOLD;
+  const skipThreshold = deps.params?.getNumber('intent.deterministic_skip_threshold') ?? DETERMINISTIC_SKIP_THRESHOLD;
   if (
     deterministic &&
     deterministic.confidence >= skipThreshold &&
@@ -632,7 +590,21 @@ export async function resolveIntent(
   }
 
   const userPrompt = buildClassifierUserPrompt(input, deps, deterministic);
-  const parsed = await classifyWithFallback(deps.registry, primary, userPrompt);
+  // Phase B — workflow-shape extraction is gated to creative-deliverable
+  // prompts. We import inferCreativeDomain lazily so the unit tests for
+  // intent resolution can stub the registry without dragging the
+  // clarification-templates module + zod into their fixtures.
+  const { inferCreativeDomain } = await import('./understanding/clarification-templates.ts');
+  const isCreative = inferCreativeDomain(input.goal) !== 'generic';
+  // Heuristic on the deterministic candidate's strategy. When deterministic
+  // is unavailable we still extract — the addendum is opt-in by the LLM
+  // (it can omit fields if the strategy isn't agentic-workflow).
+  const determStrategy = deterministic?.strategy;
+  const looksAgentic = !determStrategy || determStrategy === 'agentic-workflow';
+  const extractWorkflowShape = isCreative && looksAgentic;
+  const parsed = await classifyWithFallback(deps.registry, primary, userPrompt, {
+    extractWorkflowShape,
+  });
 
   // [D] Verify + merge. Rule + LLM → known / uncertain / contradictory.
   let mergeResult: { resolution: IntentResolution; type: IntentResolutionType } =
@@ -658,10 +630,7 @@ export async function resolveIntent(
   // (it received an explicit ROUTING RULE instructing it to honor the user's
   // reply) and promote the result to `known`. Deterministic still contributed
   // via the prompt; this only gates the verdict emission, not the generation.
-  if (
-    (mergeResult.type === 'contradictory' || mergeResult.type === 'uncertain') &&
-    isClarificationAnswer
-  ) {
+  if ((mergeResult.type === 'contradictory' || mergeResult.type === 'uncertain') && isClarificationAnswer) {
     const bypassedType = mergeResult.type;
     mergeResult = {
       resolution: {
@@ -678,12 +647,10 @@ export async function resolveIntent(
     };
   }
 
-  const { agentId, agentSelectionReason } = resolveSelectedAgent(
-    input,
-    deps.agents,
-    deps.defaultAgentId,
-    { agentId: parsed.agentId, agentSelectionReason: parsed.agentSelectionReason },
-  );
+  const { agentId, agentSelectionReason } = resolveSelectedAgent(input, deps.agents, deps.defaultAgentId, {
+    agentId: parsed.agentId,
+    agentSelectionReason: parsed.agentSelectionReason,
+  });
 
   const result: IntentResolution = {
     ...mergeResult.resolution,
@@ -691,6 +658,16 @@ export async function resolveIntent(
     agentId,
     agentSelectionReason,
     capabilityRequirements: mapLLMCapabilityRequirements(parsed.capabilityRequirements),
+    // Phase B — workflow-shape fields land on the resolution when the
+    // addendum was injected and the LLM populated them. Optional + omitted
+    // when absent (consumers fall back to defaults).
+    ...(parsed.workflowShape ? { workflowShape: parsed.workflowShape } : {}),
+    ...(parsed.shapeReason ? { shapeReason: parsed.shapeReason } : {}),
+    ...(parsed.primaryRolesNeeded
+      ? { primaryRolesNeeded: mapLLMCapabilityRequirements(parsed.primaryRolesNeeded) }
+      : {}),
+    ...(parsed.clarificationFocus ? { clarificationFocus: parsed.clarificationFocus } : {}),
+    ...(parsed.specialistTarget ? { specialistTarget: parsed.specialistTarget } : {}),
   };
 
   // [E] Cache write + bus emit.

@@ -1116,6 +1116,45 @@ export const VinyanConfigSchema = z.object({
         .optional(),
     })
     .optional(),
+  /**
+   * Specialist registry — downstream generators / editors that Vinyan
+   * formats final prompts for (Runway, Veo, Pika, Suno, Udio, Midjourney,
+   * Flux, CapCut/manual, Premiere/manual, …). Three built-in seeds
+   * (`manual-edit-spec`, `runway-gen-4.5`, `suno-v5`, `midjourney-v7`)
+   * are registered automatically; this config block adds operator-supplied
+   * entries that REUSE one of the registered adapters via `adapterId`.
+   * Config never injects adapter code — that's a PR-reviewed code change.
+   */
+  specialists: z
+    .array(
+      // Inline-imported to keep the schema a single tree for `z.infer`.
+      // Specialist registry keeps the canonical shape.
+      z.object({
+        id: z
+          .string()
+          .min(1)
+          .max(64)
+          .regex(
+            /^[a-z][a-z0-9-]*\.?[a-z0-9-]*$/,
+            'specialist id must be kebab-case (a-z, 0-9, -, optional dot for version)',
+          ),
+        displayName: z.string().min(1).max(120),
+        medium: z.enum(['video', 'audio', 'image', 'edit-spec', 'multi']),
+        grammar: z.enum([
+          'prose-detailed',
+          'prose-medium',
+          'prose-concise',
+          'lyric-blocks',
+          'subject-style-flags',
+          'json-spec',
+          'edit-script',
+        ]),
+        adapterId: z.string().min(1).max(64),
+        description: z.string().min(1).max(280),
+        defaultParameters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+      }),
+    )
+    .optional(),
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;

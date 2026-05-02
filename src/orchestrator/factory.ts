@@ -173,6 +173,7 @@ import type { Tool } from './tools/tool-interface.ts';
 import { TraceCollectorImpl } from './trace-collector.ts';
 import type { AgentPreferences, AgentProfile, EngineProfile, ReasoningEngine, TaskInput, TaskResult } from './types.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
+import { createSpecialistRegistry } from './specialist-prompt/registry.ts';
 import { UserInterestMiner } from './user-context/user-interest-miner.ts';
 import { setupUserMdObserver } from './user-context/wiring.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
@@ -1883,6 +1884,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       })
     : undefined;
 
+  // Phase A — specialist registry. Built-in seeds are always registered;
+  // operator-supplied entries from `vinyan.json` `specialists` extend them.
+  // The workflow executor uses this to format final synthesised output via
+  // the matching adapter (`manual-edit-spec` is the universal default).
+  // Re-read vinyan.json here to access the optional `specialists` block;
+  // `loadConfig` is cheap (file read) and the result is small. Falls back
+  // to built-in seeds only on any read failure.
+  let specialistConfigEntries: ReadonlyArray<unknown> | undefined;
+  try {
+    const cfg = loadConfig(workspace);
+    if (Array.isArray(cfg.specialists)) specialistConfigEntries = cfg.specialists;
+  } catch {
+    specialistConfigEntries = undefined;
+  }
+  const specialistRegistry = createSpecialistRegistry(specialistConfigEntries);
+
   // GAP#1 — instantiate comprehension calibrator + LLM stage-2 engine
   // BEFORE `deps` construction so both can be injected.
   // Without these, the P2.C hybrid pipeline in core-loop is unreachable
@@ -1979,6 +1996,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // User-interest miner — aggregates traces (and session messages when
     // available) so the intent resolver can reason against real past activity.
     userInterestMiner,
+    // Phase A — specialist registry (downstream generators / editors).
+    specialistRegistry,
     // Workflow approval gating config — passed to workflow-executor so it
     // can pause for user approval when configured.
     workflowConfig,

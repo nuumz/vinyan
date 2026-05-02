@@ -26,9 +26,9 @@ import { buildResearchStep, detectResearchCues, prependResearchStep } from './re
 import { formatSessionTranscript } from './session-transcript.ts';
 import {
   buildStageManifest,
-  parseWinnerVerdict,
   type MultiAgentSubtask,
   type MultiAgentSubtaskErrorKind,
+  parseWinnerVerdict,
   type WorkflowStageManifest,
   type WorkflowTodoStatus,
 } from './stage-manifest.ts';
@@ -252,9 +252,7 @@ function classifyDelegateError(
   // not wired. Order matters: this branch must come BEFORE the generic
   // `subtask_failed` catch-all so "executeTask not available" doesn't
   // get downgraded to a retryable failure.
-  if (
-    /executetask not available|not configured|not wired|registry not available|agent registry empty/.test(msg)
-  ) {
+  if (/executetask not available|not configured|not wired|registry not available|agent registry empty/.test(msg)) {
     return 'infrastructure_unavailable';
   }
   if (/quota|rate.?limit|429|too.many.requests/.test(msg)) return 'provider_quota';
@@ -408,6 +406,16 @@ export interface WorkflowExecutorDeps {
    * path for multi-agent prompts.
    */
   collaborationDirective?: import('../intent/collaboration-parser.ts').CollaborationDirective;
+  /**
+   * Phase B — workflow-shape hint extracted by the IntentResolver for
+   * creative agentic-workflow goals. The workflow-planner consults this
+   * to decide whether an INFERRED collaboration directive should be
+   * downgraded to a single-LLM-call plan. USER-EXPLICIT directives
+   * (`source === 'pre-llm-parser'`) ignore this hint and force
+   * collaboration regardless. Optional — when omitted, the planner
+   * uses the legacy "directive present → force collaboration" rule.
+   */
+  workflowShape?: 'single' | 'parallel' | 'debate-iterative' | 'pipeline-staged';
   /** Workflow config from vinyan.json — controls approval gating behaviour. */
   workflowConfig?: WorkflowConfig;
   /**
@@ -425,6 +433,52 @@ export interface WorkflowExecutorDeps {
    * it here is implementation-private plumbing.
    */
   stageRuntime?: StageRuntime;
+  /**
+   * Specialist registry (Phase A wiring). When present AND
+   * `specialistTarget` resolves to a registered specialist, the executor
+   * formats the synthesizedOutput through the matching adapter as a
+   * post-synthesis transform. The original synthesizedOutput is preserved
+   * on a sibling field of the returned `WorkflowResult` so consumers that
+   * want the unwrapped text still have access. Optional — when omitted,
+   * the executor returns the raw synthesizedOutput unchanged.
+   */
+  specialistRegistry?: import('../specialist-prompt/registry.ts').SpecialistRegistry;
+  /**
+   * Specialist id to format the final output for. Wired in Phase B from
+   * `IntentResolution.specialistTarget`. When this is set but
+   * `specialistRegistry` is not, the executor logs a warning and skips
+   * the format step. Mismatched ids fall back to `manual-edit-spec`.
+   */
+  specialistTarget?: string;
+  /**
+   * Context the executor passes into the specialist adapter (creative
+   * domain + resolved clarification answers + caller-supplied parameters).
+   * Phase B populates these from the IntentResolution + clarification gate.
+   * In Phase A this is left undefined — adapters degrade gracefully.
+   */
+  specialistFormatContext?: {
+    creativeDomain?:
+      | 'webtoon'
+      | 'novel'
+      | 'article'
+      | 'video'
+      | 'music'
+      | 'game'
+      | 'marketing'
+      | 'education'
+      | 'business'
+      | 'visual'
+      | 'generic';
+    clarification?: {
+      genre?: string;
+      audience?: string;
+      tone?: string[];
+      length?: string;
+      platform?: string[];
+      freeText?: Record<string, string>;
+    };
+    parameters?: Record<string, string | number | boolean>;
+  };
 }
 
 export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDeps): Promise<WorkflowResult> {
@@ -457,6 +511,9 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
     // instead of calling the LLM planner — replaces the old
     // collaboration-runner fork in the core loop.
     collaborationDirective: deps.collaborationDirective,
+    // Phase B — pass-through to the planner so it can decide whether an
+    // inferred directive should be downgraded to a single-shot plan.
+    ...(deps.workflowShape ? { workflowShape: deps.workflowShape } : {}),
   });
 
   // Phase C: prepend a deterministic research step for long-form creative /
@@ -750,15 +807,10 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
   // emulation layer.
   if (plan.collaborationBlock && deps.executeTask) {
     const executeTaskFn = deps.executeTask;
-    const blockResult = await runCollaborationBlock(
-      plan,
-      plan.collaborationBlock,
-      input,
-      {
-        executeTask: executeTaskFn,
-        ...(deps.bus ? { bus: deps.bus } : {}),
-      },
-    );
+    const blockResult = await runCollaborationBlock(plan, plan.collaborationBlock, input, {
+      executeTask: executeTaskFn,
+      ...(deps.bus ? { bus: deps.bus } : {}),
+    });
     totalTokens += blockResult.totalTokensConsumed;
     for (const [stepId, result] of blockResult.stepResults) {
       stepResults.set(stepId, result);
@@ -881,9 +933,7 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
 
     // Execute ready steps in parallel
     const results = await Promise.all(
-      ready.map((step) =>
-        executeStep(step, plan, stepResults, input, depsWithStage, { parentStartedAt: startTime }),
-      ),
+      ready.map((step) => executeStep(step, plan, stepResults, input, depsWithStage, { parentStartedAt: startTime })),
     );
 
     for (const result of results) {
@@ -905,7 +955,7 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
 
   const allCompleted = [...stepResults.values()].every((r) => r.status === 'completed');
   const anyFailed = [...stepResults.values()].some((r) => r.status === 'failed');
-  let status: WorkflowResult['status'] = allCompleted ? 'completed' : anyFailed ? 'partial' : 'completed';
+  const status: WorkflowResult['status'] = allCompleted ? 'completed' : anyFailed ? 'partial' : 'completed';
 
   // Record approach failure when at least one step failed. `partial` covers
   // the "some succeeded, some failed" case — still useful signal for the
@@ -1240,12 +1290,11 @@ async function dispatchStrategy(
           rootGoal: `${step.description}\n\nContext from prior steps:\n${interpolatedInputs}`,
           cwd: deps.workspace ?? process.cwd(),
           sessionId: input.sessionId,
-          providerId: stepInput.providerId === 'claude-code' || stepInput.providerId === 'github-copilot'
-            ? stepInput.providerId
-            : undefined,
-          mode: stepInput.mode === 'headless' || stepInput.mode === 'interactive'
-            ? stepInput.mode
-            : 'headless',
+          providerId:
+            stepInput.providerId === 'claude-code' || stepInput.providerId === 'github-copilot'
+              ? stepInput.providerId
+              : undefined,
+          mode: stepInput.mode === 'headless' || stepInput.mode === 'interactive' ? stepInput.mode : 'headless',
           allowedScope: input.targetFiles ?? [],
           notes: stepInput.notes,
           correlationId: input.id,
@@ -1269,8 +1318,7 @@ async function dispatchStrategy(
         // contract is "produce an outcome we can synthesize from", and an
         // unsupported provider produces nothing useful. Operator should
         // re-route via fallbackStrategy or fix provider availability.
-        const status: WorkflowStepResult['status'] =
-          outcome.status === 'completed' ? 'completed' : 'failed';
+        const status: WorkflowStepResult['status'] = outcome.status === 'completed' ? 'completed' : 'failed';
         return {
           ...base,
           status,
@@ -1715,12 +1763,8 @@ async function dispatchStrategy(
         // as empty — it's the JSON.stringify of an empty mutation list,
         // not a real answer.
         const trimmedOutput = stepOutput.trim();
-        const isEmptyResponse =
-          trimmedOutput.length === 0 ||
-          trimmedOutput === '[]' ||
-          trimmedOutput === '""';
-        const finalStatus =
-          taskResult.status === 'completed' && !isEmptyResponse ? 'completed' : 'failed';
+        const isEmptyResponse = trimmedOutput.length === 0 || trimmedOutput === '[]' || trimmedOutput === '""';
+        const finalStatus = taskResult.status === 'completed' && !isEmptyResponse ? 'completed' : 'failed';
         // Preview cap: 2000 chars is enough for the user to read the
         // sub-agent's reasoning + answer in the chat UI's expandable plan
         // step. Earlier 300-char cap chopped mid-word ("**Auth" instead of
@@ -2036,11 +2080,7 @@ async function buildResult(
       // verdict reasoning isn't duplicated (free-text + JSON had the
       // same content shown twice). For non-competition turns this is
       // a no-op and `cleanedOutput === rawOutput`.
-      const { cleanedOutput } = processCompetitionVerdict(
-        deps,
-        input,
-        lastResult!.output,
-      );
+      const { cleanedOutput } = processCompetitionVerdict(deps, input, lastResult!.output);
       return {
         status,
         stepResults: allResults,
@@ -2224,10 +2264,85 @@ async function buildResult(
     }
   }
 
+  // Phase A — specialist post-synthesis formatting. When the executor
+  // was wired with a registry AND the IntentResolver supplied a target
+  // (or the manual-edit-spec default applies), wrap the raw synthesizer
+  // text through the matching adapter. The unwrapped text is preserved
+  // on `rawSynthesizedOutput` so consumers that want the original still
+  // have access. Failure-state outputs (status='failed' with no
+  // completed steps) are NOT formatted — the caller is meant to read
+  // the failure rationale verbatim, not a "shot script saying it failed".
+  //
+  // Phase A.5 — when the IntentResolver did NOT extract an explicit
+  // specialistTarget BUT the goal is a creative-domain task (per
+  // `specialistFormatContext.creativeDomain !== 'generic'`), default to
+  // `manual-edit-spec`. This ensures every creative deliverable ships in
+  // a structured format (shot list / song outline / design brief / prose
+  // wrapper) instead of raw delegate-aggregation text — closing the
+  // observed gap where pre-rule routing skipped the LLM intent advisor
+  // and therefore never populated `specialistTarget`. The default lives
+  // here (executor) rather than in core-loop so any caller that supplies
+  // a registry + creativeDomain gets the format step automatically.
+  const creativeDomain = deps.specialistFormatContext?.creativeDomain;
+  const effectiveTarget =
+    deps.specialistTarget ?? (creativeDomain && creativeDomain !== 'generic' ? 'manual-edit-spec' : undefined);
+  const finalSynthesized = synthesizedOutput;
+  let rawForResult: string | undefined;
+  let specialistFormatted: WorkflowResult['specialistFormatted'];
+  if (deps.specialistRegistry && effectiveTarget && status !== 'failed' && completedSteps.length > 0) {
+    try {
+      const { formatForSpecialist } = await import('../specialist-prompt/builder.ts');
+      const goalSummary = plan.goal.length > 200 ? `${plan.goal.slice(0, 197)}…` : plan.goal;
+      const formatted = formatForSpecialist(
+        effectiveTarget,
+        {
+          goalSummary,
+          synthesisOutput: finalSynthesized,
+          ...(creativeDomain ? { creativeDomain } : {}),
+          ...(deps.specialistFormatContext?.clarification
+            ? { clarification: deps.specialistFormatContext.clarification }
+            : {}),
+          ...(deps.specialistFormatContext?.parameters ? { parameters: deps.specialistFormatContext.parameters } : {}),
+        },
+        deps.specialistRegistry,
+        deps.bus ? { bus: deps.bus } : {},
+      );
+      rawForResult = finalSynthesized;
+      specialistFormatted = {
+        specialistId: formatted.resolvedSpecialistId,
+        fellBack: formatted.fellBack,
+        ...(formatted.parameters ? { parameters: formatted.parameters } : {}),
+        ...(formatted.notes ? { notes: formatted.notes } : {}),
+      };
+      return {
+        status,
+        stepResults: allResults,
+        synthesizedOutput: formatted.prompt,
+        rawSynthesizedOutput: rawForResult,
+        specialistFormatted,
+        totalTokensConsumed: totalTokens,
+        totalDurationMs: Math.round(durationMs),
+      };
+    } catch (err) {
+      // Non-fatal: skip the specialist transform and return the raw
+      // synthesizer text. The bus event was already emitted by the
+      // builder (or by the adapter on its own failure path).
+      const reason = err instanceof Error ? err.message : String(err);
+      deps.bus?.emit(
+        'specialist:format_skipped' as never,
+        {
+          taskId: input.id,
+          requestedId: effectiveTarget,
+          reason,
+        } as never,
+      );
+    }
+  }
+
   return {
     status,
     stepResults: allResults,
-    synthesizedOutput,
+    synthesizedOutput: finalSynthesized,
     totalTokensConsumed: totalTokens,
     totalDurationMs: Math.round(durationMs),
   };

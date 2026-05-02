@@ -61,6 +61,10 @@ async function main() {
     'task:phase_start',
     'task:phase_complete',
     'task:complete',
+    // Phase A specialist-format observability
+    'specialist:fallback_used',
+    'specialist:adapter_failed',
+    'specialist:format_skipped',
   ] as const;
   for (const t of tracked) {
     bus.on(t as never, (payload: unknown) => {
@@ -75,12 +79,63 @@ async function main() {
   const orchestrator = createOrchestrator({ workspace: tempDir, bus });
 
   const goal = process.env.GOAL ?? 'ช่วยทำคอนเท้นลง tiktok';
+  // Optionally inject a prior session turn so the creative-clarification
+  // gate skips (it only fires on fresh sessions). Set SKIP_CLARIFY=1 to
+  // simulate "user has already answered" and exercise Phase A + D below.
+  const skipClarify = process.env.SKIP_CLARIFY === '1';
+  let sessionId: string | undefined;
+  if (skipClarify) {
+    const sessionMgr = (
+      orchestrator as unknown as {
+        deps?: { sessionManager?: { createSession?: (s: { id: string }) => unknown; appendTurn?: (...a: unknown[]) => unknown } };
+      }
+    ).deps?.sessionManager;
+    sessionId = `trace-session-${Date.now()}`;
+    if (sessionMgr?.createSession && sessionMgr.appendTurn) {
+      sessionMgr.createSession({ id: sessionId });
+      sessionMgr.appendTurn(sessionId, {
+        role: 'user',
+        content: 'previous prompt to mark session as having history',
+        ts: Date.now() - 60_000,
+      });
+      sessionMgr.appendTurn(sessionId, {
+        role: 'assistant',
+        content: 'previous assistant reply',
+        ts: Date.now() - 30_000,
+      });
+    } else {
+      sessionId = undefined; // session manager not wired — leave fresh
+    }
+  }
+  // SKIP_CLARIFY=1 packs the user's prior answers into the orchestrator's
+  // CLARIFICATION_BATCH constraint convention so the gate at
+  // `creative-clarification-gate.ts:54` skips. This simulates Turn 2 of
+  // a real session — the user has already picked options and now we want
+  // to see Phase A (specialist format) + Phase D (persona overlay) execute.
+  const constraints = skipClarify
+    ? [
+        `CLARIFICATION_BATCH:${JSON.stringify({
+          version: 1,
+          previousQuestions: [
+            { id: 'genre', prompt: 'genre?' },
+            { id: 'audience', prompt: 'audience?' },
+            { id: 'tone', prompt: 'tone?' },
+            { id: 'length', prompt: 'length?' },
+            { id: 'target-platform', prompt: 'platform?' },
+          ],
+          userReply:
+            'comedy lifestyle, teen audience, humorous tone, 30 second clip, TikTok and IG Reels',
+        })}`,
+      ]
+    : undefined;
   const input: TaskInput = {
     id: `trace-tiktok-${Date.now()}`,
     source: 'cli',
     goal,
     taskType: 'reasoning',
     budget: { maxTokens: 60_000, maxDurationMs: 180_000, maxRetries: 1 },
+    ...(sessionId ? { sessionId } : {}),
+    ...(constraints ? { constraints } : {}),
   };
 
   console.log(`Goal: ${input.goal}`);
@@ -167,6 +222,17 @@ function printTrace(
     console.log('');
   }
 
+  // 5b. Phase A specialist format observability
+  const specialistEvents = events.filter((e) => e.type.startsWith('specialist:'));
+  if (specialistEvents.length > 0) {
+    console.log('SPECIALIST EVENTS');
+    console.log('─────────────────');
+    for (const e of specialistEvents) {
+      console.log(`[${e.ts}ms] ${e.type}  payload=${JSON.stringify(e.payload).slice(0, 200)}`);
+    }
+    console.log('');
+  }
+
   // 6. Step execution
   const stepStarts = events.filter((e) => e.type === 'workflow:step_start');
   const stepCompletes = events.filter((e) => e.type === 'workflow:step_complete');
@@ -211,12 +277,23 @@ function printTrace(
       const questions = (e.payload.questions ?? []) as string[];
       for (const q of questions) console.log(`  • ${q}`);
       const struct = e.payload.structuredQuestions as
-        | Array<{ id?: string; prompt?: string; options?: Array<{ label?: string }> }>
+        | Array<{
+            id?: string;
+            prompt?: string;
+            questionRationale?: string;
+            options?: Array<{ id?: string; label?: string; suggestedDefault?: boolean; rationale?: string; trendingHint?: string }>;
+          }>
         | undefined;
       if (struct) {
         for (const sq of struct) {
-          const opts = (sq.options ?? []).map((o) => o.label).filter(Boolean).join(' / ');
-          console.log(`  ${sq.id ?? '?'}: ${sq.prompt ?? ''}${opts ? `  [${opts}]` : ''}`);
+          console.log(`  ${sq.id ?? '?'}: ${sq.prompt ?? ''}`);
+          if (sq.questionRationale) console.log(`     ☆ ${sq.questionRationale}`);
+          for (const o of sq.options ?? []) {
+            const star = o.suggestedDefault ? ' ★' : '';
+            const trend = o.trendingHint ? ` [${o.trendingHint}]` : '';
+            console.log(`     ${o.id ?? '?'}: ${o.label ?? ''}${star}${trend}`);
+            if (o.rationale) console.log(`        ↳ ${o.rationale}`);
+          }
         }
       }
     }

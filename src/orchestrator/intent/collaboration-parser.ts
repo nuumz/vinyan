@@ -276,8 +276,26 @@ export interface CollaborationDirective {
    * `processCompetitionVerdict` on the integrator's output.
    */
   emitCompetitionVerdict: boolean;
-  /** Provenance — fixed since the parser is the only emitter. */
-  source: 'pre-llm-parser';
+  /**
+   * Provenance discriminator (Phase B).
+   *
+   *   - `pre-llm-parser` — produced by `parseCollaborationDirective` because
+   *     the user's PROMPT explicitly carried a multi-agent quantifier
+   *     (e.g. "3 agent debate"). This is the legacy / current sole emitter.
+   *     Treated as USER-EXPLICIT by `isUserExplicitCollaboration` —
+   *     the workflow-planner force-enters the collaboration plan path.
+   *
+   *   - `inferred-shape` — produced by a future emitter (e.g. the
+   *     Phase B IntentResolver workflowShape extraction) that decided
+   *     a multi-agent shape would suit the goal. Treated as INFERRED
+   *     — `IntentResolution.workflowShape` may override / downgrade
+   *     to a simpler shape.
+   *
+   * Adding a new emitter SHOULD use `'inferred-shape'` so the planner's
+   * branching gate stays correct. Renaming `'pre-llm-parser'` would be a
+   * breaking change for trace consumers; we extend the union instead.
+   */
+  source: 'pre-llm-parser' | 'inferred-shape';
   /**
    * Raw matched fragments for replay/debug. Useful when the directive
    * looks wrong on a trace and an operator wants to know which substring
@@ -458,3 +476,15 @@ export const COLLABORATION_PARSER_LIMITS = {
   MAX_PARTICIPANT_COUNT,
   DEFAULT_AMBIGUOUS_COUNT,
 } as const;
+
+/**
+ * Phase B helper — semantic check for "did the USER explicitly ask for
+ * a multi-agent collaboration?". The workflow-planner uses this to
+ * decide whether the directive forces collaboration (true) or whether
+ * the IntentResolver's `workflowShape` is allowed to downgrade it
+ * (false). Centralising the check keeps every consumer on the same
+ * rule when we add new `source` literal values.
+ */
+export function isUserExplicitCollaboration(directive: CollaborationDirective): boolean {
+  return directive.source === 'pre-llm-parser';
+}

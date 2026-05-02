@@ -10,7 +10,15 @@
 import { join } from 'path';
 import { SessionManager } from '../api/session-manager.ts';
 import { resolveProfile } from '../config/profile-resolver.ts';
+import { migration037 } from '../db/migrations/037_drop_session_turns.ts';
+import { migration038 } from '../db/migrations/038_drop_session_store_blobs.ts';
+import { MigrationRunner } from '../db/migrations/migration-runner.ts';
+import { JsonlAppender } from '../db/session-jsonl/appender.ts';
+import { backfillSessions, parseDuration } from '../db/session-jsonl/backfill.ts';
+import { exportSession, importSession, readExport, writeExport } from '../db/session-jsonl/export.ts';
 import { IndexRebuilder } from '../db/session-jsonl/rebuild-index.ts';
+import { recoverStartup } from '../db/session-jsonl/recovery.ts';
+import { tombstoneGc } from '../db/session-jsonl/tombstone.ts';
 import { SessionStore } from '../db/session-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 
@@ -84,6 +92,168 @@ export async function runSessionCommand(argv: string[]): Promise<void> {
         break;
       }
 
+      case 'backfill': {
+        // Phase 4 prereq: synthesize events.jsonl from existing SQLite
+        // tables for sessions that don't have one yet. After this lands,
+        // `migrate-phase4` can drop session_turns without losing turn
+        // history.
+        const profile = resolveProfile({ flag: parseSingleFlag(argv, '--profile') });
+        const layout = { sessionsDir: profile.paths.sessionsDir };
+        const sinceFlag = parseSingleFlag(argv, '--since');
+        const dryRun = argv.includes('--dry-run');
+        const sinceMs = sinceFlag !== undefined ? parseDuration(sinceFlag) : undefined;
+        if (sinceFlag !== undefined && sinceMs === undefined) {
+          console.error(`Invalid --since value: ${sinceFlag}. Expected like "30d", "48h", "45m", "60s".`);
+          process.exit(1);
+        }
+        const appender = new JsonlAppender({ layout });
+        const report = backfillSessions(db.getDb(), layout, appender, { sinceMs, dryRun });
+        const tag = dryRun ? '[DRY RUN] ' : '';
+        console.log(
+          `${tag}Backfill complete: scanned=${report.scanned} backfilled=${report.backfilled} ` +
+            `skipped-existing=${report.skippedExisting} skipped-too-old=${report.skippedTooOld} ` +
+            `lines=${report.linesWritten}`,
+        );
+        break;
+      }
+
+      case 'migrate-phase4': {
+        // Phase 4 destructive migration. Refuses to run if any session
+        // still has session_turns rows that haven't been backfilled to
+        // JSONL — operator must run `vinyan session backfill` first.
+        const profile = resolveProfile({ flag: parseSingleFlag(argv, '--profile') });
+        const layout = { sessionsDir: profile.paths.sessionsDir };
+        const dryRun = argv.includes('--dry-run');
+        const force = argv.includes('--force');
+        const rawDb = db.getDb();
+        const tableExists = (name: string): boolean =>
+          rawDb.query("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name) != null;
+
+        // Preflight: every session_turns session must have a JSONL log
+        // (or `--force` to skip). We implement the check by counting
+        // session_store rows whose session_turns has rows and whose
+        // events.jsonl is missing. session_turns may already be gone
+        // from a partial run — if so the preflight is trivially OK.
+        const unbackfilled: string[] = [];
+        if (tableExists('session_turns')) {
+          const sessions = rawDb.query<{ id: string }, []>(`SELECT DISTINCT session_id AS id FROM session_turns`).all();
+          const reader = new (await import('../db/session-jsonl/reader.ts')).JsonlReader(layout);
+          for (const row of sessions) {
+            const lines = reader.scanAll(row.id).lines;
+            if (lines.length === 0) unbackfilled.push(row.id);
+          }
+        }
+
+        if (unbackfilled.length > 0 && !force) {
+          console.error(
+            `${unbackfilled.length} session(s) still have session_turns rows without an events.jsonl backfill. ` +
+              `Run \`vinyan session backfill\` first (or pass --force to migrate anyway and discard their turn history).`,
+          );
+          console.error('First few:', unbackfilled.slice(0, 5).join(', '));
+          process.exit(2);
+        }
+        if (unbackfilled.length > 0 && force) {
+          console.warn(
+            `[WARN] Migrating with ${unbackfilled.length} unbackfilled session(s) — their turn history will be lost.`,
+          );
+        }
+
+        if (dryRun) {
+          console.log(
+            '[DRY RUN] Would apply migrations 037 (drop session_turns) and 038 (drop session_store blob columns).',
+          );
+          break;
+        }
+
+        const runner = new MigrationRunner();
+        const result = runner.migrate(rawDb, [migration037, migration038]);
+        console.log(`Phase 4 migrations applied: ${result.applied.join(', ') || '(already applied)'}`);
+        break;
+      }
+
+      case 'export-bundle': {
+        // Phase 5: dump every JSONL segment + manifest + snapshot for a
+        // session into a single JSON file. Round-trips with `import-bundle`.
+        const id = argv[1];
+        const out = parseSingleFlag(argv, '--out');
+        if (!id || !out) {
+          console.error('Usage: vinyan session export-bundle <session-id> --out <path.json>');
+          process.exit(1);
+        }
+        const profile = resolveProfile({ flag: parseSingleFlag(argv, '--profile') });
+        const layout = { sessionsDir: profile.paths.sessionsDir };
+        const bundle = exportSession(layout, id);
+        writeExport(bundle, out);
+        console.log(`Exported ${id}: ${bundle.segments.length} segment(s) → ${out}`);
+        break;
+      }
+
+      case 'import-bundle': {
+        // Phase 5: hydrate a session subdir from an export bundle and
+        // rebuild its SQLite index. Refuses to clobber an existing
+        // session unless --force is passed.
+        const path = argv[1];
+        if (!path) {
+          console.error('Usage: vinyan session import-bundle <path.json> [--force]');
+          process.exit(1);
+        }
+        const profile = resolveProfile({ flag: parseSingleFlag(argv, '--profile') });
+        const layout = { sessionsDir: profile.paths.sessionsDir };
+        const force = argv.includes('--force');
+        const bundle = readExport(path);
+        const { sessionId, segmentsWritten } = importSession(layout, bundle, {
+          refuseOverwrite: !force,
+        });
+        new IndexRebuilder(db.getDb(), layout).rebuildSessionIndex(sessionId);
+        console.log(`Imported ${sessionId}: ${segmentsWritten} segment(s); index rebuilt`);
+        break;
+      }
+
+      case 'recover': {
+        // Phase 5: scan every session, comparing session_store.last_line_offset
+        // to active segment size. Rebuild any drifted session.
+        const profile = resolveProfile({ flag: parseSingleFlag(argv, '--profile') });
+        const layout = { sessionsDir: profile.paths.sessionsDir };
+        const dryRun = argv.includes('--dry-run');
+        const report = recoverStartup(db.getDb(), layout, { dryRun });
+        const tag = dryRun ? '[DRY RUN] ' : '';
+        console.log(
+          `${tag}Recovery: scanned=${report.scanned} in-sync=${report.inSync} drifted=${report.drifted} missing-jsonl=${report.missingJsonl}`,
+        );
+        for (const entry of report.perSession) {
+          if (entry.status === 'drifted') {
+            console.log(`  ${entry.sessionId}  expected=${entry.expectedOffset}  actual=${entry.actualSize}`);
+          }
+        }
+        break;
+      }
+
+      case 'tombstone': {
+        const sub2 = argv[1];
+        if (sub2 !== 'gc') {
+          console.error('Usage: vinyan session tombstone gc [--older-than=90d] [--dry-run]');
+          process.exit(1);
+        }
+        const profile = resolveProfile({ flag: parseSingleFlag(argv, '--profile') });
+        const layout = { sessionsDir: profile.paths.sessionsDir };
+        const olderThanFlag = parseSingleFlag(argv, '--older-than') ?? '90d';
+        const olderThanMs = parseDuration(olderThanFlag);
+        if (olderThanMs === undefined) {
+          console.error(`Invalid --older-than value: ${olderThanFlag}`);
+          process.exit(1);
+        }
+        const dryRun = argv.includes('--dry-run');
+        const report = tombstoneGc(layout, { olderThanMs, dryRun });
+        const tag = dryRun ? '[DRY RUN] ' : '';
+        console.log(
+          `${tag}Tombstone GC: scanned=${report.scanned} pruned=${report.pruned} retained=${report.retained}`,
+        );
+        if (report.pruned > 0) {
+          console.log(`  Pruned: ${report.prunedIds.join(', ')}`);
+        }
+        break;
+      }
+
       case 'rebuild-index': {
         // Rebuild the SQLite derived index (session_store + session_tasks +
         // session_turn_summary) from the per-session JSONL log. Phase 1
@@ -109,7 +279,9 @@ export async function runSessionCommand(argv: string[]): Promise<void> {
       }
 
       default:
-        console.error('Usage: vinyan session <list|delete|export|rebuild-index> [options]');
+        console.error(
+          'Usage: vinyan session <list|delete|export|rebuild-index|backfill|migrate-phase4|export-bundle|import-bundle|recover|tombstone gc> [options]',
+        );
         process.exit(1);
     }
   } finally {

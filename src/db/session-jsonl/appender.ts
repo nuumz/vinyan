@@ -26,6 +26,7 @@ import { type FsyncPolicy, makeFsyncPolicy } from './fsync-policy.ts';
 import { KeyedMutex } from './mutex.ts';
 import { ensureSessionDir, type SessionDirLayout } from './paths.ts';
 import { type AppendInput, JSONL_SCHEMA_VERSION, type JsonlLine, JsonlLineZ } from './schemas.ts';
+import { DEFAULT_MAX_SEGMENT_BYTES, sealActiveSegment } from './segments.ts';
 
 export interface JsonlAppenderOptions {
   layout: SessionDirLayout;
@@ -34,6 +35,14 @@ export interface JsonlAppenderOptions {
   now?: () => number;
   /** Override line id factory for tests. */
   newId?: () => string;
+  /**
+   * Phase 5 — when the active `events.jsonl` exceeds this size in
+   * bytes after a write, the appender atomically seals it as
+   * `events.NNNN.jsonl` and starts a new active segment. Default
+   * 64 MB; lower bound makes tests deterministic without 64 MB of
+   * payload.
+   */
+  maxBytesPerSegment?: number;
 }
 
 /** Cached per-session write cursor. */
@@ -44,6 +53,13 @@ interface Cursor {
   lastLineId: string | null;
   /** Byte size of the events file after the last write. */
   byteOffset: number;
+  /**
+   * Phase 5 — the lineId / seq of the first line written to the
+   * **active** segment. Captured at segment open and copied into the
+   * sealed entry on rotation.
+   */
+  segmentFirstLineId: string | null;
+  segmentFirstSeq: number;
 }
 
 export interface AppendResult {
@@ -60,11 +76,13 @@ export class JsonlAppender {
   private readonly policy: FsyncPolicy;
   private readonly clock: () => number;
   private readonly newId: () => string;
+  private readonly maxBytesPerSegment: number;
 
   constructor(private readonly opts: JsonlAppenderOptions) {
     this.policy = opts.policy ?? makeFsyncPolicy();
     this.clock = opts.now ?? Date.now;
     this.newId = opts.newId ?? randomUUID;
+    this.maxBytesPerSegment = opts.maxBytesPerSegment ?? DEFAULT_MAX_SEGMENT_BYTES;
   }
 
   /**
@@ -117,11 +135,48 @@ export class JsonlAppender {
       cursor.seq = line.seq + 1;
       cursor.lastLineId = line.lineId;
       cursor.byteOffset = stat.size;
+      // Capture segment-first metadata if this is the first write to a
+      // fresh active segment.
+      if (cursor.segmentFirstLineId === null) {
+        cursor.segmentFirstLineId = line.lineId;
+        cursor.segmentFirstSeq = line.seq;
+      }
     } finally {
       closeSync(fd);
     }
 
-    return { line, byteOffset: startOffset, byteLength: bytes.length };
+    const result: AppendResult = { line, byteOffset: startOffset, byteLength: bytes.length };
+
+    // Phase 5 rotation: post-write threshold check. If the active
+    // segment now exceeds the cap, atomically seal it. The line just
+    // written sits in the sealed segment; the next appendSync starts
+    // a fresh `events.jsonl`.
+    if (cursor.byteOffset >= this.maxBytesPerSegment) {
+      this.rotateActiveSegment(sessionId, cursor);
+    }
+
+    return result;
+  }
+
+  private rotateActiveSegment(sessionId: string, cursor: Cursor): void {
+    if (cursor.segmentFirstLineId === null || cursor.lastLineId === null) {
+      // Nothing was written to the active segment yet — nothing to seal.
+      return;
+    }
+    sealActiveSegment(this.opts.layout, sessionId, {
+      firstLineId: cursor.segmentFirstLineId,
+      firstSeq: cursor.segmentFirstSeq,
+      lastLineId: cursor.lastLineId,
+      lastSeq: cursor.seq - 1,
+      activeSize: cursor.byteOffset,
+      sealedAt: this.clock(),
+    });
+    // Active segment is now empty (file renamed away). Reset cursor's
+    // segment-tracking fields. seq + lastLineId stay — they're per-
+    // session, not per-segment.
+    cursor.byteOffset = 0;
+    cursor.segmentFirstLineId = null;
+    cursor.segmentFirstSeq = cursor.seq;
   }
 
   /**
@@ -138,13 +193,35 @@ export class JsonlAppender {
     const cached = this.cursors.get(sessionId);
     if (cached) return cached;
 
-    let cursor: Cursor = { seq: 0, lastLineId: null, byteOffset: 0 };
+    let cursor: Cursor = {
+      seq: 0,
+      lastLineId: null,
+      byteOffset: 0,
+      segmentFirstLineId: null,
+      segmentFirstSeq: 0,
+    };
     try {
       const raw = readFileSync(eventsPath, 'utf-8');
       if (raw.length > 0) {
         const lastNewline = raw.lastIndexOf('\n');
         const ending = lastNewline === -1 ? raw : raw.slice(0, lastNewline);
         const lines = ending.length === 0 ? [] : ending.split('\n');
+        // Forward scan: capture firstLineId/firstSeq of the active
+        // segment so a later rotation seals the full range correctly.
+        let firstLineId: string | null = null;
+        let firstSeq = 0;
+        for (const candidate of lines) {
+          if (!candidate) continue;
+          try {
+            const parsed = JsonlLineZ.parse(JSON.parse(candidate));
+            firstLineId = parsed.lineId;
+            firstSeq = parsed.seq;
+            break;
+          } catch {
+            // Skip and try the next line — a malformed leading line
+            // shouldn't tank hydration (A9).
+          }
+        }
         for (let i = lines.length - 1; i >= 0; i--) {
           const candidate = lines[i];
           if (!candidate) continue;
@@ -154,6 +231,8 @@ export class JsonlAppender {
               seq: parsed.seq + 1,
               lastLineId: parsed.lineId,
               byteOffset: lastNewline === -1 ? raw.length : lastNewline + 1,
+              segmentFirstLineId: firstLineId,
+              segmentFirstSeq: firstSeq,
             };
             // Trailing partial line (no \n) is left in place; cursor.byteOffset
             // skips past the last good newline so the next append starts on a

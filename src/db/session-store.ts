@@ -125,10 +125,81 @@ export interface SessionTurnRow {
   created_at: number;
 }
 
+/**
+ * Phase 4 schema state. Computed at construction (and refreshable via
+ * `refreshSchemaState`) so the store gracefully degrades when a Phase 4
+ * migration has dropped the legacy `session_turns` table or the
+ * `working_memory_json` / `compaction_json` columns. Callers that hit
+ * a removed surface get a no-op response (`[]` / `undefined` / no-op
+ * write) rather than an SQL error — keeps the dual-write code path
+ * compiling against a post-Phase-4 database without conditional flags.
+ */
+interface Phase4SchemaState {
+  /** True when migration 037 has dropped session_turns. */
+  sessionTurnsDropped: boolean;
+  /** True when migration 038 has dropped session_store blob columns. */
+  blobColumnsDropped: boolean;
+}
+
 export class SessionStore {
-  constructor(private db: Database) {}
+  private schemaState: Phase4SchemaState;
+
+  constructor(private db: Database) {
+    this.schemaState = this.detectSchema();
+  }
+
+  /** True if `tableName` exists in this DB. */
+  private tableExists(tableName: string): boolean {
+    return this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(tableName) != null;
+  }
+
+  private columnExists(tableName: string, columnName: string): boolean {
+    const cols = this.db.query(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+    return cols.some((c) => c.name === columnName);
+  }
+
+  private detectSchema(): Phase4SchemaState {
+    return {
+      sessionTurnsDropped: !this.tableExists('session_turns'),
+      blobColumnsDropped: !this.columnExists('session_store', 'working_memory_json'),
+    };
+  }
+
+  /**
+   * Re-probe the schema after a migration applies inside the same
+   * process (e.g. `vinyan session migrate-phase4` running against a
+   * live SessionStore). Tests also call this when applying migration
+   * 037 / 038 dynamically.
+   */
+  refreshSchemaState(): void {
+    this.schemaState = this.detectSchema();
+  }
+
+  /** Snapshot of the current Phase-4 schema state. */
+  getSchemaState(): Readonly<Phase4SchemaState> {
+    return this.schemaState;
+  }
 
   insertSession(session: SessionRow): void {
+    if (this.schemaState.blobColumnsDropped) {
+      // Phase 4 schema: blob columns have been dropped. Skip them.
+      this.db.run(
+        `INSERT INTO session_store (id, source, created_at, status, updated_at, title, description, archived_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          session.id,
+          session.source,
+          session.created_at,
+          session.status,
+          session.updated_at,
+          session.title,
+          session.description,
+          session.archived_at,
+          session.deleted_at,
+        ],
+      );
+      return;
+    }
     this.db.run(
       `INSERT INTO session_store (id, source, created_at, status, working_memory_json, compaction_json, updated_at, title, description, archived_at, deleted_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -229,6 +300,15 @@ export class SessionStore {
   }
 
   updateSessionCompaction(id: string, compactionJson: string): void {
+    if (this.schemaState.blobColumnsDropped) {
+      // Phase 4 schema: compaction_json column is gone. The compaction
+      // event has already been committed to the per-session JSONL log
+      // by SessionManager.compact(); the SQLite cache column is no
+      // longer the source of truth. We still update `status` so the
+      // lifecycle classifier reports `compacted`.
+      this.db.run("UPDATE session_store SET status = 'compacted', updated_at = ? WHERE id = ?", [Date.now(), id]);
+      return;
+    }
     this.db.run("UPDATE session_store SET compaction_json = ?, status = 'compacted', updated_at = ? WHERE id = ?", [
       compactionJson,
       Date.now(),
@@ -237,6 +317,13 @@ export class SessionStore {
   }
 
   updateSessionMemory(id: string, memoryJson: string): void {
+    if (this.schemaState.blobColumnsDropped) {
+      // Phase 4: working_memory_json column is gone. The
+      // `working-memory.snapshot` JSONL line is now the source of truth;
+      // we still bump `updated_at` so listings sort correctly.
+      this.db.run('UPDATE session_store SET updated_at = ? WHERE id = ?', [Date.now(), id]);
+      return;
+    }
     this.db.run('UPDATE session_store SET working_memory_json = ?, updated_at = ? WHERE id = ?', [
       memoryJson,
       Date.now(),
@@ -291,6 +378,14 @@ export class SessionStore {
     const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     const limitClause = typeof limit === 'number' && limit > 0 ? ` LIMIT ${Math.floor(limit)}` : '';
     const offsetClause = typeof offset === 'number' && offset > 0 ? ` OFFSET ${Math.floor(offset)}` : '';
+
+    // Phase 4: when session_turns has been dropped, the window-function
+    // path is no longer expressible. Auto-route to the index variant —
+    // operators who never enabled `session.readFromJsonl.listSessions`
+    // still get correct (degraded) results without an SQL error.
+    if (this.schemaState.sessionTurnsDropped) {
+      return this.listSessionsViaIndex(options);
+    }
 
     return this.db
       .query(
@@ -389,6 +484,12 @@ export class SessionStore {
    * legacy sessions still surface the right activity-state badge.
    */
   backfillTurnSummary(): number {
+    if (this.schemaState.sessionTurnsDropped) {
+      // session_turns is gone; nothing to derive from. Phase 4 backfill
+      // happens against the JSONL log instead — see
+      // `vinyan session backfill`.
+      return 0;
+    }
     const result = this.db.run(
       `INSERT INTO session_turn_summary
           (session_id, latest_seq, latest_turn_id, latest_turn_role,
@@ -416,6 +517,20 @@ export class SessionStore {
    * computes via window function. NULL when there are no turns.
    */
   getLatestTurnRoleAndBlocks(sessionId: string): { role: 'user' | 'assistant'; blocks_json: string } | undefined {
+    if (this.schemaState.sessionTurnsDropped) {
+      // Phase 4: derive from session_turn_summary instead.
+      const row = this.db
+        .query('SELECT latest_turn_role, latest_turn_blocks_preview FROM session_turn_summary WHERE session_id = ?')
+        .get(sessionId) as {
+        latest_turn_role: 'user' | 'assistant' | null;
+        latest_turn_blocks_preview: string | null;
+      } | null;
+      if (!row || row.latest_turn_role === null) return undefined;
+      return {
+        role: row.latest_turn_role,
+        blocks_json: row.latest_turn_blocks_preview ?? '[]',
+      };
+    }
     return this.db
       .query('SELECT role, blocks_json FROM session_turns WHERE session_id = ? ORDER BY seq DESC LIMIT 1')
       .get(sessionId) as { role: 'user' | 'assistant'; blocks_json: string } | undefined;
@@ -510,7 +625,9 @@ export class SessionStore {
   }
 
   hardDeleteSession(id: string): boolean {
-    const turnIds = this.db.query('SELECT id FROM session_turns WHERE session_id = ?').all(id) as Array<{ id: string }>;
+    const turnIds: Array<{ id: string }> = this.schemaState.sessionTurnsDropped
+      ? []
+      : (this.db.query('SELECT id FROM session_turns WHERE session_id = ?').all(id) as Array<{ id: string }>);
 
     const tx = this.db.transaction(() => {
       // Best-effort sqlite-vec cleanup. The virtual table only exists when
@@ -527,7 +644,11 @@ export class SessionStore {
           /* turn_embeddings virtual table not present — skip */
         }
       }
-      this.db.run('DELETE FROM session_turns WHERE session_id = ?', [id]);
+      if (!this.schemaState.sessionTurnsDropped) {
+        this.db.run('DELETE FROM session_turns WHERE session_id = ?', [id]);
+      }
+      // Phase 4 also gains session_turn_summary as a per-session row.
+      this.db.run('DELETE FROM session_turn_summary WHERE session_id = ?', [id]);
       this.db.run('DELETE FROM session_tasks WHERE session_id = ?', [id]);
       const res = this.db.run('DELETE FROM session_store WHERE id = ? AND deleted_at IS NOT NULL', [id]);
       return res.changes > 0;
@@ -790,6 +911,14 @@ export class SessionStore {
    * index is sufficient.
    */
   appendTurn(turn: Omit<Turn, 'seq'> & { seq?: number }): Turn {
+    if (this.schemaState.sessionTurnsDropped) {
+      // Phase 4 schema: session_turns is gone. Return a synthetic Turn
+      // (the JSONL line wrote by SessionManager.recordUserTurn /
+      // recordAssistantTurn IS the persistent record now). We must
+      // still return a Turn so the caller's downstream `indexTurnAsync`
+      // gets a valid object.
+      return { ...turn, seq: turn.seq ?? 0 };
+    }
     const seq =
       turn.seq ??
       (
@@ -832,6 +961,7 @@ export class SessionStore {
   }
 
   getTurns(sessionId: string, limit?: number): Turn[] {
+    if (this.schemaState.sessionTurnsDropped) return [];
     const rows =
       limit != null
         ? (this.db
@@ -845,6 +975,7 @@ export class SessionStore {
 
   /** Tail window — newest N turns in chronological order. */
   getRecentTurns(sessionId: string, limit: number): Turn[] {
+    if (this.schemaState.sessionTurnsDropped) return [];
     const rows = this.db
       .query('SELECT * FROM session_turns WHERE session_id = ? ORDER BY seq DESC LIMIT ?')
       .all(sessionId, limit) as SessionTurnRow[];
@@ -852,6 +983,7 @@ export class SessionStore {
   }
 
   countTurns(sessionId: string): number {
+    if (this.schemaState.sessionTurnsDropped) return 0;
     const row = this.db.query('SELECT COUNT(*) as count FROM session_turns WHERE session_id = ?').get(sessionId) as {
       count: number;
     };
@@ -859,6 +991,7 @@ export class SessionStore {
   }
 
   getTurn(turnId: string): Turn | undefined {
+    if (this.schemaState.sessionTurnsDropped) return undefined;
     const row = this.db.query('SELECT * FROM session_turns WHERE id = ?').get(turnId) as SessionTurnRow | undefined;
     return row ? rowToTurn(row) : undefined;
   }
@@ -870,6 +1003,7 @@ export class SessionStore {
    * overwriting the timestamp).
    */
   markCancelled(turnId: string, cancelledAt: number, partialBlocks?: ContentBlock[]): void {
+    if (this.schemaState.sessionTurnsDropped) return;
     if (partialBlocks != null) {
       this.db.run('UPDATE session_turns SET cancelled_at = ?, blocks_json = ? WHERE id = ?', [
         cancelledAt,
@@ -887,6 +1021,7 @@ export class SessionStore {
    * resolves cacheRead / cacheCreation counts.
    */
   updateTurnTokenCount(turnId: string, tokenCount: TurnTokenCount): void {
+    if (this.schemaState.sessionTurnsDropped) return;
     this.db.run('UPDATE session_turns SET token_count_json = ? WHERE id = ?', [JSON.stringify(tokenCount), turnId]);
   }
 }

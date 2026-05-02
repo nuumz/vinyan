@@ -56,6 +56,15 @@ export const IntentResponseSchema = z.object({
    * generator (A1) and the deterministic capability router is the verifier.
    */
   capabilityRequirements: z.array(CapabilityRequirementResponseSchema).optional(),
+  // ── Phase B workflow-shape extraction (gated; only requested when the
+  // assembler injects the workflow-shape prompt fragment for creative
+  // agentic-workflow goals). All fields optional — a model that ignores
+  // the addition still produces a valid response.
+  workflowShape: z.enum(['single', 'parallel', 'debate-iterative', 'pipeline-staged']).optional(),
+  shapeReason: z.string().optional(),
+  primaryRolesNeeded: z.array(CapabilityRequirementResponseSchema).optional(),
+  clarificationFocus: z.array(z.enum(['genre', 'audience', 'tone', 'length', 'platform', 'specialist'])).optional(),
+  specialistTarget: z.string().optional(),
 });
 
 export type IntentResponse = z.infer<typeof IntentResponseSchema>;
@@ -127,9 +136,7 @@ export function normalizeDirectToolCall(
 
   let normalizedCall = directToolCall;
   if (!KNOWN_TOOLS.has(normalizedCall.tool)) {
-    const command =
-      (normalizedCall.parameters.command as string) ??
-      normalizedCall.tool.replace(/_/g, ' ');
+    const command = (normalizedCall.parameters.command as string) ?? normalizedCall.tool.replace(/_/g, ' ');
     normalizedCall = {
       tool: 'shell_exec',
       parameters: { ...normalizedCall.parameters, command },
@@ -145,9 +152,7 @@ export function normalizeDirectToolCall(
     throw new Error('Direct-tool shell_exec command missing');
   }
   if (containsShellFallbackChain(command)) {
-    throw new Error(
-      'Direct-tool shell_exec command must be a single platform-specific command',
-    );
+    throw new Error('Direct-tool shell_exec command must be a single platform-specific command');
   }
 
   return {
@@ -166,10 +171,7 @@ export function normalizeDirectToolCall(
  */
 export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error('Intent resolution timeout')),
-      ms,
-    );
+    const timer = setTimeout(() => reject(new Error('Intent resolution timeout')), ms);
     promise.then(
       (v) => {
         clearTimeout(timer);

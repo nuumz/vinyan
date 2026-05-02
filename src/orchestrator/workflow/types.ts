@@ -206,7 +206,35 @@ export interface WorkflowStepResult {
 export interface WorkflowResult {
   status: 'completed' | 'failed' | 'partial';
   stepResults: WorkflowStepResult[];
+  /**
+   * The user-facing final answer. When the executor was wired with a
+   * `specialistRegistry` + `specialistTarget`, this is the SPECIALIST-
+   * FORMATTED prompt (e.g. shot-script for `manual-edit-spec`,
+   * lyric-block for `suno-v5`) — the consumer can copy this directly to
+   * the downstream generator / human editor. The raw synthesizer text
+   * (before specialist formatting) is preserved on `rawSynthesizedOutput`
+   * for callers that want the unwrapped content.
+   */
   synthesizedOutput: string;
+  /**
+   * Phase A — preserved unwrapped synthesizer text when the executor
+   * formatted `synthesizedOutput` through a specialist adapter. Absent
+   * when no specialist formatting was applied (`synthesizedOutput` IS
+   * the raw text in that case).
+   */
+  rawSynthesizedOutput?: string;
+  /**
+   * Phase A — id of the specialist that formatted the final output.
+   * `manual-edit-spec` for the default fallback, or whatever id was
+   * resolved against the registry. Absent when no formatting was
+   * applied.
+   */
+  specialistFormatted?: {
+    specialistId: string;
+    fellBack: boolean;
+    parameters?: Record<string, string | number | boolean>;
+    notes?: string[];
+  };
   totalTokensConsumed: number;
   totalDurationMs: number;
   /**
@@ -281,12 +309,7 @@ export const WorkflowStepSchema = z.object({
    * planner that emits a too-large value is silently capped instead of
    * letting a runaway LLM saturate the parent task's budget.
    */
-  retryBudget: z
-    .number()
-    .int()
-    .min(0)
-    .max(MAX_STEP_RETRY_BUDGET)
-    .optional(),
+  retryBudget: z.number().int().min(0).max(MAX_STEP_RETRY_BUDGET).optional(),
 });
 
 export const CollaborationBlockSchema = z.object({

@@ -8,26 +8,24 @@
  * A1: the planner generates candidates; the Zod schema validates structure.
  * A3: fallback to single-step is deterministic.
  */
-import type { VinyanBus } from '../../core/bus.ts';
+
 import type { PersonaId } from '../../core/agent-vocabulary.ts';
+import type { VinyanBus } from '../../core/bus.ts';
+import { personaClassOf } from '../agents/persona-class.ts';
+import type { AgentRegistry } from '../agents/registry.ts';
+import type { CollaborationDirective } from '../intent/collaboration-parser.ts';
+import { isUserExplicitCollaboration } from '../intent/collaboration-parser.ts';
 // (used by sanitizeDelegateAgentIds / formatAgentRoster — keep import even
 // if the only consumer above is implicit)
 import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
-import type { Turn } from '../types.ts';
-import type { AgentRegistry } from '../agents/registry.ts';
-import type { CollaborationDirective } from '../intent/collaboration-parser.ts';
 import { buildDebateRoomContract, DebateRoomBuildFailure } from '../room/presets/debate-room.ts';
 import { selectPersonasViaLLM } from '../room/presets/llm-persona-selector.ts';
+import type { PersonaRole, Turn } from '../types.ts';
 import { buildKnowledgeContext, type KnowledgeContextDeps } from './knowledge-context.ts';
 import { normalizeWorkflowPlan } from './plan-normalizer.ts';
 import { formatSessionTranscript } from './session-transcript.ts';
-import {
-  type CollaborationBlock,
-  type WorkflowPlan,
-  WorkflowPlanSchema,
-  type WorkflowStep,
-} from './types.ts';
+import { type CollaborationBlock, type WorkflowPlan, WorkflowPlanSchema, type WorkflowStep } from './types.ts';
 
 export interface WorkflowPlannerDeps {
   llmRegistry?: LLMProviderRegistry;
@@ -82,6 +80,17 @@ export interface PlannerOptions {
    * for `agentic-workflow`.
    */
   collaborationDirective?: CollaborationDirective;
+  /**
+   * Phase B — workflow-shape hint from `IntentResolution.workflowShape`.
+   * When the directive is `'inferred-shape'` (NOT user-explicit) AND
+   * this hint is `'single'`, the planner DOWNGRADES — skipping the
+   * collaboration shortcut and falling through to the LLM planner so a
+   * single-step plan can ship. User-explicit directives ignore this hint.
+   *
+   * Absent / undefined preserves the legacy behaviour (directive present
+   * → force collaboration).
+   */
+  workflowShape?: 'single' | 'parallel' | 'debate-iterative' | 'pipeline-staged';
 }
 
 const SYSTEM_PROMPT = `You are a workflow planner for the Vinyan autonomous agent orchestrator.
@@ -226,81 +235,41 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
   // The deterministic plan structure (rebuttal block, integrator slot,
   // round semantics) stays unchanged. Only the persona-id assignment
   // differs between the two paths.
+  // Phase B — directive-source branching. The legacy rule was
+  // "directive present → force collaboration". The new rule is:
+  //
+  //   - USER-EXPLICIT directive (source='pre-llm-parser'): force
+  //     collaboration regardless of workflowShape. The user wrote
+  //     "3 agent debate" — respecting their intent is paramount.
+  //
+  //   - INFERRED directive (source='inferred-shape') + workflowShape
+  //     === 'single': downgrade to a single-shot plan. The shape
+  //     classifier judged this goal trivial enough that one LLM call
+  //     suffices; a 3-agent debate would be overhead.
+  //
+  //   - All other cases: continue with the collaboration shortcut.
+  //
+  // The current parser only emits 'pre-llm-parser', so existing prompts
+  // still hit the same path. The downgrade fires only after the IntentResolver
+  // gains the ability to inject 'inferred-shape' directives in a future phase.
   if (opts.collaborationDirective && deps.agentRegistry) {
-    let preferredPrimaryIds: readonly PersonaId[] | undefined;
-    let preferredIntegratorId: PersonaId | undefined;
-    let selectionRationale: string | undefined;
-    let selectionAttempts = 0;
-    let selectionOrigin: 'llm' | 'fallback' = 'fallback';
-
-    if (deps.llmRegistry) {
-      try {
-        const selection = await selectPersonasViaLLM({
-          goal: opts.goal,
-          directive: opts.collaborationDirective,
-          registry: deps.agentRegistry,
-          llmRegistry: deps.llmRegistry,
-        });
-        if (selection) {
-          preferredPrimaryIds = selection.primaryIds;
-          preferredIntegratorId = selection.integratorId;
-          selectionRationale = selection.rationale;
-          selectionAttempts = selection.attempts;
-          selectionOrigin = 'llm';
-        }
-      } catch (err) {
-        // Selector should never throw (it returns null on every failure
-        // path), but defend against future regressions so a buggy
-        // selector cannot block multi-agent planning entirely.
-        deps.bus?.emit('workflow:persona_selection_failed', {
-          taskId: opts.taskId,
-          ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
-          reason: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    deps.bus?.emit('workflow:persona_selection_completed', {
-      taskId: opts.taskId,
-      ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
-      origin: selectionOrigin,
-      attempts: selectionAttempts,
-      requestedCount: opts.collaborationDirective.requestedPrimaryParticipantCount,
-      ...(preferredPrimaryIds ? { primaryIds: [...preferredPrimaryIds] } : {}),
-      ...(preferredIntegratorId ? { integratorId: preferredIntegratorId } : {}),
-      ...(selectionRationale ? { rationale: selectionRationale } : {}),
-    });
-
-    try {
-      const collaborationPlan = buildCollaborationPlan(
-        opts.goal,
-        opts.collaborationDirective,
-        deps.agentRegistry,
-        opts.taskId,
-        {
-          ...(preferredPrimaryIds ? { preferredPrimaryIds } : {}),
-          ...(preferredIntegratorId ? { preferredIntegratorId } : {}),
-        },
-      );
-      return finalize(collaborationPlan, 'collaboration', selectionAttempts);
-    } catch (err) {
-      if (err instanceof DebateRoomBuildFailure) {
-        // Honest failure: registry has too few non-verifier personas.
-        // Surface a single-step plan whose description carries the
-        // failure reason so the synthesizer can relay it to the user.
-        // Going through the LLM planner here would just synthesize a
-        // multi-persona plan the registry cannot satisfy — the same
-        // class of bug the original collaboration runner refused to
-        // paper over.
-        return finalize(buildCollaborationFailurePlan(opts.goal, err), 'fallback', 0);
-      }
-      // Unexpected (programming error in the preset etc.) — log and fall
-      // through to the LLM planner rather than refuse to plan at all.
-      console.warn(
-        `[vinyan] buildCollaborationPlan threw, falling through to LLM planner: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+    const directive = opts.collaborationDirective;
+    const userExplicit = isUserExplicitCollaboration(directive);
+    if (!userExplicit && opts.workflowShape === 'single') {
+      deps.bus?.emit('workflow:persona_selection_completed', {
+        taskId: opts.taskId,
+        ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+        origin: 'fallback',
+        attempts: 0,
+        requestedCount: directive.requestedPrimaryParticipantCount,
+        rationale:
+          'Inferred collaboration directive downgraded to single-shot plan because IntentResolver judged the goal as `workflowShape=single` (no multi-agent overhead needed).',
+      });
+      // Fall through — skip the buildCollaborationPlan branch and let the
+      // LLM workflow planner produce a single-step plan below.
+    } else {
+      const collaborationPlan = await buildCollaborationFromDirective(directive, deps, opts, finalize);
+      if (collaborationPlan) return collaborationPlan;
     }
   }
 
@@ -499,9 +468,7 @@ function formatAgentRoster(registry: AgentRegistry): string {
   }
   if (!agents || agents.length === 0) return '';
   const MAX_AGENTS = 12;
-  const lines = agents
-    .slice(0, MAX_AGENTS)
-    .map((a) => `  - ${a.id}: ${a.description ?? '(no description)'}`);
+  const lines = agents.slice(0, MAX_AGENTS).map((a) => `  - ${a.id}: ${a.description ?? '(no description)'}`);
   return lines.join('\n');
 }
 
@@ -532,6 +499,143 @@ function formatAgentRoster(registry: AgentRegistry): string {
 export interface BuildCollaborationPlanOptions {
   preferredPrimaryIds?: readonly PersonaId[];
   preferredIntegratorId?: PersonaId;
+  /**
+   * Phase D — persona overlay map (persona id → goal-specific framing
+   * text). Threaded into `buildDebateRoomContract` so each role's
+   * responsibility text gets a goal-anchored angle. Drafted by the
+   * selector via `draftPersonaOverlay()`. Optional — when absent the
+   * primary roles use stock responsibility text only.
+   */
+  personaOverlays?: ReadonlyMap<string, string>;
+}
+
+/**
+ * Persona-class lookup — local helper that maps the registry's
+ * `PersonaRole` to the overlay drafter's narrower
+ * `'generator' | 'verifier' | 'mixed'` taxonomy. Wraps `personaClassOf`
+ * so call sites stay readable.
+ */
+function classifyPersonaRole(role: PersonaRole | undefined): 'generator' | 'verifier' | 'mixed' | undefined {
+  if (!role) return undefined;
+  return personaClassOf(role);
+}
+
+/**
+ * Phase B helper — encapsulate the existing collaboration-build pipeline
+ * (LLM persona selector → buildCollaborationPlan → DebateRoomBuildFailure
+ * fallback) so the new directive-source gate in `planWorkflow` can call
+ * it cleanly. Returns the finalised `WorkflowPlan` on success / failure
+ * fallback, or `null` when an unexpected error occurred and the caller
+ * should fall through to the LLM planner.
+ */
+async function buildCollaborationFromDirective(
+  directive: CollaborationDirective,
+  deps: WorkflowPlannerDeps,
+  opts: PlannerOptions,
+  finalize: (plan: WorkflowPlan, origin: 'llm' | 'fallback' | 'collaboration', attempts: number) => WorkflowPlan,
+): Promise<WorkflowPlan | null> {
+  if (!deps.agentRegistry) return null;
+
+  let preferredPrimaryIds: readonly PersonaId[] | undefined;
+  let preferredIntegratorId: PersonaId | undefined;
+  let selectionRationale: string | undefined;
+  let selectionAttempts = 0;
+  let selectionOrigin: 'llm' | 'fallback' = 'fallback';
+
+  if (deps.llmRegistry) {
+    try {
+      const selection = await selectPersonasViaLLM({
+        goal: opts.goal,
+        directive,
+        registry: deps.agentRegistry,
+        llmRegistry: deps.llmRegistry,
+      });
+      if (selection) {
+        preferredPrimaryIds = selection.primaryIds;
+        preferredIntegratorId = selection.integratorId;
+        selectionRationale = selection.rationale;
+        selectionAttempts = selection.attempts;
+        selectionOrigin = 'llm';
+      }
+    } catch (err) {
+      // Selector should never throw (it returns null on every failure
+      // path), but defend against future regressions so a buggy
+      // selector cannot block multi-agent planning entirely.
+      deps.bus?.emit('workflow:persona_selection_failed', {
+        taskId: opts.taskId,
+        ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  deps.bus?.emit('workflow:persona_selection_completed', {
+    taskId: opts.taskId,
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+    origin: selectionOrigin,
+    attempts: selectionAttempts,
+    requestedCount: directive.requestedPrimaryParticipantCount,
+    ...(preferredPrimaryIds ? { primaryIds: [...preferredPrimaryIds] } : {}),
+    ...(preferredIntegratorId ? { integratorId: preferredIntegratorId } : {}),
+    ...(selectionRationale ? { rationale: selectionRationale } : {}),
+  });
+
+  // Phase D — draft per-persona overlays once the selector has picked
+  // the participating ids. Best-effort: any failure leaves the overlay
+  // map empty and the room dispatcher uses the persona's stock
+  // responsibility text.
+  let personaOverlays: ReadonlyMap<string, string> | undefined;
+  if (deps.llmRegistry && preferredPrimaryIds && preferredPrimaryIds.length > 0) {
+    try {
+      const { draftPersonaOverlay } = await import('../room/presets/persona-overlay.ts');
+      const personaInfo = (deps.agentRegistry?.listAgents() ?? []).map((a) => ({
+        id: a.id,
+        ...(a.role ? { role: classifyPersonaRole(a.role) } : {}),
+        ...(a.description ? { description: a.description } : {}),
+      }));
+      const overlayResult = await draftPersonaOverlay({
+        goal: opts.goal,
+        primaryIds: [...preferredPrimaryIds],
+        ...(preferredIntegratorId ? { integratorId: preferredIntegratorId } : {}),
+        personaInfo,
+        interactionMode: directive.interactionMode,
+        llmRegistry: deps.llmRegistry,
+      });
+      if (overlayResult.overlays.size > 0) {
+        personaOverlays = overlayResult.overlays;
+      }
+    } catch {
+      // Best-effort — drop the overlay step on any failure
+      personaOverlays = undefined;
+    }
+  }
+
+  try {
+    const collaborationPlan = buildCollaborationPlan(opts.goal, directive, deps.agentRegistry, opts.taskId, {
+      ...(preferredPrimaryIds ? { preferredPrimaryIds } : {}),
+      ...(preferredIntegratorId ? { preferredIntegratorId } : {}),
+      ...(personaOverlays ? { personaOverlays } : {}),
+    });
+    return finalize(collaborationPlan, 'collaboration', selectionAttempts);
+  } catch (err) {
+    if (err instanceof DebateRoomBuildFailure) {
+      // Honest failure: registry has too few non-verifier personas.
+      // Surface a single-step plan whose description carries the failure
+      // reason so the synthesizer can relay it to the user. Going through
+      // the LLM planner here would just synthesize a multi-persona plan
+      // the registry cannot satisfy — the same class of bug the original
+      // collaboration runner refused to paper over.
+      return finalize(buildCollaborationFailurePlan(opts.goal, err), 'fallback', 0);
+    }
+    // Unexpected error — return null so caller falls through to the LLM
+    // planner. Mirrors the legacy console.warn path.
+    console.warn(
+      `[vinyan] buildCollaborationFromDirective threw, falling through to LLM planner: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return null;
+  }
 }
 
 export function buildCollaborationPlan(
@@ -548,6 +652,7 @@ export function buildCollaborationPlan(
     registry,
     ...(opts.preferredPrimaryIds ? { preferredPrimaryIds: opts.preferredPrimaryIds } : {}),
     ...(opts.preferredIntegratorId ? { preferredIntegratorId: opts.preferredIntegratorId } : {}),
+    ...(opts.personaOverlays ? { personaOverlays: opts.personaOverlays } : {}),
   });
 
   const totalRounds = 1 + directive.rebuttalRounds;

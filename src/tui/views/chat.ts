@@ -303,6 +303,11 @@ export function renderStructuredClarifications(questions: ClarificationQuestion[
   questions.forEach((q, idx) => {
     const prefix = questions.length > 1 ? `  Q${idx + 1}. ` : '  ';
     out.push(truncate(color(`${prefix}${q.prompt}`, ANSI.bold, ANSI.cyan), innerW));
+    // Phase C — surface the question-level rationale when the smart gate
+    // populated one (e.g. "Defaults below come from your last 3 sessions").
+    if (q.questionRationale) {
+      out.push(truncate(`    ${dim(`☆ ${q.questionRationale}`)}`, innerW));
+    }
     if (q.kind === 'free' || !q.options || q.options.length === 0) {
       out.push(truncate(`    ${dim('(free text — พิมพ์คำตอบได้เลย)')}`, innerW));
       return;
@@ -310,7 +315,15 @@ export function renderStructuredClarifications(questions: ClarificationQuestion[
     q.options.forEach((opt, i) => {
       const bracket = q.kind === 'multi' ? color('[ ]', ANSI.yellow) : color(`(${i + 1})`, ANSI.yellow);
       const hint = opt.hint ? dim(` — ${opt.hint}`) : '';
-      out.push(truncate(`    ${bracket} ${opt.label}${hint}`, innerW));
+      // Phase C — render the recommendation marker, trend badge, and
+      // rationale tooltip when the smart gate populated them. Older
+      // events without these fields render exactly as before.
+      const recMarker = opt.suggestedDefault ? color(' ★', ANSI.bold, ANSI.green) : '';
+      const trendBadge = opt.trendingHint ? color(` [${opt.trendingHint}]`, ANSI.cyan) : '';
+      out.push(truncate(`    ${bracket} ${opt.label}${recMarker}${trendBadge}${hint}`, innerW));
+      if (opt.rationale) {
+        out.push(truncate(`        ${dim(`↳ ${opt.rationale}`)}`, innerW));
+      }
     });
     if (q.kind === 'multi' && q.maxSelections) {
       out.push(truncate(`    ${dim(`(เลือกได้สูงสุด ${q.maxSelections} ข้อ — พิมพ์หมายเลขคั่นด้วย comma)`)}`, innerW));

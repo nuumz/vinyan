@@ -154,6 +154,76 @@ IMPORTANT: For opening apps, running system commands, or any OS interaction, use
 
 Respond ONLY with valid JSON, no markdown fences.`;
 
+/**
+ * Phase B — workflow-shape extraction addendum.
+ *
+ * Appended to the base prompt ONLY when the caller has determined the goal
+ * is a creative-deliverable + the candidate strategy is `agentic-workflow`.
+ * Casual prompts (chat / lookup / fix-bug / direct-tool) skip this addendum
+ * so they pay no extra latency or token cost.
+ *
+ * The addendum asks the LLM to populate FIVE additional optional fields.
+ * The schema accepts them as optional, so a model that ignores the addendum
+ * still produces a valid `IntentResponse`.
+ */
+export const WORKFLOW_SHAPE_EXTRACTION_ADDENDUM = `
+─── ADDITIONAL EXTRACTION (creative agentic-workflow goals only) ───
+
+When strategy="agentic-workflow" AND the goal is a creative deliverable
+(video / music / story / poster / pitch / lesson / brand asset / etc.),
+ALSO populate these optional fields in the JSON response:
+
+- workflowShape: one of
+    "single"           — one LLM call is enough (a tweet, a tagline, a one-liner)
+    "parallel"         — N agents work in parallel from different angles, no shared transcript
+    "debate-iterative" — N agents share transcript, take multiple rebuttal rounds (refining contested claims)
+    "pipeline-staged"  — sequential dependency: research → outline → draft → polish
+
+  Pick "single" by default unless the goal explicitly invites multiple
+  perspectives (debate / compare / brainstorm) or staged refinement
+  (research → outline → draft). DO NOT default to multi-agent shapes
+  for simple deliverables — overhead doesn't pay off.
+
+- shapeReason: one short sentence justifying the workflowShape choice.
+
+- primaryRolesNeeded: array of capability requirements for each agent slot,
+  ONLY when workflowShape is "parallel" / "debate-iterative" / "pipeline-staged".
+  Each entry has the same shape as the top-level capabilityRequirements
+  array (id, weight, fileExtensions, actionVerbs, domains, frameworkMarkers,
+  role). Each entry describes ONE primary slot — list as many as the
+  shape needs. Empty / omitted for "single" shape.
+
+- clarificationFocus: array subset of
+    ["genre", "audience", "tone", "length", "platform", "specialist"]
+  Listing ONLY the slots the user has NOT already supplied in the prompt.
+  Empty array means the prompt already gives enough context — skip
+  clarification entirely. Omit the field if you are unsure (the gate
+  defaults to all five questions).
+
+- specialistTarget: stable slug of a downstream generator the user named
+  or implied — examples: "runway-gen-4.5", "suno-v5", "midjourney-v7",
+  "manual-edit-spec". When the user said "I'll edit it in CapCut", set
+  "manual-edit-spec". When the user said "for Suno", set "suno-v5". Omit
+  if no specialist is mentioned or implied.
+
+ABSENCE rule: if you are not confident, OMIT the field. The orchestrator
+treats absent fields as "use defaults" and degrades gracefully. Do NOT
+hallucinate a primaryRolesNeeded array on a single-shot goal just because
+the addendum was injected.
+`;
+
+/**
+ * Assemble the intent system prompt, optionally appending the workflow-shape
+ * extraction addendum. Pure string composition — no I/O. Lives next to the
+ * base prompt so future extractions land here as additional addenda.
+ */
+export function buildIntentSystemPrompt(opts: { extractWorkflowShape?: boolean } = {}): string {
+  if (opts.extractWorkflowShape) {
+    return `${INTENT_SYSTEM_PROMPT}\n${WORKFLOW_SHAPE_EXTRACTION_ADDENDUM}`;
+  }
+  return INTENT_SYSTEM_PROMPT;
+}
+
 /** Single-call timeout before the resolver falls back to an alternate provider. */
 export const INTENT_TIMEOUT_MS = 8000;
 
@@ -190,16 +260,26 @@ export function pickAlternateProvider(registry: LLMProviderRegistry, excludeId: 
  * Single classify call. Parses + normalizes the response; throws on timeout,
  * malformed JSON, or an invalid direct-tool payload so `classifyWithFallback`
  * can retry with a different provider.
+ *
+ * `opts.extractWorkflowShape=true` opts in to the Phase B workflow-shape
+ * extraction addendum. Callers (intent-resolver) gate this on
+ * `inferCreativeDomain(goal) !== 'generic'` so casual prompts pay nothing.
+ * Increases `maxTokens` modestly to leave room for the additional fields.
  */
 export async function classifyOnce(
   provider: LLMProvider,
   userPrompt: string,
+  opts: { extractWorkflowShape?: boolean } = {},
 ): Promise<z.infer<typeof IntentResponseSchema>> {
+  const systemPrompt = buildIntentSystemPrompt(opts);
   const response = await withTimeout(
     provider.generate({
-      systemPrompt: INTENT_SYSTEM_PROMPT,
+      systemPrompt,
       userPrompt,
-      maxTokens: 500,
+      // Bump headroom modestly when the addendum is in play — the
+      // base 500 was tight for a clean JSON response with five extra
+      // optional fields populated.
+      maxTokens: opts.extractWorkflowShape ? 800 : 500,
       temperature: 0,
     }),
     INTENT_TIMEOUT_MS,
@@ -214,12 +294,13 @@ export async function classifyWithFallback(
   registry: LLMProviderRegistry,
   primary: LLMProvider,
   userPrompt: string,
+  opts: { extractWorkflowShape?: boolean } = {},
 ): Promise<z.infer<typeof IntentResponseSchema>> {
   try {
-    return await classifyOnce(primary, userPrompt);
+    return await classifyOnce(primary, userPrompt, opts);
   } catch (firstError) {
     const alternate = pickAlternateProvider(registry, primary.id);
     if (!alternate) throw firstError;
-    return classifyOnce(alternate, userPrompt);
+    return classifyOnce(alternate, userPrompt, opts);
   }
 }

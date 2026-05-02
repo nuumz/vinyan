@@ -8,9 +8,11 @@
  */
 
 import type { AppendResult, JsonlAppender } from '../db/session-jsonl/appender.ts';
+import type { SessionDirLayout } from '../db/session-jsonl/paths.ts';
 import type { JsonlReadAdapter, SessionReadAdapter } from '../db/session-jsonl/read-adapter.ts';
 import type { IndexRebuilder } from '../db/session-jsonl/rebuild-index.ts';
 import type { Actor, Kind } from '../db/session-jsonl/schemas.ts';
+import { type HardDeletePolicy, moveToTombstone, purgeSessionDir } from '../db/session-jsonl/tombstone.ts';
 import type {
   ListSessionsOptions,
   ListSessionTasksOptions,
@@ -194,12 +196,23 @@ export class SessionManager {
     rebuilder: IndexRebuilder,
     readAdapter?: JsonlReadAdapter,
     readFlags?: ReadFromJsonlFlags,
+    options?: { layout?: SessionDirLayout; hardDeletePolicy?: HardDeletePolicy },
   ): void {
     this.jsonlAppender = appender;
     this.indexRebuilder = rebuilder;
     if (readAdapter) this.jsonlReadAdapter = readAdapter;
     if (readFlags) this.readFlags = { ...DEFAULT_READ_FLAGS, ...readFlags };
+    if (options?.layout) this.jsonlLayout = options.layout;
+    if (options?.hardDeletePolicy) this.hardDeletePolicy = options.hardDeletePolicy;
   }
+
+  /**
+   * Phase 5 — when wired, `hardDelete(sessionId)` consults this layout
+   * to either move the session subdir into `<sessionsDir>/.tombstones/`
+   * (default policy `tombstone`) or delete it outright (policy `purge`).
+   */
+  private jsonlLayout?: SessionDirLayout;
+  private hardDeletePolicy: HardDeletePolicy = 'tombstone';
 
   /** True when dual-write is wired. Used by tests + verifier. */
   hasJsonlLayer(): boolean {
@@ -488,14 +501,29 @@ export class SessionManager {
     if (before.deleted_at === null) {
       return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
-    // session.purged carries the policy so a future tombstone GC can
-    // distinguish a tombstone-rooted purge from a true `purge` policy.
-    // `policy` reflects current config; the actual fs-side handling
-    // (move-to-tombstone vs rm -rf) is Phase 5 hardening.
-    this.appendJsonl(sessionId, 'session.purged', { policy: 'tombstone' }, { kind: 'user' });
+    const purgedAt = Date.now();
+    // session.purged records the configured policy so a future tombstone
+    // GC can distinguish tombstone-rooted purges from true `purge`
+    // operations.
+    this.appendJsonl(sessionId, 'session.purged', { policy: this.hardDeletePolicy, purgedAt }, { kind: 'user' });
     const ok = this.sessionStore.hardDeleteSession(sessionId);
-    // No applyJsonlCursor: the row is gone, the cursor update would
-    // either no-op or violate FK once the session_store row is deleted.
+    if (ok && this.jsonlLayout) {
+      // Phase 5 — apply the configured fs-side policy. Errors are
+      // logged but never rethrown: SQLite is already clean and the
+      // operator's intent (delete) succeeded; an orphan dir is
+      // recoverable via `vinyan session tombstone gc`.
+      try {
+        if (this.hardDeletePolicy === 'tombstone') {
+          moveToTombstone(this.jsonlLayout, sessionId, purgedAt);
+        } else {
+          purgeSessionDir(this.jsonlLayout, sessionId);
+        }
+      } catch (err) {
+        console.warn(
+          `[vinyan] hardDelete: failed to ${this.hardDeletePolicy} session subdir for ${sessionId}: ${String(err)}`,
+        );
+      }
+    }
     return { applied: ok, session: null };
   }
 

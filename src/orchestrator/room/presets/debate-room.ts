@@ -74,6 +74,16 @@ export interface DebateRoomBuildOptions {
    * (no integrator in that mode).
    */
   preferredIntegratorId?: PersonaId;
+  /**
+   * Phase D — persona overlay map (persona id → goal-specific framing
+   * text). When supplied, the role builder concatenates the overlay
+   * onto the persona's stock responsibility text so each primary's
+   * perspective is differentiated for THIS goal. Unused ids are simply
+   * dropped (no error). Drafted by `draftPersonaOverlay()` in the
+   * selector module — pure addition; the persona's registered soul is
+   * untouched.
+   */
+  personaOverlays?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -126,7 +136,10 @@ export function buildDebateRoomContract(opts: DebateRoomBuildOptions): DebateRoo
     );
   }
 
-  const primaryRoles: RoleSpec[] = primaryAgents.map((agent) => buildPrimaryRole(agent, directive.rebuttalRounds));
+  const overlays = opts.personaOverlays ?? new Map<string, string>();
+  const primaryRoles: RoleSpec[] = primaryAgents.map((agent) =>
+    buildPrimaryRole(agent, directive.rebuttalRounds, overlays.get(agent.id)),
+  );
   const roles: RoleSpec[] = [...primaryRoles];
 
   let oversightId: PersonaId | null = null;
@@ -157,7 +170,7 @@ export function buildDebateRoomContract(opts: DebateRoomBuildOptions): DebateRoo
     const pid = tryAsPersonaId(integratorAgent.id);
     if (pid) {
       integratorId = pid;
-      roles.push(buildIntegratorRole(integratorAgent, pid));
+      roles.push(buildIntegratorRole(integratorAgent, pid, overlays.get(integratorAgent.id)));
     }
   }
 
@@ -266,14 +279,22 @@ function selectPrimaryAgents(allAgents: AgentSpec[], n: number, preferredIds?: r
   return [...generators, ...mixedExceptCoordinator].slice(0, n);
 }
 
-function buildPrimaryRole(agent: AgentSpec, rebuttalRounds: number): RoleSpec {
+function buildPrimaryRole(agent: AgentSpec, rebuttalRounds: number, overlay: string | undefined): RoleSpec {
   const personaId = tryAsPersonaId(agent.id);
+  const baseResponsibility =
+    `You are the **${agent.name}** primary participant. Answer the user's goal directly. ` +
+    `On rebuttal rounds you will see peers' prior answers — refine, rebut, or strengthen ` +
+    `your stance. Do NOT simply repeat your prior turn.`;
+  // Phase D — append the goal-specific overlay if the selector drafted
+  // one for this persona. The overlay is 1-3 sentences guiding the
+  // angle / framing for THIS goal; it does not replace the persona's
+  // stock identity (registered soul stays intact).
+  const responsibility = overlay
+    ? `${baseResponsibility}\n\nFor THIS goal specifically:\n${overlay.trim()}`
+    : baseResponsibility;
   return {
     name: agent.id,
-    responsibility:
-      `You are the **${agent.name}** primary participant. Answer the user's goal directly. ` +
-      `On rebuttal rounds you will see peers' prior answers — refine, rebut, or strengthen ` +
-      `your stance. Do NOT simply repeat your prior turn.`,
+    responsibility,
     // `discussion/...` carries the participant's per-round answer; the
     // `clarification/...` scope is needed for the Phase 4 clarification
     // bubble-up — the runner writes the user's answer back into the
@@ -301,14 +322,18 @@ function buildOversightRole(agent: AgentSpec, personaId: PersonaId, rebuttalRoun
   };
 }
 
-function buildIntegratorRole(agent: AgentSpec, personaId: PersonaId): RoleSpec {
+function buildIntegratorRole(agent: AgentSpec, personaId: PersonaId, overlay: string | undefined): RoleSpec {
+  const baseResponsibility =
+    `Synthesize a single coherent final answer from all primary participants' transcripts. ` +
+    `Honour distinct stances; surface meaningful disagreements rather than smoothing them over. ` +
+    `When the directive carries a competition signal, end the response with the verdict block ` +
+    `the user prompt requested.`;
+  const responsibility = overlay
+    ? `${baseResponsibility}\n\nFor THIS goal specifically:\n${overlay.trim()}`
+    : baseResponsibility;
   return {
     name: agent.id,
-    responsibility:
-      `Synthesize a single coherent final answer from all primary participants' transcripts. ` +
-      `Honour distinct stances; surface meaningful disagreements rather than smoothing them over. ` +
-      `When the directive carries a competition signal, end the response with the verdict block ` +
-      `the user prompt requested.`,
+    responsibility,
     writableBlackboardKeys: ['final/*'],
     maxTurns: 1,
     canWriteFiles: false,

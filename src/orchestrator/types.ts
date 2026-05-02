@@ -271,6 +271,55 @@ export interface IntentResolution {
    * Room dispatcher (text-answer mode) instead of `executeWorkflow`.
    */
   collaboration?: import('./intent/collaboration-parser.ts').CollaborationDirective;
+  // ── Phase B: workflow-shape extraction ─────────────────────────────────
+  /**
+   * Coarse shape of the workflow the goal calls for. Extracted by the
+   * intent LLM ONLY when the prompt is a creative-deliverable request
+   * (`inferCreativeDomain !== 'generic'`) AND the candidate strategy is
+   * `agentic-workflow`. Casual non-creative prompts skip the extraction
+   * to avoid latency overhead.
+   *
+   *   - `single`             — one LLM call is sufficient
+   *   - `parallel`           — N agents work in parallel, no shared transcript
+   *   - `debate-iterative`   — N agents share transcript, multiple rebuttal rounds
+   *   - `pipeline-staged`    — research → outline → draft → polish (sequential)
+   *
+   * Replaces the implicit "directive present → forced collaboration"
+   * shortcut. The workflow-planner consults this field FIRST when the
+   * directive's `source` is `'inferred'`. A `'user-explicit'` directive
+   * still wins (the user asked for it directly).
+   */
+  workflowShape?: 'single' | 'parallel' | 'debate-iterative' | 'pipeline-staged';
+  /**
+   * Free-text rationale for the chosen `workflowShape`. Surfaced in
+   * traces / dashboards so reviewers can audit shape decisions without
+   * re-running the LLM.
+   */
+  shapeReason?: string;
+  /**
+   * Per-slot capability requirements for the multi-agent shapes
+   * (`parallel`, `debate-iterative`, `pipeline-staged`). The Phase D
+   * persona resolver iterates this array, scores each slot against the
+   * existing roster, and synthesises a custom persona when none fits.
+   * Empty / undefined for `single` shape.
+   */
+  primaryRolesNeeded?: CapabilityRequirement[];
+  /**
+   * Subset of clarification slots the IntentResolver thinks the user
+   * still needs to answer. The smart-clarification gate (Phase C) uses
+   * this to focus the question set instead of always emitting all five
+   * (genre, audience, tone, length, platform, specialist). Empty array
+   * = nothing to ask. Undefined = use the default full set.
+   */
+  clarificationFocus?: Array<'genre' | 'audience' | 'tone' | 'length' | 'platform' | 'specialist'>;
+  /**
+   * Specialist id (matches a `SpecialistDefinition.id` in the registry)
+   * the user implied or named in the prompt. The workflow-executor uses
+   * this to format the final synthesised output through the matching
+   * adapter. Absent when the prompt doesn't name one — the executor
+   * falls back to `manual-edit-spec` per the Phase A default.
+   */
+  specialistTarget?: string;
 }
 
 /** Read-only tools available for non-mutating reasoning tasks. */

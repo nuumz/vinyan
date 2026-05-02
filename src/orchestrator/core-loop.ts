@@ -244,6 +244,20 @@ export interface OrchestratorDeps {
   userPreferenceStore?: import('../db/user-preference-store.ts').UserPreferenceStore;
   /** Mines user interests from traces + session messages. Enriches intent resolution. */
   userInterestMiner?: import('./user-context/user-interest-miner.ts').UserInterestMiner;
+  /**
+   * Phase A — specialist registry (downstream generators / editors). When
+   * supplied, the workflow executor formats the final synthesised output
+   * through the matching adapter (`manual-edit-spec` default). Optional;
+   * absent registries leave the synthesizer text unchanged.
+   */
+  specialistRegistry?: import('./specialist-prompt/registry.ts').SpecialistRegistry;
+  /**
+   * Phase C — optional trend-feed provider used by the smart
+   * clarification gate to enrich option labels with a `trendingHint`
+   * badge. Interface only in v1; concrete impls (TikTok-API, Suno-trends,
+   * RSS, etc.) are deferred. The gate degrades gracefully when omitted.
+   */
+  trendFeed?: import('./user-context/trend-feed.ts').ClarificationTrendProvider;
   /** Workflow approval gating config (from vinyan.json `workflow`). */
   workflowConfig?: import('./workflow/approval-gate.ts').WorkflowConfig;
   // Monitoring — Self-Improving Autonomy.
@@ -2245,15 +2259,11 @@ async function executeTaskCore(
           // Future enhancement: route through approval gate for explicit
           // human consent rather than refuse outright.
           const ECC_SELF_PATH = 'src/orchestrator/external-coding-cli/';
-          const selfTargets = (cliReq.targetPaths ?? []).filter((p) =>
-            p.includes(ECC_SELF_PATH),
-          );
+          const selfTargets = (cliReq.targetPaths ?? []).filter((p) => p.includes(ECC_SELF_PATH));
           // Also inspect the taskText (relative paths in the prompt may not
           // be extracted as targetPaths by the path regex, but they're still
           // self-application requests we must refuse).
-          const taskTextSelfMatch = cliReq.taskText.includes(ECC_SELF_PATH)
-            ? [ECC_SELF_PATH]
-            : [];
+          const taskTextSelfMatch = cliReq.taskText.includes(ECC_SELF_PATH) ? [ECC_SELF_PATH] : [];
           const allSelfTargets = [...new Set([...selfTargets, ...taskTextSelfMatch])];
           if (allSelfTargets.length > 0) {
             const reason = `Self-application detected: External Coding CLI cannot modify its own subsystem (${ECC_SELF_PATH}) without explicit human approval. Targets: ${allSelfTargets.join(', ')}`;
@@ -2362,8 +2372,7 @@ async function executeTaskCore(
             correlationId: input.id,
           });
           const cliDurationMs = Date.now() - cliStartedAt;
-          const traceOutcome: ExecutionTrace['outcome'] =
-            outcome.status === 'completed' ? 'success' : 'failure';
+          const traceOutcome: ExecutionTrace['outcome'] = outcome.status === 'completed' ? 'success' : 'failure';
           const trace: ExecutionTrace = {
             id: `trace-${input.id}-coding-cli`,
             taskId: input.id,
@@ -2438,11 +2447,7 @@ async function executeTaskCore(
         // and the executor runs the rounds loop in `runCollaborationBlock`.
         // The legacy core-loop fork to `executeCollaborationRoom` was
         // removed in favour of this single execution path.
-        if (
-          intentResolution.collaboration &&
-          !input.parentTaskId &&
-          !deps.agentRegistry
-        ) {
+        if (intentResolution.collaboration && !input.parentTaskId && !deps.agentRegistry) {
           console.warn(
             `[vinyan] collaboration directive parsed (count=${intentResolution.collaboration.requestedPrimaryParticipantCount}, ` +
               `mode=${intentResolution.collaboration.interactionMode}, rebuttalRounds=${intentResolution.collaboration.rebuttalRounds}) ` +
@@ -2496,6 +2501,36 @@ async function executeTaskCore(
             ...(intentResolution.collaboration && !input.parentTaskId
               ? { collaborationDirective: intentResolution.collaboration }
               : {}),
+            // Phase B — workflow-shape from the IntentResolver (extracted
+            // only for creative agentic-workflow goals). The planner
+            // consults this to decide whether an inferred collaboration
+            // directive should be downgraded to a single-LLM-call plan.
+            // User-explicit directives ("3 agent debate") still force
+            // collaboration regardless of shape.
+            ...(intentResolution.workflowShape ? { workflowShape: intentResolution.workflowShape } : {}),
+            // Phase A — specialist target + format context for the
+            // post-synthesis adapter step. The executor reads
+            // `specialistFormatContext.creativeDomain` and (Phase A.5)
+            // defaults `specialistTarget='manual-edit-spec'` when the
+            // intent didn't name an explicit specialist BUT the goal is
+            // a creative-domain task — so every creative deliverable
+            // ships in a structured format the user can hand to a human
+            // editor / AI generator without further reshaping.
+            ...(intentResolution.specialistTarget ? { specialistTarget: intentResolution.specialistTarget } : {}),
+            ...(deps.specialistRegistry ? { specialistRegistry: deps.specialistRegistry } : {}),
+            specialistFormatContext: {
+              // Lazy-import the inferrer so this hot path doesn't pull
+              // the templates module + zod into a small no-creative-task
+              // request.
+              creativeDomain: await (async () => {
+                try {
+                  const { inferCreativeDomain } = await import('./understanding/clarification-templates.ts');
+                  return inferCreativeDomain(input.goal);
+                } catch {
+                  return 'generic' as const;
+                }
+              })(),
+            },
             workflowConfig: deps.workflowConfig,
             sessionTurns,
             // Plumb the External Coding CLI strategy so workflow plans that

@@ -63,6 +63,23 @@ export async function startChat(argv: string[], opts: StartChatOptions = {}): Pr
   const sessionStore = new SessionStore(db.getDb());
   const sessionManager = new SessionManager(sessionStore);
 
+  // Phase 2 hybrid storage: opt-in JSONL dual-write driven by config.
+  // Mirrors `cli/serve.ts` — flag default is OFF until end-to-end soak.
+  try {
+    const { loadConfig } = await import('../config/index.ts');
+    const cfg = loadConfig(workspace);
+    if (cfg.session?.dualWrite?.enabled === true) {
+      const { resolveProfile } = await import('../config/profile-resolver.ts');
+      const { JsonlAppender } = await import('../db/session-jsonl/appender.ts');
+      const { IndexRebuilder } = await import('../db/session-jsonl/rebuild-index.ts');
+      const profile = resolveProfile();
+      const layout = { sessionsDir: profile.paths.sessionsDir };
+      sessionManager.attachJsonlLayer(new JsonlAppender({ layout }), new IndexRebuilder(db.getDb(), layout));
+    }
+  } catch (err) {
+    console.warn(`[vinyan] chat: JSONL dual-write wiring skipped: ${String(err)}`);
+  }
+
   // --list: show sessions and exit
   if (listMode) {
     const sessions = sessionManager.listSessions();

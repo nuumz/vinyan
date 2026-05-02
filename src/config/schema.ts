@@ -859,6 +859,43 @@ export const VinyanConfigSchema = z.object({
       volunteer_fallback_deadline_ms: z.number().int().positive().default(600_000),
     })
     .optional(),
+  /**
+   * Hybrid session storage (Phase 2 of the JSONL migration). Source of
+   * truth migrates from SQLite-only to per-session JSONL files; SQLite
+   * becomes a derived index. Disabled by default until Phase 2 lands
+   * across all production callers (`serve.ts`, `chat.ts`).
+   */
+  session: z
+    .object({
+      dualWrite: z
+        .object({
+          /**
+           * When true, every SessionManager mutator appends a JSONL line
+           * before writing SQLite. JSONL is the source of truth; SQLite
+           * is dual-written for reads. Default false in Phase 2.
+           */
+          enabled: z.boolean().default(false),
+          /**
+           * When true, SessionManager runs `verifySessionIntegrity` on a
+           * sampled basis after every N writes. Off by default; opt in
+           * for staging.
+           */
+          verify: z.boolean().default(false),
+        })
+        .optional(),
+      hardDelete: z
+        .object({
+          /**
+           * `tombstone` (default) moves the session subdir to
+           * `<sessionsDir>/.tombstones/<id>-<purgedAt>/` and preserves
+           * the JSONL audit chain (I16). `purge` deletes the subdir
+           * outright — operator-opt-in for GDPR-style "right to forget".
+           */
+          policy: z.enum(['tombstone', 'purge']).default('tombstone'),
+        })
+        .optional(),
+    })
+    .optional(),
   /** Workspace-level Vinyan Agent identity (name, description, preferences). */
   agent: AgentConfigSchema.optional(),
   /**

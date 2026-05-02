@@ -69,9 +69,7 @@ describe('fallbackStrategy', () => {
       },
     } as any;
     // Even a pure "conversational" domain gets bumped to agentic-workflow.
-    expect(fallbackStrategy('conversational', 'chat', 'none', comprehension)).toBe(
-      'agentic-workflow',
-    );
+    expect(fallbackStrategy('conversational', 'chat', 'none', comprehension)).toBe('agentic-workflow');
   });
 });
 
@@ -468,12 +466,20 @@ describe('composeDeterministicCandidate — sub-task recursion guard (STU mapper
     // Same STU shape, but a top-level task — the planner is the right
     // surface for `general-reasoning + execute + none`. Demotion would
     // regress every creative top-level task to a single-LLM-call answer.
+    //
+    // The deterministic creative-deliverable pre-rule may now claim this
+    // path FIRST when the goal contains an authoring verb + artifact noun
+    // (post-domain-coverage extension). Either source is acceptable as
+    // long as the resulting strategy is `agentic-workflow` — that's the
+    // invariant this test guards against the recursion-guard regression.
     const result = composeDeterministicCandidate(
       input('Develop a coaching strategy doc'),
       stu({ taskDomain: 'general-reasoning', taskIntent: 'execute', toolRequirement: 'none' }),
     );
     expect(result.strategy).toBe('agentic-workflow');
-    expect(result.deterministicCandidate.source).toBe('mapUnderstandingToStrategy');
+    expect(['mapUnderstandingToStrategy', 'creative-deliverable-pattern']).toContain(
+      result.deterministicCandidate.source,
+    );
   });
 
   it('skips creative-deliverable pre-rule for sub-tasks', () => {
@@ -594,9 +600,7 @@ describe('composeDeterministicCandidate — goalReferenceMode gating (Phase 1)',
       // user's META question ("how does the parser handle this prompt?")
       // gets answered by a workflow planner instead of a chat reply.
       const result = composeDeterministicCandidate(
-        input(
-          'ช่วยแก้ logic สำหรับ creative writing prompt เช่น "เขียนนิยายสัก 2 บท"',
-        ),
+        input('ช่วยแก้ logic สำหรับ creative writing prompt เช่น "เขียนนิยายสัก 2 บท"'),
         stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
         { goalReferenceMode: 'meta' },
       );
@@ -673,10 +677,7 @@ describe('enforceSubTaskLeafStrategy', () => {
       type: 'known',
     };
 
-    const result = enforceSubTaskLeafStrategy(
-      { parentTaskId: 'parent-1' },
-      resolution,
-    );
+    const result = enforceSubTaskLeafStrategy({ parentTaskId: 'parent-1' }, resolution);
 
     expect(result.strategy).toBe('conversational');
     expect(result.workflowPrompt).toBeUndefined();

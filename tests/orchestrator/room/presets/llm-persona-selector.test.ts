@@ -358,4 +358,115 @@ describe('selectPersonasViaLLM — retry path', () => {
     expect(result!.attempts).toBe(2);
     expect(result!.rationale).toBe('second-attempt success');
   });
+
+  it('soft-pass: keeps overlap result as fallback when retry also fails to fix overlap', async () => {
+    // Both attempts produce overlap. The selector should still return the
+    // primaries (content-aware) with integratorId omitted so the caller's
+    // alphabetical default fills the integrator slot — better than null.
+    const overlap = JSON.stringify({
+      primaryPersonaIds: ['author', 'researcher', 'mentor'],
+      integratorPersonaId: 'author',
+    });
+    const llm = makeLlmRegistryWith([overlap, overlap]);
+    const result = await selectPersonasViaLLM({
+      goal: 'creative writing',
+      directive: directive(),
+      registry: makeRegistry(FULL_AGENTS),
+      llmRegistry: llm,
+    });
+    expect(result).not.toBeNull();
+    expect(result!.primaryIds).toHaveLength(3);
+    expect(result!.integratorId).toBeUndefined();
+  });
+
+  it('soft-pass upgrade: overlap on attempt 1, clean disjoint on attempt 2 → strict pass', async () => {
+    // Trial [09] shape — first attempt has integrator=author overlap with
+    // primary[0], retry feedback steers the LLM to a clean disjoint
+    // selection. The selector should return the strict-pass result, not
+    // the soft-pass fallback.
+    const llm = makeLlmRegistryWith([
+      JSON.stringify({
+        primaryPersonaIds: ['author', 'researcher', 'mentor'],
+        integratorPersonaId: 'author', // overlap with primary[0]
+      }),
+      JSON.stringify({
+        primaryPersonaIds: ['researcher', 'mentor', 'assistant'],
+        integratorPersonaId: 'author',
+        rationale: 'after retry feedback',
+      }),
+    ]);
+    const result = await selectPersonasViaLLM({
+      goal: 'creative writing',
+      directive: directive(),
+      registry: makeRegistry(FULL_AGENTS),
+      llmRegistry: llm,
+    });
+    expect(result).not.toBeNull();
+    expect(result!.primaryIds).toEqual(['researcher', 'mentor', 'assistant'] as never);
+    expect(result!.integratorId).toEqual('author' as never);
+    expect(result!.attempts).toBe(2);
+  });
+
+  it('hard-fail then valid: keeps retrying through validation rejections', async () => {
+    const llm = makeLlmRegistryWith([
+      JSON.stringify({
+        primaryPersonaIds: ['developer', 'fakepersona'], // unknown id, fail
+        integratorPersonaId: 'coordinator',
+      }),
+      JSON.stringify({
+        primaryPersonaIds: ['developer', 'architect', 'researcher'],
+        integratorPersonaId: 'coordinator',
+      }),
+    ]);
+    const result = await selectPersonasViaLLM({
+      goal: 'code',
+      directive: directive(),
+      registry: makeRegistry(FULL_AGENTS),
+      llmRegistry: llm,
+    });
+    expect(result).not.toBeNull();
+    expect(result!.primaryIds).toHaveLength(3);
+    expect(result!.attempts).toBe(2);
+  });
+
+  it('retry feedback: second user prompt contains "Previous attempt was rejected" when attempt 1 produced overlap', async () => {
+    // Prove the retry-feedback wiring actually injects the previous error
+    // into the second attempt's user prompt so the LLM has the signal it
+    // needs to revise.
+    const captured: string[] = [];
+    const responses = [
+      JSON.stringify({
+        primaryPersonaIds: ['author', 'researcher', 'mentor'],
+        integratorPersonaId: 'author', // overlap → soft-fail → retry
+      }),
+      JSON.stringify({
+        primaryPersonaIds: ['researcher', 'mentor', 'assistant'],
+        integratorPersonaId: 'author',
+      }),
+    ];
+    const llm = new LLMProviderRegistry();
+    llm.register({
+      id: 'mock/balanced',
+      tier: 'balanced',
+      async generate(req: { userPrompt: string }) {
+        captured.push(req.userPrompt);
+        const next = responses.shift();
+        if (!next) throw new Error('queue empty');
+        return { content: next, tokensUsed: { input: 0, output: 0 } };
+      },
+    } as never);
+
+    const result = await selectPersonasViaLLM({
+      goal: 'creative writing',
+      directive: directive(),
+      registry: makeRegistry(FULL_AGENTS),
+      llmRegistry: llm,
+    });
+
+    expect(result).not.toBeNull();
+    expect(captured).toHaveLength(2);
+    expect(captured[0]).not.toContain('RETRY FEEDBACK');
+    expect(captured[1]).toContain('RETRY FEEDBACK');
+    expect(captured[1]).toContain('overlaps with primaryPersonaIds');
+  });
 });

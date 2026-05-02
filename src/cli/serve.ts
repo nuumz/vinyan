@@ -234,6 +234,19 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
   const sessionStore = new SessionStore(db.getDb());
   const sessionManager = new SessionManager(sessionStore);
 
+  // Phase 2 hybrid storage: when `session.dualWrite.enabled=true`, every
+  // SessionManager mutator appends a JSONL line first then writes SQLite.
+  // The default is OFF — flip via `vinyan.json` (`session.dualWrite.enabled`)
+  // until production wiring (this PR) is verified end-to-end.
+  if (vinyanConfigEarly.session?.dualWrite?.enabled === true) {
+    const { JsonlAppender } = await import('../db/session-jsonl/appender.ts');
+    const { IndexRebuilder } = await import('../db/session-jsonl/rebuild-index.ts');
+    const layout = { sessionsDir: resolvedProfile.paths.sessionsDir };
+    const jsonlAppender = new JsonlAppender({ layout });
+    const indexRebuilder = new IndexRebuilder(db.getDb(), layout);
+    sessionManager.attachJsonlLayer(jsonlAppender, indexRebuilder);
+  }
+
   // ── Orchestrator + server wiring ────────────────────────────────
   const orchestrator = createOrchestrator({ workspace, sessionManager, db });
 
@@ -352,9 +365,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       skillAutogenOff = wireSkillProposalAutogen({
         bus: orchestrator.bus,
         store: orchestrator.skillProposalStore,
-        ...(orchestrator.skillAutogenStateStore
-          ? { stateStore: orchestrator.skillAutogenStateStore }
-          : {}),
+        ...(orchestrator.skillAutogenStateStore ? { stateStore: orchestrator.skillAutogenStateStore } : {}),
         ...(orchestrator.parameterLedger ? { ledger: orchestrator.parameterLedger } : {}),
         defaultProfile: resolvedProfile.name,
       });

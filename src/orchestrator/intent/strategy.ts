@@ -115,27 +115,16 @@ export function fallbackStrategy(
    */
   comprehension?: import('../comprehension/types.ts').ComprehendedTaskMessage,
 ): ExecutionStrategy {
-  if (
-    comprehension?.params.type === 'comprehension' &&
-    comprehension.params.data?.state.isClarificationAnswer
-  ) {
+  if (comprehension?.params.type === 'comprehension' && comprehension.params.data?.state.isClarificationAnswer) {
     return 'agentic-workflow';
   }
   if (taskDomain === 'conversational') return 'conversational';
   if (taskDomain === 'general-reasoning' && taskIntent === 'inquire') return 'conversational';
-  if (
-    taskIntent === 'execute' &&
-    toolRequirement === 'tool-needed' &&
-    taskDomain !== 'code-mutation'
-  )
+  if (taskIntent === 'execute' && toolRequirement === 'tool-needed' && taskDomain !== 'code-mutation')
     return 'direct-tool';
   // Creative/generative tasks (execute + no tools + general-reasoning) need
   // agentic-workflow, not full-pipeline.
-  if (
-    taskIntent === 'execute' &&
-    toolRequirement === 'none' &&
-    taskDomain === 'general-reasoning'
-  )
+  if (taskIntent === 'execute' && toolRequirement === 'none' && taskDomain === 'general-reasoning')
     return 'agentic-workflow';
   return 'full-pipeline';
 }
@@ -165,8 +154,7 @@ export function enforceSubTaskLeafStrategy(
     ...leaf,
     strategy: 'conversational',
     confidence: Math.min(resolution.confidence, 0.7),
-    reasoning:
-      `${resolution.reasoning} [sub-task leaf guard: parentTaskId present, demoted agentic-workflow → conversational to prevent nested workflow recursion]`,
+    reasoning: `${resolution.reasoning} [sub-task leaf guard: parentTaskId present, demoted agentic-workflow → conversational to prevent nested workflow recursion]`,
     reasoningSource: resolution.reasoningSource ?? 'deterministic',
     deterministicCandidate: {
       strategy: 'conversational',
@@ -184,11 +172,12 @@ const FILE_TOKEN_REGEX = /\b[\w.\-/]+\.[A-Za-z0-9]{1,6}\b/;
  * Rule-based strategy candidate from STU signals. Higher-tier than
  * `fallbackStrategy` because it includes confidence + ambiguity detection.
  */
-export function mapUnderstandingToStrategy(
-  understanding: SemanticTaskUnderstanding,
-): { strategy: ExecutionStrategy; confidence: number; ambiguous: boolean } {
-  const { taskDomain, taskIntent, toolRequirement, rawGoal, resolvedEntities, targetSymbol } =
-    understanding;
+export function mapUnderstandingToStrategy(understanding: SemanticTaskUnderstanding): {
+  strategy: ExecutionStrategy;
+  confidence: number;
+  ambiguous: boolean;
+} {
+  const { taskDomain, taskIntent, toolRequirement, rawGoal, resolvedEntities, targetSymbol } = understanding;
   const strategy = fallbackStrategy(taskDomain, taskIntent, toolRequirement);
 
   // --- Ambiguity heuristics ---
@@ -200,9 +189,7 @@ export function mapUnderstandingToStrategy(
   // "execute" intent on non-code domain with no clear tool signal — could be
   // creative generation OR a direct action OR a research workflow.
   const creativeAmbiguity =
-    taskDomain === 'general-reasoning' &&
-    taskIntent === 'execute' &&
-    toolRequirement === 'none';
+    taskDomain === 'general-reasoning' && taskIntent === 'execute' && toolRequirement === 'none';
 
   // code-reasoning + inquire could be either "explain this code" (conversational)
   // or "analyze blame for bug" (full-pipeline with tools).
@@ -216,10 +203,7 @@ export function mapUnderstandingToStrategy(
     confidence = 0.55;
   } else if (taskDomain === 'conversational') {
     confidence = 0.95;
-  } else if (
-    taskDomain === 'code-mutation' &&
-    (understanding.targetSymbol || resolvedEntities.length > 0)
-  ) {
+  } else if (taskDomain === 'code-mutation' && (understanding.targetSymbol || resolvedEntities.length > 0)) {
     confidence = 0.9;
   } else if (strategy === 'direct-tool') {
     confidence = 0.8;
@@ -266,10 +250,10 @@ const INSPECTION_VERB_PATTERN =
  * wrong domain classification at the source.
  */
 const CREATIVE_DELIVERABLE_THAI =
-  /(เขียน|แต่ง|ประพันธ์|ร่าง|สร้าง|ออกแบบ)[^.!?]{0,40}(นิยาย|นิทาน|เรื่อง(?:สั้น|ราว|ยาว)?|บทความ|รายงาน|บท|ตอน|กลอน|สคริปต์)/i;
+  /(เขียน|แต่ง|ประพันธ์|ร่าง|สร้าง|ออกแบบ|ทำ|ผลิต|ถ่าย|เรียบเรียง|ดีไซน์|วาด|จัดทำ|วางแผน|ทำคลิป)[^.!?]{0,40}(นิยาย|นิทาน|เรื่อง(?:สั้น|ราว|ยาว)?|บทความ|รายงาน|บท|ตอน|กลอน|สคริปต์|คอนเทนต์|คอนเท้น|คอนเทนท์|คลิป|วิดีโอ|วิดิโอ|tiktok|reel|reels|youtube|podcast|พอดแคสต์|พอดคาสต์|เพลง|จิงเกิ้ล|ซาวด์แทร็ค|เกม|เลเวล|ตัวละคร|โฆษณา|แคมเปญ|สโลแกน|แท็กไลน์|หลักสูตร|บทเรียน|คอร์ส|workshop|แผนธุรกิจ|พิทช์|พิทช์เด็ค|deck|infographic|โปสเตอร์|โลโก้|brand|แบรนด์|illustration|ภาพประกอบ|ไอคอน|แบนเนอร์|ปก|mockup)/i;
 
 const CREATIVE_DELIVERABLE_ENGLISH =
-  /\b(write|draft|compose|author|create|generate)\b[^.!?]{0,40}\b(story|stories|chapter|chapters|article|essay|report|poem|script|spec|outline|deck|novel|book)\b/i;
+  /\b(write|draft|compose|author|create|generate|make|produce|film|record|shoot|design|illustrate|build|develop|plan|prepare)\b[^.!?]{0,40}\b(story|stories|chapter|chapters|article|articles|essay|report|poem|script|spec|outline|deck|novel|book|webtoon|comic|manga|content|blog|post|posts|newsletter|video|videos|clip|clips|tiktok|reel|reels|short|shorts|podcast|episode|song|songs|lyric|lyrics|jingle|track|album|score|soundtrack|game|games|level|levels|character|characters|quest|lore|ad|ads|advert|campaign|tagline|slogan|copy|landing|course|courses|lesson|lessons|curriculum|syllabus|workshop|bootcamp|business[\s-]plan|pitch|pitch[\s-]deck|one[\s-]pager|whitepaper|proposal|memo|brief|strategy|poster|posters|logo|logos|infographic|icon|icons|banner|illustration|illustrations|mockup|packaging|brand|branding)\b/i;
 
 /**
  * True when the goal text is a structurally unambiguous creative-deliverable
@@ -475,8 +459,7 @@ export function composeDeterministicCandidate(
   // sends "ตรวจสอบไฟล์ <path>" through the full L2 workflow which then
   // hallucinates "ผมเข้าถึงไฟล์ไม่ได้" because it's just one LLM call with
   // no tools.
-  const isResolvedShellInspection =
-    !!directClass && directClass.type === 'shell_exec' && !!directClass.command;
+  const isResolvedShellInspection = !!directClass && directClass.type === 'shell_exec' && !!directClass.command;
 
   // Highest-confidence path: classifyDirectTool + rule-mapper both agree.
   if (

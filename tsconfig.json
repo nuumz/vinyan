@@ -32,5 +32,5 @@
       "@vinyan/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "load-tests/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "load-tests/**/*.ts", "scripts/**/*.ts"]
 }

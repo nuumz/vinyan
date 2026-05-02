@@ -152,6 +152,72 @@ export class SessionStore {
     return this.db.query('SELECT * FROM session_store WHERE id = ?').get(id) as SessionRow | undefined;
   }
 
+  // ── JSONL hybrid index helpers (Phase 2) ────────────────────────────────
+
+  /**
+   * Record where the per-session JSONL writer left off. Called after
+   * every successful `JsonlAppender.appendSync` so a crash recovery
+   * scan on next startup can compare `last_line_offset` against the
+   * actual `events.jsonl` size and partial-rebuild any drift.
+   *
+   * Migration 036 added the columns. They stay nullable so legacy
+   * sessions (created before Phase 2) coexist with hybrid ones.
+   */
+  updateLastLineCursor(sessionId: string, lastLineId: string, lastLineOffset: number): boolean {
+    const res = this.db.run('UPDATE session_store SET last_line_id = ?, last_line_offset = ? WHERE id = ?', [
+      lastLineId,
+      lastLineOffset,
+      sessionId,
+    ]);
+    return res.changes > 0;
+  }
+
+  /**
+   * Upsert the denormalized "latest turn" row driving the activity-state
+   * badge in `listSessions`. Replaces the per-query window function in
+   * `listSessions()` once Phase 3 reads from the index instead of
+   * `session_turns`.
+   *
+   * Phase 2 keeps both representations in sync — `appendTurn` writes
+   * `session_turns` AND callers also `upsertTurnSummary` here. The
+   * verifier compares the two; once stable, Phase 4 drops `session_turns`.
+   */
+  upsertTurnSummary(
+    sessionId: string,
+    summary: {
+      latestSeq: number;
+      latestTurnId: string;
+      latestTurnRole: 'user' | 'assistant';
+      latestBlocksPreview: string | null;
+      turnCountDelta: number;
+      updatedAt: number;
+    },
+  ): void {
+    this.db.run(
+      `INSERT INTO session_turn_summary
+          (session_id, latest_seq, latest_turn_id, latest_turn_role, latest_turn_blocks_preview,
+           turn_count, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+          latest_seq = excluded.latest_seq,
+          latest_turn_id = excluded.latest_turn_id,
+          latest_turn_role = excluded.latest_turn_role,
+          latest_turn_blocks_preview = excluded.latest_turn_blocks_preview,
+          turn_count = session_turn_summary.turn_count + ?,
+          updated_at = excluded.updated_at`,
+      [
+        sessionId,
+        summary.latestSeq,
+        summary.latestTurnId,
+        summary.latestTurnRole,
+        summary.latestBlocksPreview,
+        summary.turnCountDelta, // initial insert: count = delta
+        summary.updatedAt,
+        summary.turnCountDelta, // upsert: count += delta
+      ],
+    );
+  }
+
   /**
    * Lifecycle bookkeeping only — used by suspend-all-on-shutdown and
    * recover-on-startup. Intentionally does NOT touch `updated_at`: a server
@@ -217,7 +283,7 @@ export class SessionStore {
     if (search && search.trim().length > 0) {
       const like = `%${search.trim().toLowerCase()}%`;
       where.push(
-        '(LOWER(s.id) LIKE ? OR LOWER(COALESCE(s.title, \'\')) LIKE ? OR LOWER(COALESCE(s.description, \'\')) LIKE ? OR LOWER(s.source) LIKE ?)',
+        "(LOWER(s.id) LIKE ? OR LOWER(COALESCE(s.title, '')) LIKE ? OR LOWER(COALESCE(s.description, '')) LIKE ? OR LOWER(s.source) LIKE ?)",
       );
       params.push(like, like, like, like);
     }
@@ -256,22 +322,16 @@ export class SessionStore {
    * derive the same `waiting-input` activity state that `listSessions`
    * computes via window function. NULL when there are no turns.
    */
-  getLatestTurnRoleAndBlocks(
-    sessionId: string,
-  ): { role: 'user' | 'assistant'; blocks_json: string } | undefined {
+  getLatestTurnRoleAndBlocks(sessionId: string): { role: 'user' | 'assistant'; blocks_json: string } | undefined {
     return this.db
-      .query(
-        'SELECT role, blocks_json FROM session_turns WHERE session_id = ? ORDER BY seq DESC LIMIT 1',
-      )
+      .query('SELECT role, blocks_json FROM session_turns WHERE session_id = ? ORDER BY seq DESC LIMIT 1')
       .get(sessionId) as { role: 'user' | 'assistant'; blocks_json: string } | undefined;
   }
 
   /** Count tasks currently in 'pending' or 'running' state for a single session. */
   countRunningTasks(sessionId: string): number {
     const row = this.db
-      .query(
-        "SELECT COUNT(*) AS count FROM session_tasks WHERE session_id = ? AND status IN ('pending','running')",
-      )
+      .query("SELECT COUNT(*) AS count FROM session_tasks WHERE session_id = ? AND status IN ('pending','running')")
       .get(sessionId) as { count: number };
     return row.count;
   }
@@ -291,10 +351,7 @@ export class SessionStore {
     sets.push('updated_at = ?');
     params.push(Date.now());
     params.push(id);
-    const res = this.db.run(
-      `UPDATE session_store SET ${sets.join(', ')} WHERE id = ?`,
-      params,
-    );
+    const res = this.db.run(`UPDATE session_store SET ${sets.join(', ')} WHERE id = ?`, params);
     return res.changes > 0;
   }
 
@@ -360,9 +417,7 @@ export class SessionStore {
   }
 
   hardDeleteSession(id: string): boolean {
-    const turnIds = this.db
-      .query('SELECT id FROM session_turns WHERE session_id = ?')
-      .all(id) as Array<{ id: string }>;
+    const turnIds = this.db.query('SELECT id FROM session_turns WHERE session_id = ?').all(id) as Array<{ id: string }>;
 
     const tx = this.db.transaction(() => {
       // Best-effort sqlite-vec cleanup. The virtual table only exists when
@@ -381,10 +436,7 @@ export class SessionStore {
       }
       this.db.run('DELETE FROM session_turns WHERE session_id = ?', [id]);
       this.db.run('DELETE FROM session_tasks WHERE session_id = ?', [id]);
-      const res = this.db.run(
-        'DELETE FROM session_store WHERE id = ? AND deleted_at IS NOT NULL',
-        [id],
-      );
+      const res = this.db.run('DELETE FROM session_store WHERE id = ? AND deleted_at IS NOT NULL', [id]);
       return res.changes > 0;
     });
 
@@ -464,9 +516,9 @@ export class SessionStore {
 
   /** Cross-session direct lookup by task id — single row or undefined. */
   findTaskRowById(taskId: string): SessionTaskRow | undefined {
-    return this.db
-      .query('SELECT * FROM session_tasks WHERE task_id = ? LIMIT 1')
-      .get(taskId) as SessionTaskRow | undefined;
+    return this.db.query('SELECT * FROM session_tasks WHERE task_id = ? LIMIT 1').get(taskId) as
+      | SessionTaskRow
+      | undefined;
   }
 
   /**
@@ -544,25 +596,19 @@ export class SessionStore {
         // Restrict to the (task_id, session_id) pairs that match FTS5.
         // Subquery is faster than IN(...) on a list because the FTS5
         // virtual table can produce a stream of matching task_ids.
-        where.push(
-          'task_id IN (SELECT task_id FROM session_tasks_fts WHERE session_tasks_fts MATCH ?)',
-        );
+        where.push('task_id IN (SELECT task_id FROM session_tasks_fts WHERE session_tasks_fts MATCH ?)');
         params.push(ftsQuery);
       } else {
         // Sanitiser stripped the query down to nothing — degrade to LIKE
         // so the operator still gets predictable behaviour instead of
         // an empty result.
         const like = `%${trimmedSearch.toLowerCase()}%`;
-        where.push(
-          '(LOWER(task_id) LIKE ? OR LOWER(session_id) LIKE ? OR LOWER(task_input_json) LIKE ?)',
-        );
+        where.push('(LOWER(task_id) LIKE ? OR LOWER(session_id) LIKE ? OR LOWER(task_input_json) LIKE ?)');
         params.push(like, like, like);
       }
     } else if (trimmedSearch.length > 0) {
       const like = `%${trimmedSearch.toLowerCase()}%`;
-      where.push(
-        '(LOWER(task_id) LIKE ? OR LOWER(session_id) LIKE ? OR LOWER(task_input_json) LIKE ?)',
-      );
+      where.push('(LOWER(task_id) LIKE ? OR LOWER(session_id) LIKE ? OR LOWER(task_input_json) LIKE ?)');
       params.push(like, like, like);
     }
 
@@ -583,14 +629,12 @@ export class SessionStore {
     const offsetClause = typeof offset === 'number' && offset > 0 ? ` OFFSET ${Math.floor(offset)}` : '';
 
     const rows = this.db
-      .query(
-        `SELECT * FROM session_tasks ${whereClause} ${orderClause}${limitClause}${offsetClause}`,
-      )
+      .query(`SELECT * FROM session_tasks ${whereClause} ${orderClause}${limitClause}${offsetClause}`)
       .all(...params) as SessionTaskRow[];
 
-    const totalRow = this.db
-      .query(`SELECT COUNT(*) as count FROM session_tasks ${whereClause}`)
-      .get(...params) as { count: number };
+    const totalRow = this.db.query(`SELECT COUNT(*) as count FROM session_tasks ${whereClause}`).get(...params) as {
+      count: number;
+    };
 
     return { rows, total: totalRow.count };
   }
@@ -634,9 +678,7 @@ export class SessionStore {
   }
 
   listRecentTasks(limit = 100): SessionTaskRow[] {
-    return this.db
-      .query('SELECT * FROM session_tasks ORDER BY created_at DESC LIMIT ?')
-      .all(limit) as SessionTaskRow[];
+    return this.db.query('SELECT * FROM session_tasks ORDER BY created_at DESC LIMIT ?').all(limit) as SessionTaskRow[];
   }
 
   // A7: session_messages methods removed. The session_turns methods below
@@ -657,9 +699,11 @@ export class SessionStore {
   appendTurn(turn: Omit<Turn, 'seq'> & { seq?: number }): Turn {
     const seq =
       turn.seq ??
-      ((this.db
-        .query('SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM session_turns WHERE session_id = ?')
-        .get(turn.sessionId) as { next: number }).next);
+      (
+        this.db
+          .query('SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM session_turns WHERE session_id = ?')
+          .get(turn.sessionId) as { next: number }
+      ).next;
 
     const row: SessionTurnRow = {
       id: turn.id,
@@ -715,16 +759,14 @@ export class SessionStore {
   }
 
   countTurns(sessionId: string): number {
-    const row = this.db
-      .query('SELECT COUNT(*) as count FROM session_turns WHERE session_id = ?')
-      .get(sessionId) as { count: number };
+    const row = this.db.query('SELECT COUNT(*) as count FROM session_turns WHERE session_id = ?').get(sessionId) as {
+      count: number;
+    };
     return row.count;
   }
 
   getTurn(turnId: string): Turn | undefined {
-    const row = this.db.query('SELECT * FROM session_turns WHERE id = ?').get(turnId) as
-      | SessionTurnRow
-      | undefined;
+    const row = this.db.query('SELECT * FROM session_turns WHERE id = ?').get(turnId) as SessionTurnRow | undefined;
     return row ? rowToTurn(row) : undefined;
   }
 
@@ -752,10 +794,7 @@ export class SessionStore {
    * resolves cacheRead / cacheCreation counts.
    */
   updateTurnTokenCount(turnId: string, tokenCount: TurnTokenCount): void {
-    this.db.run('UPDATE session_turns SET token_count_json = ? WHERE id = ?', [
-      JSON.stringify(tokenCount),
-      turnId,
-    ]);
+    this.db.run('UPDATE session_turns SET token_count_json = ? WHERE id = ?', [JSON.stringify(tokenCount), turnId]);
   }
 }
 

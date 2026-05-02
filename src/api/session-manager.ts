@@ -6,6 +6,10 @@
  *
  * Source of truth: spec/tdd.md §22.3, §22.4
  */
+
+import type { AppendResult, JsonlAppender } from '../db/session-jsonl/appender.ts';
+import type { IndexRebuilder } from '../db/session-jsonl/rebuild-index.ts';
+import type { Actor, Kind } from '../db/session-jsonl/schemas.ts';
 import type {
   ListSessionsOptions,
   ListSessionTasksOptions,
@@ -19,6 +23,26 @@ import type { TraceStore } from '../db/trace-store.ts';
 import type { ContextRetriever } from '../memory/retrieval.ts';
 import type { ContentBlock, TaskInput, TaskResult, Turn, TurnTokenCount } from '../orchestrator/types.ts';
 import type { UserMdObserver } from '../orchestrator/user-context/observer.ts';
+
+/** Cap a JSON-serialized blocks payload for the turn_summary preview column. */
+const BLOCKS_PREVIEW_LIMIT = 4096;
+
+function blocksPreviewOf(blocks: ContentBlock[]): string {
+  const json = JSON.stringify(blocks);
+  return json.length > BLOCKS_PREVIEW_LIMIT ? json.slice(0, BLOCKS_PREVIEW_LIMIT) : json;
+}
+
+/**
+ * Map a `TaskInput.source` string to a JSONL `actor.kind`. Most sources
+ * fold into `'cli'` / `'api'`; gateways and ACP fold into `'system'`
+ * since the line is created by the orchestrator boundary, not by an
+ * end-user persona within the actor taxonomy.
+ */
+function actorKindForSource(source: string): Actor['kind'] {
+  if (source === 'cli') return 'cli';
+  if (source === 'api') return 'api';
+  return 'system';
+}
 // Merge note: `classifyTurn` / `TurnImportance` from `./turn-importance.ts`
 // were consumed by the Phase 1 priority-weighted compaction. A7 moved
 // compaction to `src/memory/summary-ladder.ts`, so these imports are
@@ -35,13 +59,7 @@ import type { UserMdObserver } from '../orchestrator/user-context/observer.ts';
  * dominant label per session, so we derive it once at the boundary instead
  * of asking every renderer to combine three fields.
  */
-export type SessionLifecycleState =
-  | 'active'
-  | 'suspended'
-  | 'compacted'
-  | 'closed'
-  | 'archived'
-  | 'trashed';
+export type SessionLifecycleState = 'active' | 'suspended' | 'compacted' | 'closed' | 'archived' | 'trashed';
 
 /**
  * Activity state — what the session is "doing" right now.
@@ -119,12 +137,82 @@ export class SessionManager {
    * semantic matches in addition to recency + pins. Fire-and-forget: the
    * retriever's indexTurn logs warnings but never raises, so a failing
    * embedding call cannot cascade into a lost conversation turn.
+   *
+   * Phase 2 hybrid storage: optional JsonlAppender + IndexRebuilder.
+   * When both are wired (production via `serve.ts` / `chat.ts` when
+   * `session.dualWrite.enabled=true`), every public mutator first
+   * appends a JSONL line then writes SQLite. JSONL is the source of
+   * truth; SQLite is dual-written. Tests that omit them get the
+   * legacy SQLite-only path unchanged.
    */
   constructor(
     private sessionStore: SessionStore,
     private traceStore?: TraceStore,
     private retriever?: ContextRetriever,
+    private jsonlAppender?: JsonlAppender,
+    private indexRebuilder?: IndexRebuilder,
   ) {}
+
+  /**
+   * Wire JSONL hybrid layer post-construction. Mirrors the existing
+   * late-bind pattern (`attachTraceStore`, `setUserMdObserver`) — the
+   * factory order in `cli/serve.ts` already constructs SessionManager
+   * before some of its collaborators are available.
+   */
+  attachJsonlLayer(appender: JsonlAppender, rebuilder: IndexRebuilder): void {
+    this.jsonlAppender = appender;
+    this.indexRebuilder = rebuilder;
+  }
+
+  /** True when dual-write is wired. Used by tests + verifier. */
+  hasJsonlLayer(): boolean {
+    return this.jsonlAppender !== undefined;
+  }
+
+  // ── JSONL hybrid helpers ────────────────────────────────────────────────
+
+  /**
+   * Append a JSONL line for `kind` if dual-write is wired. Returns the
+   * appender result (incl. byte offset) so the caller can update the
+   * SQLite cursor. Returns undefined when dual-write is off.
+   *
+   * Throws on JSONL write failure — by design (JSONL is source of
+   * truth; if we can't durably record the event we must NOT touch
+   * SQLite or the two stores would silently diverge).
+   */
+  private appendJsonl(sessionId: string, kind: Kind, payload: unknown, actor: Actor): AppendResult | undefined {
+    if (!this.jsonlAppender) return undefined;
+    return this.jsonlAppender.appendSync(sessionId, { kind, payload, actor });
+  }
+
+  /** Record `last_line_id` / `last_line_offset` on the session row. */
+  private applyJsonlCursor(sessionId: string, result: AppendResult | undefined): void {
+    if (!result) return;
+    try {
+      this.sessionStore.updateLastLineCursor(sessionId, result.line.lineId, result.byteOffset + result.byteLength);
+    } catch (err) {
+      // JSONL is committed; index update failed. Schedule async rebuild
+      // to catch the cursor up. Do not throw — JSONL is canonical.
+      this.scheduleIndexRebuild(sessionId, err);
+    }
+  }
+
+  /**
+   * Schedule an async index rebuild after a SQLite write failed
+   * post-JSONL-commit. Best-effort: logs and moves on if the
+   * rebuilder is missing or itself errors.
+   */
+  private scheduleIndexRebuild(sessionId: string, cause: unknown): void {
+    console.warn(`[vinyan] session ${sessionId} index drift after JSONL append; scheduling rebuild`, cause);
+    if (!this.indexRebuilder) return;
+    Promise.resolve().then(() => {
+      try {
+        this.indexRebuilder?.rebuildSessionIndex(sessionId);
+      } catch (err) {
+        console.error(`[vinyan] async rebuild failed for ${sessionId}: ${String(err)}`);
+      }
+    });
+  }
 
   /**
    * P3 USER.md dialectic hook. Optional — the factory-wiring coordinator pass
@@ -171,6 +259,14 @@ export class SessionManager {
     const title = normalizeMetadata(options.title);
     const description = normalizeMetadata(options.description);
 
+    // JSONL append first — JSONL is source of truth in Phase 2+.
+    const jsonl = this.appendJsonl(
+      id,
+      'session.created',
+      { source, title, description },
+      { kind: actorKindForSource(source) },
+    );
+
     this.sessionStore.insertSession({
       id,
       source,
@@ -184,6 +280,7 @@ export class SessionManager {
       archived_at: null,
       deleted_at: null,
     });
+    this.applyJsonlCursor(id, jsonl);
 
     return rowToSession(
       {
@@ -238,8 +335,12 @@ export class SessionManager {
     if (patch.title !== undefined) normalized.title = normalizeMetadata(patch.title);
     if (patch.description !== undefined) normalized.description = normalizeMetadata(patch.description);
     if (Object.keys(normalized).length === 0) return this.get(sessionId);
+    // Probe existence first so we don't write a JSONL line for a missing session.
+    if (!this.sessionStore.getSession(sessionId)) return undefined;
+    const jsonl = this.appendJsonl(sessionId, 'session.metadata.updated', normalized, { kind: 'user' });
     const ok = this.sessionStore.updateSessionMetadata(sessionId, normalized);
     if (!ok) return undefined;
+    this.applyJsonlCursor(sessionId, jsonl);
     return this.get(sessionId);
   }
 
@@ -255,7 +356,9 @@ export class SessionManager {
     if (before.archived_at !== null || before.deleted_at !== null) {
       return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
+    const jsonl = this.appendJsonl(sessionId, 'session.archived', {}, { kind: 'user' });
     const ok = this.sessionStore.archiveSession(sessionId);
+    this.applyJsonlCursor(sessionId, jsonl);
     return { applied: ok, session: this.get(sessionId)! };
   }
 
@@ -266,7 +369,9 @@ export class SessionManager {
     if (before.archived_at === null || before.deleted_at !== null) {
       return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
+    const jsonl = this.appendJsonl(sessionId, 'session.unarchived', {}, { kind: 'user' });
     const ok = this.sessionStore.unarchiveSession(sessionId);
+    this.applyJsonlCursor(sessionId, jsonl);
     return { applied: ok, session: this.get(sessionId)! };
   }
 
@@ -277,7 +382,9 @@ export class SessionManager {
     if (before.deleted_at !== null) {
       return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
+    const jsonl = this.appendJsonl(sessionId, 'session.deleted', {}, { kind: 'user' });
     const ok = this.sessionStore.softDeleteSession(sessionId);
+    this.applyJsonlCursor(sessionId, jsonl);
     return { applied: ok, session: this.get(sessionId)! };
   }
 
@@ -288,7 +395,9 @@ export class SessionManager {
     if (before.deleted_at === null) {
       return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
+    const jsonl = this.appendJsonl(sessionId, 'session.restored', {}, { kind: 'user' });
     const ok = this.sessionStore.restoreSession(sessionId);
+    this.applyJsonlCursor(sessionId, jsonl);
     return { applied: ok, session: this.get(sessionId)! };
   }
 
@@ -309,7 +418,14 @@ export class SessionManager {
     if (before.deleted_at === null) {
       return { applied: false, session: this.get(sessionId)!, reason: 'invalid_state' };
     }
+    // session.purged carries the policy so a future tombstone GC can
+    // distinguish a tombstone-rooted purge from a true `purge` policy.
+    // `policy` reflects current config; the actual fs-side handling
+    // (move-to-tombstone vs rm -rf) is Phase 5 hardening.
+    this.appendJsonl(sessionId, 'session.purged', { policy: 'tombstone' }, { kind: 'user' });
     const ok = this.sessionStore.hardDeleteSession(sessionId);
+    // No applyJsonlCursor: the row is gone, the cursor update would
+    // either no-op or violate FK once the session_store row is deleted.
     return { applied: ok, session: null };
   }
 
@@ -338,6 +454,12 @@ export class SessionManager {
 
   addTask(sessionId: string, taskInput: TaskInput): void {
     const now = Date.now();
+    const jsonl = this.appendJsonl(
+      sessionId,
+      'task.created',
+      { taskId: taskInput.id, input: taskInput },
+      { kind: 'orchestrator' },
+    );
     this.sessionStore.insertTask({
       session_id: sessionId,
       task_id: taskInput.id,
@@ -348,6 +470,7 @@ export class SessionManager {
       updated_at: now,
       archived_at: null,
     });
+    this.applyJsonlCursor(sessionId, jsonl);
   }
 
   completeTask(sessionId: string, taskId: string, result: TaskResult): void {
@@ -358,7 +481,15 @@ export class SessionManager {
     // The session_tasks CHECK constraint does not allow 'input-required', so
     // we map at this boundary.
     const dbStatus = result.status === 'completed' || result.status === 'input-required' ? 'completed' : 'failed';
+    const prior = this.sessionStore.getTask(sessionId, taskId);
+    const jsonl = this.appendJsonl(
+      sessionId,
+      'task.status.changed',
+      { taskId, from: prior?.status ?? 'pending', to: dbStatus, result },
+      { kind: 'orchestrator' },
+    );
     this.sessionStore.updateTaskStatus(sessionId, taskId, dbStatus, JSON.stringify(result));
+    this.applyJsonlCursor(sessionId, jsonl);
   }
 
   /**
@@ -376,21 +507,36 @@ export class SessionManager {
     // the operator can hit Cancel on a stale row without poisoning state.
     if (existing.status !== 'pending' && existing.status !== 'running') return false;
     const reasonText = reason ?? 'Cancelled by operator';
-    const cancelledResult = JSON.stringify({
+    const cancelledResultObj = {
       id: taskId,
-      status: 'failed',
+      status: 'failed' as const,
       mutations: [],
       cancelled: true,
       cancelReason: reasonText,
       cancelledAt: Date.now(),
-    });
-    this.sessionStore.updateTaskStatus(sessionId, taskId, 'cancelled', cancelledResult);
+    };
+    const jsonl = this.appendJsonl(
+      sessionId,
+      'task.status.changed',
+      { taskId, from: existing.status, to: 'cancelled', result: cancelledResultObj },
+      { kind: 'orchestrator' },
+    );
+    this.sessionStore.updateTaskStatus(sessionId, taskId, 'cancelled', JSON.stringify(cancelledResultObj));
+    this.applyJsonlCursor(sessionId, jsonl);
     return true;
   }
 
   /** Archive a task row (soft-hide; audit trail preserved). */
   archiveTask(taskId: string): boolean {
-    return this.sessionStore.archiveTaskRow(taskId);
+    // archiveTaskRow only takes a task id, but JSONL is keyed per session.
+    // Look up the session to log the line; bail before the SQLite call if
+    // the task is unknown so we don't write an orphan line.
+    const taskRow = this.sessionStore.findTaskRowById(taskId);
+    if (!taskRow) return false;
+    const jsonl = this.appendJsonl(taskRow.session_id, 'task.archived', { taskId }, { kind: 'user' });
+    const ok = this.sessionStore.archiveTaskRow(taskId);
+    if (ok) this.applyJsonlCursor(taskRow.session_id, jsonl);
+    return ok;
   }
 
   /** Restore an archived task row. */
@@ -453,7 +599,14 @@ export class SessionManager {
     };
 
     // Persist compaction result — additive only, never deletes audit trail (I16)
+    const jsonl = this.appendJsonl(
+      sessionId,
+      'session.compacted',
+      { taskCount: totalTasks, compaction: compactionResult },
+      { kind: 'system' },
+    );
     this.sessionStore.updateSessionCompaction(sessionId, JSON.stringify(compactionResult));
+    this.applyJsonlCursor(sessionId, jsonl);
 
     return compactionResult;
   }
@@ -575,9 +728,7 @@ export class SessionManager {
    * Returns `null` if the task isn't tracked (in-memory async tasks fall
    * back to the caller's own bookkeeping).
    */
-  getTaskById(
-    taskId: string,
-  ): { sessionId: string; status: string; input: TaskInput; result?: TaskResult } | null {
+  getTaskById(taskId: string): { sessionId: string; status: string; input: TaskInput; result?: TaskResult } | null {
     const rows = this.sessionStore.listRecentTasks(500);
     const row = rows.find((r) => r.task_id === taskId);
     if (!row) return null;
@@ -645,8 +796,7 @@ export class SessionManager {
     for (const row of orphaned) {
       try {
         const taskInput = JSON.parse(row.task_input_json) as TaskInput;
-        const interruptionReason =
-          'Task interrupted by server restart — no completion event was recorded.';
+        const interruptionReason = 'Task interrupted by server restart — no completion event was recorded.';
         const syntheticResult: TaskResult = {
           id: row.task_id,
           status: 'failed',
@@ -681,9 +831,7 @@ export class SessionManager {
           try {
             this.traceStore.insert(syntheticResult.trace);
           } catch (err) {
-            console.warn(
-              `[vinyan] recoverOrphanedTasks: traceStore.insert failed for ${row.task_id}: ${String(err)}`,
-            );
+            console.warn(`[vinyan] recoverOrphanedTasks: traceStore.insert failed for ${row.task_id}: ${String(err)}`);
           }
         }
         touchedSessions.add(row.session_id);
@@ -691,9 +839,7 @@ export class SessionManager {
       } catch (err) {
         // Don't let one corrupt row block the whole sweep — at minimum
         // mark it failed so listPendingTasks won't keep returning it.
-        console.warn(
-          `[vinyan] recoverOrphanedTasks: failed to recover ${row.task_id}: ${String(err)}`,
-        );
+        console.warn(`[vinyan] recoverOrphanedTasks: failed to recover ${row.task_id}: ${String(err)}`);
         try {
           this.sessionStore.updateTaskStatus(row.session_id, row.task_id, 'failed');
         } catch {
@@ -724,14 +870,38 @@ export class SessionManager {
    */
   recordUserTurn(sessionId: string, content: string): void {
     const now = Date.now();
+    const turnId = crypto.randomUUID();
+    const blocks: ContentBlock[] = [{ type: 'text', text: content }];
+    const tokenCount: TurnTokenCount = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+
+    // JSONL append first so JSONL is canonical even if SQLite throws.
+    const jsonl = this.appendJsonl(
+      sessionId,
+      'turn.appended',
+      { turnId, role: 'user', blocks, tokenCount },
+      { kind: 'user' },
+    );
+
     const persisted = this.sessionStore.appendTurn({
-      id: crypto.randomUUID(),
+      id: turnId,
       sessionId,
       role: 'user',
-      blocks: [{ type: 'text', text: content }],
-      tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      blocks,
+      tokenCount,
       createdAt: now,
+      seq: jsonl?.line.seq,
     });
+    if (jsonl) {
+      this.sessionStore.upsertTurnSummary(sessionId, {
+        latestSeq: jsonl.line.seq,
+        latestTurnId: turnId,
+        latestTurnRole: 'user',
+        latestBlocksPreview: blocksPreviewOf(blocks),
+        turnCountDelta: 1,
+        updatedAt: now,
+      });
+    }
+    this.applyJsonlCursor(sessionId, jsonl);
     // E4: fire-and-forget semantic index. Retriever.indexTurn is best-effort —
     // it logs on failure (dimension mismatch, sqlite-vec unavailable, network
     // error from embedding provider) but does NOT raise. A failed index
@@ -820,15 +990,37 @@ export class SessionManager {
       cacheRead: 0,
       cacheCreation: 0,
     };
+    const turnId = crypto.randomUUID();
+    const finalBlocks = blocks.length > 0 ? blocks : [{ type: 'text' as const, text: content }];
+
+    const jsonl = this.appendJsonl(
+      sessionId,
+      'turn.appended',
+      { turnId, role: 'assistant', blocks: finalBlocks, tokenCount, taskId },
+      { kind: 'agent' },
+    );
+
     const persisted = this.sessionStore.appendTurn({
-      id: crypto.randomUUID(),
+      id: turnId,
       sessionId,
       role: 'assistant',
-      blocks: blocks.length > 0 ? blocks : [{ type: 'text', text: content }],
+      blocks: finalBlocks,
       tokenCount,
       taskId,
       createdAt: now,
+      seq: jsonl?.line.seq,
     });
+    if (jsonl) {
+      this.sessionStore.upsertTurnSummary(sessionId, {
+        latestSeq: jsonl.line.seq,
+        latestTurnId: turnId,
+        latestTurnRole: 'assistant',
+        latestBlocksPreview: blocksPreviewOf(finalBlocks),
+        turnCountDelta: 1,
+        updatedAt: now,
+      });
+    }
+    this.applyJsonlCursor(sessionId, jsonl);
     // E4: semantic index. Same fire-and-forget contract as recordUserTurn.
     this.indexTurnAsync(persisted);
   }
@@ -1108,9 +1300,7 @@ function toTraceSummary(trace: import('../orchestrator/types.ts').ExecutionTrace
  * `failed`. Falls back to the db-level lifecycle status when no result
  * envelope has been written yet (still pending or still running).
  */
-function projectTaskRow(
-  row: SessionTaskRow,
-): {
+function projectTaskRow(row: SessionTaskRow): {
   taskId: string;
   sessionId: string;
   status: string;

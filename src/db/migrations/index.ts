@@ -30,6 +30,7 @@ import { migration018 } from './018_retire_legacy_builtins.ts';
 import { migration025 } from './025_task_events_session_backfill.ts';
 import { migration034 } from './034_skill_proposal_revisions_rebackfill.ts';
 import { migration035 } from './035_task_events_cross_task_session_backfill.ts';
+import { migration036 } from './036_session_jsonl_index.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -39,4 +40,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration025,
   migration034,
   migration035,
+  migration036,
 ];

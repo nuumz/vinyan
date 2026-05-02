@@ -8,8 +8,10 @@
  */
 
 import { join } from 'path';
-import { SessionStore } from '../db/session-store.ts';
 import { SessionManager } from '../api/session-manager.ts';
+import { resolveProfile } from '../config/profile-resolver.ts';
+import { IndexRebuilder } from '../db/session-jsonl/rebuild-index.ts';
+import { SessionStore } from '../db/session-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
 
 export async function runSessionCommand(argv: string[]): Promise<void> {
@@ -82,8 +84,32 @@ export async function runSessionCommand(argv: string[]): Promise<void> {
         break;
       }
 
+      case 'rebuild-index': {
+        // Rebuild the SQLite derived index (session_store + session_tasks +
+        // session_turn_summary) from the per-session JSONL log. Phase 1
+        // dormant: the JSONL writer is wired in Phase 2; this command is
+        // useful today only when JSONL files have been seeded by tests or
+        // by a future async-repair path.
+        const profile = resolveProfile({ flag: parseSingleFlag(argv, '--profile') });
+        const layout = { sessionsDir: profile.paths.sessionsDir };
+        const rebuilder = new IndexRebuilder(db.getDb(), layout);
+        const target = argv[1];
+        if (!target) {
+          console.error('Usage: vinyan session rebuild-index <session-id|--all>');
+          process.exit(1);
+        }
+        const reports = target === '--all' ? rebuilder.rebuildAll() : [rebuilder.rebuildSessionIndex(target)];
+        for (const report of reports) {
+          console.log(
+            `  ${report.sessionId}  lines=${report.linesRead}  errors=${report.errors}  ` +
+              `endOffset=${report.endOffset}  ${report.durationMs}ms`,
+          );
+        }
+        break;
+      }
+
       default:
-        console.error('Usage: vinyan session <list|delete|export> [options]');
+        console.error('Usage: vinyan session <list|delete|export|rebuild-index> [options]');
         process.exit(1);
     }
   } finally {

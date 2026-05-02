@@ -72,9 +72,17 @@ export async function startChat(argv: string[], opts: StartChatOptions = {}): Pr
       const { resolveProfile } = await import('../config/profile-resolver.ts');
       const { JsonlAppender } = await import('../db/session-jsonl/appender.ts');
       const { IndexRebuilder } = await import('../db/session-jsonl/rebuild-index.ts');
+      const { JsonlReadAdapter, SqliteReadAdapter } = await import('../db/session-jsonl/read-adapter.ts');
       const profile = resolveProfile();
       const layout = { sessionsDir: profile.paths.sessionsDir };
-      sessionManager.attachJsonlLayer(new JsonlAppender({ layout }), new IndexRebuilder(db.getDb(), layout));
+      const sqliteAdapter = new SqliteReadAdapter(sessionStore);
+      const jsonlReadAdapter = new JsonlReadAdapter({ layout, fallback: sqliteAdapter });
+      sessionManager.attachJsonlLayer(
+        new JsonlAppender({ layout }),
+        new IndexRebuilder(db.getDb(), layout),
+        jsonlReadAdapter,
+        cfg.session?.readFromJsonl,
+      );
     }
   } catch (err) {
     console.warn(`[vinyan] chat: JSONL dual-write wiring skipped: ${String(err)}`);

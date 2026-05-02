@@ -241,10 +241,16 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
   if (vinyanConfigEarly.session?.dualWrite?.enabled === true) {
     const { JsonlAppender } = await import('../db/session-jsonl/appender.ts');
     const { IndexRebuilder } = await import('../db/session-jsonl/rebuild-index.ts');
+    const { JsonlReadAdapter, SqliteReadAdapter } = await import('../db/session-jsonl/read-adapter.ts');
     const layout = { sessionsDir: resolvedProfile.paths.sessionsDir };
     const jsonlAppender = new JsonlAppender({ layout });
     const indexRebuilder = new IndexRebuilder(db.getDb(), layout);
-    sessionManager.attachJsonlLayer(jsonlAppender, indexRebuilder);
+    // Phase 3: build a JSONL read adapter with a SQLite fallback so
+    // legacy sessions (no events.jsonl) keep returning their data.
+    const sqliteAdapter = new SqliteReadAdapter(sessionStore);
+    const jsonlReadAdapter = new JsonlReadAdapter({ layout, fallback: sqliteAdapter });
+    const readFlags = vinyanConfigEarly.session?.readFromJsonl;
+    sessionManager.attachJsonlLayer(jsonlAppender, indexRebuilder, jsonlReadAdapter, readFlags);
   }
 
   // ── Orchestrator + server wiring ────────────────────────────────

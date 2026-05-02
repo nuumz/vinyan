@@ -894,6 +894,25 @@ export const VinyanConfigSchema = z.object({
           policy: z.enum(['tombstone', 'purge']).default('tombstone'),
         })
         .optional(),
+      /**
+       * Phase 3 read flips. Each flag turns one SessionManager read method
+       * over from the SQLite path to the JSONL adapter. Per-method so a
+       * regression on one flip can be reverted without dragging the others.
+       * `fallbackToSqlite` keeps the legacy path available when the JSONL
+       * adapter has no log for a given session (legacy sessions, A9).
+       */
+      readFromJsonl: z
+        .object({
+          getTurn: z.boolean().default(false),
+          getTurns: z.boolean().default(false),
+          getRecentTurns: z.boolean().default(false),
+          getMessageCount: z.boolean().default(false),
+          getSessionWorkingMemory: z.boolean().default(false),
+          listSessionTasks: z.boolean().default(false),
+          listSessions: z.boolean().default(false),
+          fallbackToSqlite: z.boolean().default(true),
+        })
+        .optional(),
     })
     .optional(),
   /** Workspace-level Vinyan Agent identity (name, description, preferences). */

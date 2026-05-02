@@ -318,6 +318,99 @@ export class SessionStore {
   }
 
   /**
+   * Phase 3 variant of `listSessions` — `LEFT JOIN session_turn_summary`
+   * instead of running a `ROW_NUMBER OVER (PARTITION BY)` window over
+   * `session_turns`. The denormalized table is maintained by the JSONL
+   * dual-write path (`upsertTurnSummary`); legacy sessions that predate
+   * Phase 2 simply return NULL for the latest_turn_* fields, mirroring
+   * an empty session — acceptable degradation per A9 and indistinguishable
+   * to the activity-state classifier.
+   *
+   * `latest_turn_blocks_preview` is capped at 4KB (vs the legacy
+   * `blocks_json` which carried the full payload). The preview is
+   * sufficient for `[INPUT-REQUIRED]` sentinel detection — the only
+   * consumer of the field in `listSessions` projection.
+   *
+   * Run `backfillTurnSummary()` to populate legacy rows from
+   * `session_turns`. Idempotent.
+   */
+  listSessionsViaIndex(options: ListSessionsOptions = {}): SessionRowWithCount[] {
+    const { state = 'active', search, limit, offset } = options;
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (state === 'active') {
+      where.push('s.archived_at IS NULL', 's.deleted_at IS NULL');
+    } else if (state === 'archived') {
+      where.push('s.archived_at IS NOT NULL', 's.deleted_at IS NULL');
+    } else if (state === 'deleted') {
+      where.push('s.deleted_at IS NOT NULL');
+    }
+    if (search && search.trim().length > 0) {
+      const like = `%${search.trim().toLowerCase()}%`;
+      where.push(
+        "(LOWER(s.id) LIKE ? OR LOWER(COALESCE(s.title, '')) LIKE ? OR LOWER(COALESCE(s.description, '')) LIKE ? OR LOWER(s.source) LIKE ?)",
+      );
+      params.push(like, like, like, like);
+    }
+
+    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const limitClause = typeof limit === 'number' && limit > 0 ? ` LIMIT ${Math.floor(limit)}` : '';
+    const offsetClause = typeof offset === 'number' && offset > 0 ? ` OFFSET ${Math.floor(offset)}` : '';
+
+    return this.db
+      .query(
+        `SELECT s.*,
+                COALESCE(t.cnt, 0) AS task_count,
+                COALESCE(t.running_cnt, 0) AS running_task_count,
+                sts.latest_turn_role,
+                sts.latest_turn_blocks_preview AS latest_turn_blocks
+         FROM session_store s
+         LEFT JOIN (
+           SELECT session_id,
+                  COUNT(*) AS cnt,
+                  SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS running_cnt
+           FROM session_tasks GROUP BY session_id
+         ) t ON t.session_id = s.id
+         LEFT JOIN session_turn_summary sts ON sts.session_id = s.id
+         ${whereClause}
+         ORDER BY s.updated_at DESC, s.created_at DESC${limitClause}${offsetClause}`,
+      )
+      .all(...params) as SessionRowWithCount[];
+  }
+
+  /**
+   * One-shot helper: populate `session_turn_summary` for sessions that
+   * predate Phase 2 dual-write (no upsert ever fired for them). Idempotent
+   * — only writes for sessions missing a summary row AND with at least
+   * one `session_turns` row to read from. Returns the number of summary
+   * rows inserted.
+   *
+   * Required before flipping `session.readFromJsonl.listSessions=true` so
+   * legacy sessions still surface the right activity-state badge.
+   */
+  backfillTurnSummary(): number {
+    const result = this.db.run(
+      `INSERT INTO session_turn_summary
+          (session_id, latest_seq, latest_turn_id, latest_turn_role,
+           latest_turn_blocks_preview, turn_count, updated_at)
+       SELECT
+         t.session_id,
+         t.seq,
+         t.id,
+         t.role,
+         CASE WHEN length(t.blocks_json) > 4096 THEN substr(t.blocks_json, 1, 4096) ELSE t.blocks_json END,
+         (SELECT COUNT(*) FROM session_turns x WHERE x.session_id = t.session_id),
+         t.created_at
+       FROM session_turns t
+       WHERE t.seq = (SELECT MAX(seq) FROM session_turns t2 WHERE t2.session_id = t.session_id)
+         AND NOT EXISTS (
+           SELECT 1 FROM session_turn_summary sts WHERE sts.session_id = t.session_id
+         )`,
+    );
+    return result.changes;
+  }
+
+  /**
    * Latest turn's role + blocks for a single session — used by `get()` to
    * derive the same `waiting-input` activity state that `listSessions`
    * computes via window function. NULL when there are no turns.

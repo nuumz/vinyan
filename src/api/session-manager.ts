@@ -8,6 +8,7 @@
  */
 
 import type { AppendResult, JsonlAppender } from '../db/session-jsonl/appender.ts';
+import type { JsonlReadAdapter, SessionReadAdapter } from '../db/session-jsonl/read-adapter.ts';
 import type { IndexRebuilder } from '../db/session-jsonl/rebuild-index.ts';
 import type { Actor, Kind } from '../db/session-jsonl/schemas.ts';
 import type {
@@ -23,6 +24,29 @@ import type { TraceStore } from '../db/trace-store.ts';
 import type { ContextRetriever } from '../memory/retrieval.ts';
 import type { ContentBlock, TaskInput, TaskResult, Turn, TurnTokenCount } from '../orchestrator/types.ts';
 import type { UserMdObserver } from '../orchestrator/user-context/observer.ts';
+
+/** Per-method bisect-friendly flags driving Phase 3 read-path dispatch. */
+export interface ReadFromJsonlFlags {
+  getTurn: boolean;
+  getTurns: boolean;
+  getRecentTurns: boolean;
+  getMessageCount: boolean;
+  getSessionWorkingMemory: boolean;
+  listSessionTasks: boolean;
+  listSessions: boolean;
+  fallbackToSqlite: boolean;
+}
+
+const DEFAULT_READ_FLAGS: ReadFromJsonlFlags = {
+  getTurn: false,
+  getTurns: false,
+  getRecentTurns: false,
+  getMessageCount: false,
+  getSessionWorkingMemory: false,
+  listSessionTasks: false,
+  listSessions: false,
+  fallbackToSqlite: true,
+};
 
 /** Cap a JSON-serialized blocks payload for the turn_summary preview column. */
 const BLOCKS_PREVIEW_LIMIT = 4096;
@@ -158,15 +182,54 @@ export class SessionManager {
    * late-bind pattern (`attachTraceStore`, `setUserMdObserver`) — the
    * factory order in `cli/serve.ts` already constructs SessionManager
    * before some of its collaborators are available.
+   *
+   * Phase 3: optional `readAdapter` wires the JSONL read path. When
+   * present and the corresponding flag is on, `getTurns` / `getRecentTurns`
+   * / etc. dispatch through the adapter; otherwise they hit the legacy
+   * SQLite path. `readFlags` is the per-method bisect map from
+   * `vinyan.json#session.readFromJsonl`.
    */
-  attachJsonlLayer(appender: JsonlAppender, rebuilder: IndexRebuilder): void {
+  attachJsonlLayer(
+    appender: JsonlAppender,
+    rebuilder: IndexRebuilder,
+    readAdapter?: JsonlReadAdapter,
+    readFlags?: ReadFromJsonlFlags,
+  ): void {
     this.jsonlAppender = appender;
     this.indexRebuilder = rebuilder;
+    if (readAdapter) this.jsonlReadAdapter = readAdapter;
+    if (readFlags) this.readFlags = { ...DEFAULT_READ_FLAGS, ...readFlags };
   }
 
   /** True when dual-write is wired. Used by tests + verifier. */
   hasJsonlLayer(): boolean {
     return this.jsonlAppender !== undefined;
+  }
+
+  // ── Phase 3 read-path dispatch ──────────────────────────────────────────
+
+  private jsonlReadAdapter?: JsonlReadAdapter;
+  private readFlags: ReadFromJsonlFlags = { ...DEFAULT_READ_FLAGS };
+
+  /**
+   * Pick the read adapter for one method. Picks JSONL when:
+   *   - the flag is on,
+   *   - a JSONL adapter is wired,
+   *   - the session has a JSONL log (or `fallbackToSqlite=false`).
+   *
+   * Otherwise returns `undefined`, signaling the caller should hit the
+   * legacy SessionStore path. Centralizing this keeps the dispatch
+   * decision close to the data — a single grep finds every flippable
+   * read.
+   */
+  private pickReadAdapter(method: keyof ReadFromJsonlFlags, sessionId?: string): SessionReadAdapter | undefined {
+    if (method === 'fallbackToSqlite' || method === 'listSessions') return undefined;
+    const flag = this.readFlags[method];
+    if (!flag || !this.jsonlReadAdapter) return undefined;
+    if (sessionId !== undefined && !this.jsonlReadAdapter.hasJsonl(sessionId) && this.readFlags.fallbackToSqlite) {
+      return undefined;
+    }
+    return this.jsonlReadAdapter;
   }
 
   // ── JSONL hybrid helpers ────────────────────────────────────────────────
@@ -303,7 +366,14 @@ export class SessionManager {
   }
 
   listSessions(options: ListSessionsOptions = {}): Session[] {
-    const rows = this.sessionStore.listSessions(options);
+    // Phase 3 hot-path flip: when `session.readFromJsonl.listSessions=true`,
+    // route through `listSessionsViaIndex` (uses `session_turn_summary`,
+    // no window function). Legacy sessions without a summary row simply
+    // get NULL for latest_turn_* fields — same behavior as an empty
+    // session, which the activity-state classifier already handles.
+    const rows = this.readFlags.listSessions
+      ? this.sessionStore.listSessionsViaIndex(options)
+      : this.sessionStore.listSessions(options);
     return rows.map(rowWithCountToSession);
   }
 
@@ -550,7 +620,9 @@ export class SessionManager {
    * Extracts patterns from completed tasks without deleting audit data (I16).
    */
   compact(sessionId: string): CompactionResult {
-    const tasks = this.sessionStore.listSessionTasks(sessionId);
+    const tasks =
+      this.pickReadAdapter('listSessionTasks', sessionId)?.listSessionTasks(sessionId) ??
+      this.sessionStore.listSessionTasks(sessionId);
     const completedTasks = tasks.filter((t) => t.status === 'completed' || t.status === 'failed');
 
     // Compute statistics
@@ -1040,7 +1112,8 @@ export class SessionManager {
   getPendingClarifications(sessionId: string): string[] {
     // A7: Turn-model lookup. Extract [INPUT-REQUIRED] questions from the
     // latest assistant turn's text blocks.
-    const turns = this.sessionStore.getTurns(sessionId);
+    const turns =
+      this.pickReadAdapter('getTurns', sessionId)?.getTurns(sessionId) ?? this.sessionStore.getTurns(sessionId);
     if (turns.length === 0) return [];
 
     const last = turns[turns.length - 1]!;
@@ -1074,7 +1147,8 @@ export class SessionManager {
     // A7: Turn-model. Walk backward skipping [assistant-[INPUT-REQUIRED],
     // user-reply] clarification pairs to find the last non-clarification
     // user turn.
-    const turns = this.sessionStore.getTurns(sessionId);
+    const turns =
+      this.pickReadAdapter('getTurns', sessionId)?.getTurns(sessionId) ?? this.sessionStore.getTurns(sessionId);
     if (turns.length === 0) return null;
 
     const turnText = (t: import('../orchestrator/types.ts').Turn): string =>
@@ -1101,7 +1175,10 @@ export class SessionManager {
 
   /** Get the number of conversation turns in a session. */
   getMessageCount(sessionId: string): number {
-    return this.sessionStore.countTurns(sessionId);
+    return (
+      this.pickReadAdapter('getMessageCount', sessionId)?.countTurns(sessionId) ??
+      this.sessionStore.countTurns(sessionId)
+    );
   }
 
   /**
@@ -1112,11 +1189,16 @@ export class SessionManager {
    * Turn rows carry cache-tier counts, not prompt-token estimates).
    */
   getTurnsHistory(sessionId: string, maxTurns = 20): Turn[] {
-    return this.sessionStore.getRecentTurns(sessionId, maxTurns);
+    return (
+      this.pickReadAdapter('getRecentTurns', sessionId)?.getRecentTurns(sessionId, maxTurns) ??
+      this.sessionStore.getRecentTurns(sessionId, maxTurns)
+    );
   }
 
   /** Load working memory JSON from a session (for cross-turn learning). */
   getSessionWorkingMemory(sessionId: string): string | null {
+    const adapter = this.pickReadAdapter('getSessionWorkingMemory', sessionId);
+    if (adapter) return adapter.getSessionWorkingMemory(sessionId);
     const session = this.sessionStore.getSession(sessionId);
     return session?.working_memory_json ?? null;
   }
@@ -1158,7 +1240,9 @@ export class SessionManager {
     taskId: string;
     timestamp: number;
   }> {
-    const turns = this.sessionStore.getRecentTurns(sessionId, maxTurns);
+    const turns =
+      this.pickReadAdapter('getRecentTurns', sessionId)?.getRecentTurns(sessionId, maxTurns) ??
+      this.sessionStore.getRecentTurns(sessionId, maxTurns);
     return turns.map((t) => ({
       role: t.role,
       content: t.blocks
@@ -1214,7 +1298,9 @@ export class SessionManager {
       workerId?: string;
     };
   }> {
-    const turns = this.sessionStore.getRecentTurns(sessionId, maxTurns);
+    const turns =
+      this.pickReadAdapter('getRecentTurns', sessionId)?.getRecentTurns(sessionId, maxTurns) ??
+      this.sessionStore.getRecentTurns(sessionId, maxTurns);
     return turns.map((t) => {
       const textParts: string[] = [];
       const thinkingParts: string[] = [];

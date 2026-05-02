@@ -20,6 +20,7 @@ import {
   evaluateAutoApproval,
   type WorkflowConfig,
 } from './approval-gate.ts';
+import { runCollaborationBlock } from './collaboration-block.ts';
 import { buildKnowledgeContext } from './knowledge-context.ts';
 import { buildResearchStep, detectResearchCues, prependResearchStep } from './research-step-builder.ts';
 import { formatSessionTranscript } from './session-transcript.ts';
@@ -397,6 +398,16 @@ export interface WorkflowExecutorDeps {
    */
   codingCliStrategy?: import('../external-coding-cli/external-coding-cli-workflow-strategy.ts').CodingCliWorkflowStrategy;
   intentWorkflowPrompt?: string;
+  /**
+   * Multi-agent collaboration directive parsed deterministically by the
+   * intent layer. When set, the planner builds a workflow-native
+   * collaboration plan (with a populated `collaborationBlock`) and the
+   * executor runs the rebuttal-aware rounds loop here in
+   * `executeWorkflow` — the legacy core-loop fork to a parallel
+   * `collaboration-runner` runtime is gone; this is the single execution
+   * path for multi-agent prompts.
+   */
+  collaborationDirective?: import('../intent/collaboration-parser.ts').CollaborationDirective;
   /** Workflow config from vinyan.json — controls approval gating behaviour. */
   workflowConfig?: WorkflowConfig;
   /**
@@ -441,6 +452,11 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
     acceptanceCriteria: input.acceptanceCriteria,
     intentWorkflowPrompt: deps.intentWorkflowPrompt,
     sessionTurns: deps.sessionTurns,
+    // Multi-agent collaboration directive (parsed by intent layer). When
+    // set, the planner builds a workflow-native collaboration plan
+    // instead of calling the LLM planner — replaces the old
+    // collaboration-runner fork in the core loop.
+    collaborationDirective: deps.collaborationDirective,
   });
 
   // Phase C: prepend a deterministic research step for long-form creative /
@@ -722,8 +738,50 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
     }
   };
 
+  // Workflow-native multi-agent collaboration. When the planner attached a
+  // `collaborationBlock`, run the rebuttal-aware rounds loop for the
+  // primary participants BEFORE the topological dispatch. The rounds loop
+  // emits parent-task `delegate_dispatched` / `delegate_completed` events
+  // (one per primary, mirroring the original collaboration-runner) and
+  // populates `stepResults` with each primary's final-round answer. The
+  // integrator step (when present) then dispatches via the normal delegate
+  // path with the primaries' outputs available as `inputs` substitution
+  // targets — no parallel orchestration runtime, no synthetic event
+  // emulation layer.
+  if (plan.collaborationBlock && deps.executeTask) {
+    const executeTaskFn = deps.executeTask;
+    const blockResult = await runCollaborationBlock(
+      plan,
+      plan.collaborationBlock,
+      input,
+      {
+        executeTask: executeTaskFn,
+        ...(deps.bus ? { bus: deps.bus } : {}),
+      },
+    );
+    totalTokens += blockResult.totalTokensConsumed;
+    for (const [stepId, result] of blockResult.stepResults) {
+      stepResults.set(stepId, result);
+      finished.add(stepId);
+      if (result.status === 'completed') {
+        succeeded.add(stepId);
+        stepStatuses.set(stepId, 'done');
+      } else {
+        stepStatuses.set(stepId, 'failed');
+      }
+    }
+    emitPlanUpdate();
+  }
+
   // Topological execution — process steps whose dependencies are met
   const remaining = new Set(plan.steps.map((s) => s.id));
+  // Pre-collected primaries are already terminal — drop them from the
+  // remaining set so the topological loop doesn't redispatch them.
+  if (plan.collaborationBlock) {
+    for (const stepId of plan.collaborationBlock.primaryStepIds) {
+      remaining.delete(stepId);
+    }
+  }
 
   while (remaining.size > 0) {
     // A step is `ready` when every dep finished AND succeeded.

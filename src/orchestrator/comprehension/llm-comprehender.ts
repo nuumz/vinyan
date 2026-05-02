@@ -40,6 +40,7 @@ import type {
   ComprehensionInput,
 } from './types.ts';
 import { computeInputHash } from './types.ts';
+import { classifyGoalReferenceMode } from './rule-comprehender.ts';
 
 // ── Hard limits ─────────────────────────────────────────────────────────
 
@@ -374,6 +375,12 @@ class LlmComprehender implements ComprehensionEngine {
             hasAmbiguousReferents: true, // LLM only runs when rule flagged ambiguity
             pendingQuestions: [...input.pendingQuestions],
             rootGoal: input.rootGoal,
+            // goalReferenceMode is a deterministic surface-structure signal;
+            // it does not depend on the LLM's reasoning. Compute it from the
+            // literal goal so a standalone LLM-only run still surfaces the
+            // signal. The hybrid merger uses s1's state when it runs, so this
+            // value is overridden by the rule comprehender's classification.
+            goalReferenceMode: classifyGoalReferenceMode(literalGoal),
           },
           priorContextSummary,
           memoryLaneRelevance: {}, // Memory relevance is rule-based stage 1's job

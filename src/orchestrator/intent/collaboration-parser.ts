@@ -30,6 +30,155 @@
 import { matchesMultiAgentDelegation } from './strategy.ts';
 
 /**
+ * Phase 6 (multi-agent intent gating fix) — pure deterministic classifier
+ * that distinguishes prompts which INVOKE a multi-agent collaboration from
+ * prompts which merely MENTION the multi-agent phrase as data, example,
+ * quotation, or analytical reference.
+ *
+ * Why this exists: `matchesMultiAgentDelegation` is a surface regex —
+ * it fires on any text containing "have N agents debate" / "แบ่ง Agent N
+ * ตัว …" without distinguishing intent. Without this guard, prompts like
+ *   "ช่วยแก้ logic สำหรับ analyze user prompt เช่น 'แบ่ง Agent 3ตัว …'"
+ * (asking how to fix the parser) get force-routed into the
+ * collaboration-runner, dispatching real LLM agents to debate a question
+ * about how the parser SHOULD have classified the prompt — incident:
+ * session 744a1546-58ad.
+ *
+ * Returns:
+ *   - 'execute' — user is directly instructing Vinyan to run the agents
+ *   - 'mention' — user is discussing/quoting/exemplifying the phrase
+ *   - 'none'    — `matchesMultiAgentDelegation` did not match
+ *
+ * Pure: no I/O, no LLM, no module state. The decision relies on three
+ * surface signals (in priority order): (1) the multi-agent phrase
+ * appears inside a quoted span, (2) example-framing vocabulary appears
+ * BEFORE the phrase, (3) meta-framing vocabulary appears BEFORE the
+ * phrase. Position matters: meta words AFTER the phrase are part of the
+ * agents' task ("have 3 agents review the parser") and do NOT signal
+ * mention.
+ */
+export function classifyCollaborationIntent(goal: string): 'execute' | 'mention' | 'none' {
+  if (!matchesMultiAgentDelegation(goal)) return 'none';
+  if (multiAgentPhraseIsQuoted(goal)) return 'mention';
+  const phraseStart = findMultiAgentPhraseStart(goal);
+  if (phraseStart > 0) {
+    const prefix = goal.slice(0, phraseStart);
+    if (EXAMPLE_FRAMING_PATTERN.test(prefix)) return 'mention';
+    if (META_FRAMING_PATTERN.test(prefix)) return 'mention';
+    if (SYSTEM_TERMINOLOGY_PATTERN.test(prefix)) return 'mention';
+  }
+  return 'execute';
+}
+
+/**
+ * Find the earliest start index where the multi-agent regex matches in
+ * the goal. Used by the classifier to compute the PREFIX the prompt's
+ * meta-framing words can appear in. Returns -1 when no match.
+ *
+ * Re-evaluating both Thai and English patterns separately because the
+ * combined `matchesMultiAgentDelegation` returns a boolean, not a position.
+ * Mirrors the regex shapes used in `intent/strategy.ts`.
+ */
+function findMultiAgentPhraseStart(goal: string): number {
+  const en = goal.match(MULTI_AGENT_ENGLISH_FOR_POSITION);
+  const th = goal.match(MULTI_AGENT_THAI_FOR_POSITION);
+  const indices: number[] = [];
+  if (en?.index !== undefined) indices.push(en.index);
+  if (th?.index !== undefined) indices.push(th.index);
+  return indices.length > 0 ? Math.min(...indices) : -1;
+}
+
+/**
+ * True when the multi-agent phrase appears inside ANY quoted span
+ * (straight or curly double quotes, single quotes, backticks, CJK
+ * brackets). Quoting is the strongest mention signal — quoted text is
+ * almost always being cited, not invoked.
+ *
+ * Uses `matchesMultiAgentDelegation` against each span's content so the
+ * classifier and the underlying regex stay perfectly aligned — a phrase
+ * that doesn't fire the regex on its own (e.g., bare "agent helped me")
+ * never produces a mention false-positive even if it sits inside quotes.
+ */
+function multiAgentPhraseIsQuoted(goal: string): boolean {
+  for (const span of extractQuotedSpans(goal)) {
+    if (matchesMultiAgentDelegation(span)) return true;
+  }
+  return false;
+}
+
+/** Quote pairs we recognise — straight, curly, backtick, CJK brackets. */
+const QUOTE_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ['"', '"'],
+  ['“', '”'], // curly double "..."
+  ["'", "'"],
+  ['‘', '’'], // curly single '...'
+  ['`', '`'],
+  ['「', '」'], // CJK corner brackets 「...」
+];
+
+function extractQuotedSpans(goal: string): string[] {
+  const out: string[] = [];
+  for (const [open, close] of QUOTE_PAIRS) {
+    let i = 0;
+    while (true) {
+      const start = goal.indexOf(open, i);
+      if (start === -1) break;
+      const end = goal.indexOf(close, start + 1);
+      if (end === -1) break;
+      out.push(goal.slice(start + 1, end));
+      i = end + 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Example-framing vocabulary — strong signal that the multi-agent phrase
+ * is being CITED as an example, not invoked. Both English and Thai cues.
+ * Tested only against the prefix (text BEFORE the multi-agent phrase) so
+ * "have 3 agents [task that uses 'example']" does not falsely classify.
+ */
+const EXAMPLE_FRAMING_PATTERN =
+  /\b(?:for\s+example|e\.g\.|examples?\b|such\s+as|prompts?\s+like|prompts?\s+such\s+as|like\s+this)\b|เช่น|ตัวอย่าง(?:เช่น)?|ยกตัวอย่าง|prompt\s*แบบ|prompt\s*ลักษณะ|prompt\s*ที่/i;
+
+/**
+ * Meta-framing vocabulary — operations applied TO the prompt or TO Vinyan
+ * itself, not work the agents would do. Examples: "fix the parser",
+ * "implementation plan", "ออกแบบ parser", "แก้ logic", "ทำไม prompt …
+ * ถึง", "review the routing".
+ *
+ * Curated tightly to avoid false positives on agent-task prompts:
+ * generic verbs like "fix", "review", "design" alone are NOT included —
+ * only when paired with a system noun (parser/routing/classifier/intent/
+ * implementation/logic/decomposition) do they signal meta intent.
+ */
+const META_FRAMING_PATTERN =
+  /\b(?:implementation\s+(?:plan|strategy|details?)|fix\s+(?:the\s+)?(?:parser|routing|logic|classifier|intent|bug|decomposition)|review\s+(?:the\s+)?(?:routing|logic|parser|implementation|classifier|decomposition)|design\s+(?:the\s+)?(?:parser|routing|classifier|intent)|why\s+does)\b|แก้\s*(?:logic|parser|routing|bug|classifier|intent|decomposition|ปัญหา)|ออกแบบ\s*(?:parser|routing|classifier|intent|logic)|รองรับ\s*(?:prompt|กรณี|case)|เพราะอะไร|ทำไม\s*(?:prompt|task|วินยัน|vinyan|มัน|ระบบ|router|routing|classifier)/i;
+
+/**
+ * Bare system-component terminology — when these terms appear in the
+ * prefix, the user is almost certainly discussing Vinyan internals
+ * rather than asking agents to perform work. Position-gated to the
+ * prefix so "have 3 agents review the parser code" still executes.
+ */
+const SYSTEM_TERMINOLOGY_PATTERN =
+  /\b(?:parser|routing|decomposition|classifier|intent\s+(?:layer|resolver|classifier)|workflow\s+planner|collaboration[\s-]runner|collaboration[\s-]parser)\b/i;
+
+/**
+ * Re-declare the multi-agent shape regexes here for position lookup. The
+ * canonical predicate `matchesMultiAgentDelegation` (in `intent/strategy.ts`)
+ * returns a boolean, not a match index — duplicating the pattern shape
+ * here keeps the classifier self-contained without changing the strategy
+ * module's public API. Kept in sync with `intent/strategy.ts`'s
+ * `MULTI_AGENT_THAI` / `MULTI_AGENT_ENGLISH` — if those change, update
+ * here too (or refactor both into a shared module).
+ */
+const MULTI_AGENT_THAI_FOR_POSITION =
+  /(?:แบ่ง|หลาย|ใช้|มี|spawn)[^.!?]{0,20}(?:\d+\s*)?agents?(?:[^.!?]{0,20}(?:แข่ง|ประชัน|ทำงาน|ดีเบต|ตอบกัน|ถามตอบ|ตอบ|ถาม|ร่วม|coordinate|debate|battle|compete))?/i;
+const MULTI_AGENT_ENGLISH_FOR_POSITION =
+  /\b(?:multiple|several|two|three|four|five|many|\d+)\s+agents?\b|\bsplit\s+(?:into|among|across)\s+(?:\d+\s+)?agents?\b|\bagents?\s+(?:compete|debate|battle|cooperate|coordinate|race|debate)\b|\b(?:have|let|spawn)\s+(?:\d+\s+)?agents?\s+(?:compete|debate|work|answer|race)\b/i;
+
+/**
  * Hard upper bounds. Both clamp absurd inputs ("100 รอบ") rather than
  * reject them — the user's intent is preserved, just bounded so a prompt
  * cannot blow the parent task's budget.
@@ -241,6 +390,14 @@ const NO_CLARIFICATION_PATTERN = /no\s+clarification|don'?t\s+ask|ห้าม�
  * Pure: no I/O, no LLM, no module state.
  */
 export function parseCollaborationDirective(goal: string): CollaborationDirective | null {
+  // Pure structure extraction. The parser intentionally does NOT gate on
+  // executability — see {@link classifyCollaborationIntent} — so a caller
+  // analysing an ambiguous prompt ("does my prompt look like a debate
+  // request?") can still inspect the parsed shape. Execution gating
+  // lives in `intent/strategy.ts`, which calls the classifier before
+  // attaching the directive to the IntentResolution. This keeps the
+  // parser's contract narrow ("structure when extractable") and makes
+  // mention vs execute orthogonal to structure.
   if (!matchesMultiAgentDelegation(goal)) return null;
 
   const countResult = extractCount(goal);

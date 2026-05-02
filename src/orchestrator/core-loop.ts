@@ -2428,100 +2428,26 @@ async function executeTaskCore(
         const creativeClarify = await maybeEmitCreativeClarificationGate(input, prep.routing, deps);
         if (creativeClarify) return creativeClarify;
 
-        // Phase 3 (multi-agent debate fix) — when the deterministic
-        // CollaborationDirective parser fired AND the registry can satisfy
-        // the requested participant count, route through the persistent-
-        // participant Room (text-answer mode) instead of the workflow
-        // planner. Top-level only — sub-tasks (parentTaskId set) cleared
-        // the directive at `enforceSubTaskLeafStrategy`, so this guard is
-        // belt-and-suspenders.
-        const collaborationDirective = intentResolution.collaboration;
-        if (collaborationDirective && !input.parentTaskId && deps.agentRegistry) {
-          try {
-            const { executeCollaborationRoom } = await import('./workflow/collaboration-runner.ts');
-            const collaborationResult = await executeCollaborationRoom(
-              input,
-              {
-                executeTask: (subInput: TaskInput) => executeTask(subInput, deps),
-                agentRegistry: deps.agentRegistry,
-                bus: deps.bus,
-              },
-              collaborationDirective,
-            );
-            const traceOutcome: ExecutionTrace['outcome'] =
-              collaborationResult.status === 'completed'
-                ? 'success'
-                : collaborationResult.status === 'partial'
-                  ? 'success'
-                  : 'failure';
-            const trace: ExecutionTrace = {
-              id: `trace-${input.id}-collaboration`,
-              taskId: input.id,
-              workerId: 'collaboration-runner',
-              timestamp: Date.now(),
-              routingLevel: 2,
-              approach: 'agentic-workflow',
-              oracleVerdicts: {},
-              modelUsed: 'collaboration-room',
-              tokensConsumed: collaborationResult.totalTokensConsumed,
-              durationMs: collaborationResult.totalDurationMs,
-              outcome: traceOutcome,
-              affectedFiles: input.targetFiles ?? [],
-              governanceProvenance: buildShortCircuitProvenance({
-                input,
-                decisionId: 'agentic-workflow-collaboration',
-                attributedTo: 'intentResolver',
-                wasGeneratedBy: 'executeTaskCore.collaborationRunner',
-                reason: `Collaboration directive: ${collaborationDirective.requestedPrimaryParticipantCount} primaries, mode=${collaborationDirective.interactionMode}, rebuttalRounds=${collaborationDirective.rebuttalRounds}`,
-                evidence: [
-                  {
-                    kind: 'routing-factor',
-                    source: 'collaboration-parser',
-                    summary: `count=${collaborationDirective.requestedPrimaryParticipantCount}; mode=${collaborationDirective.interactionMode}; rebuttalRounds=${collaborationDirective.rebuttalRounds}; reviewerPolicy=${collaborationDirective.reviewerPolicy}`,
-                  },
-                ],
-              }),
-            };
-            await deps.traceCollector.record(trace);
-            // Phase 4 — when the runner timed out waiting for a participant
-            // clarification, surface as TaskResult.input-required so the
-            // chat UI prompts the user to answer. The next user turn will
-            // arrive with the answer in the new prompt and start a fresh
-            // collaboration room (session history carries the question +
-            // answer context). Otherwise map status verbatim.
-            const result: TaskResult = collaborationResult.clarificationNeeded
-              ? {
-                  id: input.id,
-                  status: 'input-required',
-                  mutations: [],
-                  trace,
-                  answer: collaborationResult.synthesizedOutput,
-                  clarificationNeeded: collaborationResult.clarificationNeeded.questions,
-                }
-              : {
-                  id: input.id,
-                  status:
-                    collaborationResult.status === 'completed'
-                      ? 'completed'
-                      : collaborationResult.status === 'partial'
-                        ? 'partial'
-                        : 'failed',
-                  mutations: [],
-                  trace,
-                  answer: collaborationResult.synthesizedOutput,
-                };
-            deps.bus?.emit('task:complete', { result });
-            return result;
-          } catch (err) {
-            // Fall through to the legacy workflow path on unexpected failure
-            // (e.g. registry import error). Better to ship the planner result
-            // than refuse to answer at all. The error is logged for triage.
-            console.warn(
-              `[vinyan] collaboration-runner threw, falling back to workflow planner: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          }
+        // Multi-agent collaboration directive — diagnostic only. When the
+        // intent parser fired but the agent registry is unavailable, log so
+        // the operator sees that the planner will fall back to its
+        // multi-agent rules (which can still produce a flat workflow but
+        // without round-aware semantics). The directive itself is plumbed
+        // into `executeWorkflow.deps.collaborationDirective` further down,
+        // where the planner builds a workflow-native collaboration plan
+        // and the executor runs the rounds loop in `runCollaborationBlock`.
+        // The legacy core-loop fork to `executeCollaborationRoom` was
+        // removed in favour of this single execution path.
+        if (
+          intentResolution.collaboration &&
+          !input.parentTaskId &&
+          !deps.agentRegistry
+        ) {
+          console.warn(
+            `[vinyan] collaboration directive parsed (count=${intentResolution.collaboration.requestedPrimaryParticipantCount}, ` +
+              `mode=${intentResolution.collaboration.interactionMode}, rebuttalRounds=${intentResolution.collaboration.rebuttalRounds}) ` +
+              `but agentRegistry is unavailable — workflow planner will fall back to its LLM multi-agent rules (taskId=${input.id})`,
+          );
         }
 
         // Workflow Planner + Executor: LLM-powered multi-step workflow that
@@ -2559,6 +2485,17 @@ async function executeTaskCore(
             executeTask: (subInput: TaskInput) => executeTask(subInput, deps),
             agentRegistry: deps.agentRegistry,
             intentWorkflowPrompt: intentResolution.workflowPrompt,
+            // Single-path collaboration: when intent parsed a directive AND
+            // the registry can satisfy the requested participant count
+            // AND this is a top-level task (sub-tasks clear the directive
+            // via `enforceSubTaskLeafStrategy`), the workflow planner
+            // builds a deterministic plan with a populated
+            // `collaborationBlock`. The executor's rounds-loop handler
+            // (`runCollaborationBlock`) replaces the legacy
+            // `collaboration-runner` fork.
+            ...(intentResolution.collaboration && !input.parentTaskId
+              ? { collaborationDirective: intentResolution.collaboration }
+              : {}),
             workflowConfig: deps.workflowConfig,
             sessionTurns,
             // Plumb the External Coding CLI strategy so workflow plans that

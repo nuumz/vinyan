@@ -104,10 +104,67 @@ export interface WorkflowStep {
   retryBudget?: number;
 }
 
+/**
+ * First-class workflow concept for multi-agent collaboration. When a
+ * `WorkflowPlan` carries a `CollaborationBlock`, the executor runs the
+ * named primary steps in **parallel rounds** (rebuttal-aware), passing
+ * each participant the prior rounds' peer transcripts as context, then
+ * dispatches the optional integrator step to synthesize a final answer.
+ *
+ * This collapses what used to be a fork in the core loop (collaboration
+ * runner vs. workflow executor) into a single execution path: the
+ * workflow plan natively expresses "N agents debating M rounds" without
+ * a parallel runtime.
+ *
+ * Step cardinality. The plan keeps **one step per primary participant**
+ * (NOT one per (participant, round) pair). The rounds loop is internal
+ * to the executor — UI surfaces see one card per agent that animates
+ * across rounds. Step ids referenced here MUST exist in `plan.steps` and
+ * carry `strategy='delegate-sub-agent'`. The integrator step (when set)
+ * MUST carry `strategy='llm-reasoning'` and `dependencies` covering
+ * every primary.
+ */
+export interface CollaborationBlock {
+  /** Total rounds = 1 (initial) + rebuttalRounds. ≥1, capped by `MAX_COLLABORATION_ROUNDS`. */
+  rounds: number;
+  /**
+   * Multi-agent rendering mode. The executor and stage manifest both read
+   * this; the synthesizer applies competition-verdict parsing only when
+   * `groupMode='competition'`.
+   */
+  groupMode: 'parallel' | 'comparison' | 'debate' | 'competition';
+  /** Step ids whose strategy='delegate-sub-agent' make up the participant pool. */
+  primaryStepIds: string[];
+  /** Optional integrator step id (strategy='llm-reasoning'). Depends on every primary. */
+  integratorStepId?: string;
+  /** When true, integrator output is parsed for trailing `{winner, reasoning, scores}` JSON. */
+  emitCompetitionVerdict: boolean;
+  /**
+   * True when rebuttal rounds > 0 — primaries see prior rounds' peer
+   * transcripts. False on parallel-answer mode where each round is
+   * independent (no shared discussion).
+   */
+  sharedDiscussion: boolean;
+}
+
+/**
+ * Maximum collaboration rounds. Hard cap to bound dispatch fan-out
+ * (rounds × participants × LLM latency). Mirrors the intent parser's
+ * `MAX_REBUTTAL_ROUNDS = 5`, with +1 for the initial round.
+ */
+export const MAX_COLLABORATION_ROUNDS = 6;
+
 export interface WorkflowPlan {
   goal: string;
   steps: WorkflowStep[];
   synthesisPrompt: string;
+  /**
+   * Optional first-class collaboration metadata. Set by the planner when
+   * a `CollaborationDirective` is supplied (replaces the legacy
+   * collaboration-runner fork). Absent for ordinary single-agent or
+   * non-collaboration plans.
+   */
+  collaborationBlock?: CollaborationBlock;
 }
 
 export interface WorkflowStepResult {
@@ -232,8 +289,18 @@ export const WorkflowStepSchema = z.object({
     .optional(),
 });
 
+export const CollaborationBlockSchema = z.object({
+  rounds: z.number().int().min(1).max(MAX_COLLABORATION_ROUNDS),
+  groupMode: z.enum(['parallel', 'comparison', 'debate', 'competition']),
+  primaryStepIds: z.array(z.string()).min(1),
+  integratorStepId: z.string().optional(),
+  emitCompetitionVerdict: z.boolean().default(false),
+  sharedDiscussion: z.boolean().default(false),
+});
+
 export const WorkflowPlanSchema = z.object({
   goal: z.string(),
   steps: z.array(WorkflowStepSchema).min(1),
   synthesisPrompt: z.string().default('Combine the results of all steps into a coherent response.'),
+  collaborationBlock: CollaborationBlockSchema.optional(),
 });

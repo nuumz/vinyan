@@ -112,6 +112,173 @@ function hasAmbiguousReferents(literalGoal: string): boolean {
   return false;
 }
 
+// ── goalReferenceMode classification (Phase 1: pre-rule false-activation fix)
+
+/**
+ * Quote pairs the classifier recognises — straight, curly, single, backtick,
+ * CJK corner brackets. Mirrors the set used in intent/collaboration-parser.
+ * A substantive (≥3 chars) quoted span is a near-perfect mention signal:
+ * users almost never quote text they want executed.
+ */
+const REFERENCE_QUOTE_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ['"', '"'],
+  ['“', '”'],
+  ["'", "'"],
+  ['‘', '’'],
+  ['`', '`'],
+  ['「', '」'],
+];
+
+const SUBSTANTIVE_QUOTE_LEN = 3;
+
+/**
+ * True when the prompt contains any quoted span whose CONTENT is at least
+ * `SUBSTANTIVE_QUOTE_LEN` characters. We do not check what is inside the
+ * quotes — a substantive citation anywhere in the prompt is enough to flag
+ * it as meta. Empty/single-character quotes (e.g., apostrophes inside
+ * "don't") are ignored to avoid false positives.
+ */
+function hasSubstantiveQuotedSpan(text: string): boolean {
+  for (const [open, close] of REFERENCE_QUOTE_PAIRS) {
+    let i = 0;
+    while (i < text.length) {
+      const start = text.indexOf(open, i);
+      if (start === -1) break;
+      // For symmetric quotes (open === close) advance past the opener so
+      // `indexOf(close, start + 1)` does not match the SAME character.
+      const end = text.indexOf(close, start + 1);
+      if (end === -1) break;
+      if (end - start - 1 >= SUBSTANTIVE_QUOTE_LEN) return true;
+      i = end + 1;
+    }
+  }
+  return false;
+}
+
+/**
+ * Example-framing vocabulary — phrases that ALWAYS reframe the following
+ * content as an example/citation rather than work to perform. Mirrored from
+ * intent/collaboration-parser.ts but generalised: not gated on a particular
+ * downstream phrase. When this fires anywhere in the prompt it is a strong
+ * meta signal (the user is illustrating something, not instructing it).
+ */
+const EXAMPLE_FRAMING_PATTERN_GLOBAL =
+  /\b(?:for\s+example|e\.g\.|examples?\b|such\s+as|prompts?\s+like|prompts?\s+such\s+as|like\s+this)\b|เช่น|ตัวอย่าง(?:เช่น)?|ยกตัวอย่าง|prompt\s*แบบ|prompt\s*ลักษณะ|prompt\s*ที่/i;
+
+/**
+ * Meta-action vocabulary paired with system nouns — the user is asking
+ * Vinyan to fix/design/review/discuss its OWN behaviour, not to perform an
+ * action. Position-gated downstream (must appear BEFORE the first
+ * execution verb).
+ *
+ * Curated tightly: bare verbs like "fix", "review" are NOT included — only
+ * when paired with a system noun does the combination signal meta intent.
+ * "fix the parser" → meta. "fix this bug in the worker" → meta. But "fix
+ * my code" alone → not meta. Mirrors META_FRAMING_PATTERN but without the
+ * downstream-phrase coupling.
+ */
+const META_VERB_PATTERN =
+  /\b(?:implementation\s+(?:plan|strategy|details?)|fix\s+(?:the\s+)?(?:parser|routing|logic|classifier|intent|bug|decomposition|workflow|pipeline)|review\s+(?:the\s+)?(?:routing|logic|parser|implementation|classifier|decomposition|workflow|pipeline)|design\s+(?:the\s+)?(?:parser|routing|classifier|intent|workflow|pipeline)|debug\s+(?:the\s+)?(?:parser|routing|logic|classifier|intent|workflow|pipeline)|analy[sz]e\s+(?:the\s+)?(?:parser|routing|logic|classifier|intent|workflow|prompt)|why\s+does)\b|แก้\s*(?:logic|parser|routing|bug|classifier|intent|decomposition|workflow|pipeline|ปัญหา)|ออกแบบ\s*(?:parser|routing|classifier|intent|logic|workflow|pipeline)|ตรวจ(?:สอบ)?\s*(?:parser|routing|classifier|intent|logic|workflow|pipeline)|รองรับ\s*(?:prompt|กรณี|case)|เพราะอะไร|ทำไม\s*(?:prompt|task|วินยัน|vinyan|มัน|ระบบ|router|routing|classifier|parser|workflow)/i;
+
+/**
+ * Standalone system terminology — unaccompanied mentions of Vinyan-internal
+ * components. Weaker than META_VERB_PATTERN: a prompt that names "parser"
+ * without a verb might be discussion or might be a request. When this is
+ * the only meta-leaning signal, the result is `'unknown'` rather than
+ * `'meta'` — pre-rules then fire at REDUCED confidence and the LLM advisor
+ * gets to weigh in via the merge layer.
+ */
+const SYSTEM_NOUN_PATTERN =
+  /\b(?:parser|routing|decomposition|classifier|intent\s+(?:layer|resolver|classifier)|workflow\s+planner|collaboration[\s-]runner|collaboration[\s-]parser)\b/i;
+
+/**
+ * Execution-verb anchor — the *imperative* signal that the prompt is an
+ * instruction to do something. Used POSITIONALLY: meta vocabulary BEFORE
+ * the first execution verb is framing about the system; meta vocabulary
+ * AFTER is part of the agents' / worker's task ("have 3 agents review the
+ * parser code" → "review the parser" is the agents' assignment, not the
+ * user's frame).
+ *
+ * Limited to high-precision authoring/delegation/instruction verbs so the
+ * rule does NOT swallow conversational content. Bare nouns are excluded.
+ */
+const EXECUTION_VERB_PATTERN =
+  /\b(?:have|let|spawn|split|use|make|run|execute|call|launch|start|write|draft|compose|author|create|generate|build|implement|add|do|deploy|publish)\s|\bsplit\s+(?:into|among|across)\b/i;
+
+const EXECUTION_VERB_THAI_PATTERN =
+  /แบ่ง|เขียน|แต่ง|ประพันธ์|ร่าง|สร้าง|ทำ(?!ไม)|รัน|เรียก|spawn/;
+
+/**
+ * Find the index of the first execution verb anchor (English or Thai), or
+ * -1 when no execution verb is present. We pick the EARLIEST match across
+ * patterns because the prompt's leading instruction is what determines
+ * whether the user is performing or discussing.
+ */
+function findFirstExecutionVerb(text: string): number {
+  const en = text.match(EXECUTION_VERB_PATTERN);
+  const th = text.match(EXECUTION_VERB_THAI_PATTERN);
+  const indices: number[] = [];
+  if (en?.index !== undefined) indices.push(en.index);
+  if (th?.index !== undefined) indices.push(th.index);
+  return indices.length > 0 ? Math.min(...indices) : -1;
+}
+
+/** Find the index of the first META_VERB_PATTERN match, or -1. */
+function findFirstMetaPattern(text: string): number {
+  const m = text.match(META_VERB_PATTERN);
+  return m?.index ?? -1;
+}
+
+/** Find the index of the first SYSTEM_NOUN_PATTERN match, or -1. */
+function findFirstSystemNoun(text: string): number {
+  const m = text.match(SYSTEM_NOUN_PATTERN);
+  return m?.index ?? -1;
+}
+
+/**
+ * Classify the user's goal as `'direct'` (instruction to execute), `'meta'`
+ * (discussion / quotation / framing of system behaviour), or `'unknown'`
+ * (mixed signals). Pure, deterministic, language-aware (Thai + English).
+ *
+ * Decision order (most reliable signals first):
+ *   1. empty                                                → 'unknown'
+ *   2. substantive quoted span anywhere                    → 'meta'
+ *   3. example-framing vocabulary anywhere                 → 'meta'
+ *   4. meta-verb+system-noun pattern BEFORE first exec verb → 'meta'
+ *   5. standalone system-noun BEFORE first exec verb       → 'unknown'
+ *      (suggestive but inconclusive — pre-rules demote confidence)
+ *   6. otherwise                                           → 'direct'
+ *
+ * Pure, A3-safe: relies only on regex and string positions. Deterministic
+ * given the same input. The downstream comprehension oracle treats this
+ * field as advisory metadata (no extra verification needed beyond the
+ * normal envelope checks).
+ */
+function classifyGoalReferenceMode(literalGoal: string): 'direct' | 'meta' | 'unknown' {
+  const text = literalGoal.trim();
+  if (text.length === 0) return 'unknown';
+
+  if (hasSubstantiveQuotedSpan(text)) return 'meta';
+  if (EXAMPLE_FRAMING_PATTERN_GLOBAL.test(text)) return 'meta';
+
+  const execIdx = findFirstExecutionVerb(text);
+  const metaIdx = findFirstMetaPattern(text);
+  if (metaIdx >= 0 && (execIdx < 0 || metaIdx < execIdx)) return 'meta';
+
+  const systemIdx = findFirstSystemNoun(text);
+  if (systemIdx >= 0 && (execIdx < 0 || systemIdx < execIdx)) return 'unknown';
+
+  return 'direct';
+}
+
+/**
+ * Exposed for the LLM comprehender (which copies the rule output into its
+ * own envelope so the merger never has to default the field) and for tests
+ * that want to assert the classifier directly without constructing a full
+ * comprehension input.
+ */
+export { classifyGoalReferenceMode };
+
 /**
  * Build a 1-2 sentence summary of what the conversation was about,
  * using rule-based extraction over the last few turns.
@@ -306,6 +473,15 @@ class RuleComprehender implements ComprehensionEngine {
       });
     }
 
+    const goalReferenceMode = classifyGoalReferenceMode(literalGoal);
+    if (goalReferenceMode !== 'direct') {
+      evidence.push({
+        source: 'rule:goal-reference-mode',
+        claim: `Surface structure indicates goalReferenceMode='${goalReferenceMode}'`,
+        confidence: goalReferenceMode === 'meta' ? 0.9 : 0.6,
+      });
+    }
+
     const state: ComprehensionState = {
       isNewTopic,
       isClarificationAnswer,
@@ -313,6 +489,7 @@ class RuleComprehender implements ComprehensionEngine {
       hasAmbiguousReferents: ambiguous,
       pendingQuestions: [...input.pendingQuestions],
       rootGoal: input.rootGoal,
+      goalReferenceMode,
     };
 
     // 4. Working goal (resolve referents when possible via root-goal anchoring).

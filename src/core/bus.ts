@@ -1668,6 +1668,43 @@ export interface VinyanBusEvents {
   };
 
   /**
+   * Multi-agent persona selection completed. Emitted once per
+   * collaboration-directive plan BEFORE `workflow:plan_created`. Lets
+   * dashboards / replay tools see which personas the LLM picked and why,
+   * separate from the workflow-plan audit row. `origin='llm'` means the
+   * LLM selector ran and produced a valid selection that survived
+   * registry validation; `origin='fallback'` means the LLM was unavailable
+   * OR every retry failed validation, and `selectPrimaryAgents` will use
+   * the alphabetical-by-class fallback. `attempts` is the number of LLM
+   * calls made (0 for fallback, 1 or 2 for llm). `primaryIds`/
+   * `integratorId` reflect what the planner actually used; absent on
+   * fallback. `rationale` is the model's free-text justification when
+   * provided (advisory only — not load-bearing).
+   */
+  'workflow:persona_selection_completed': {
+    taskId: string;
+    sessionId?: string;
+    origin: 'llm' | 'fallback';
+    attempts: number;
+    requestedCount: number;
+    primaryIds?: string[];
+    integratorId?: string;
+    rationale?: string;
+  };
+
+  /**
+   * Persona selector threw an unexpected error (selector contract is
+   * "return null on every failure path"; this fires only on regression).
+   * The planner falls back to alphabetical selection; this event lets the
+   * dashboard surface the regression without breaking the user's task.
+   */
+  'workflow:persona_selection_failed': {
+    taskId: string;
+    sessionId?: string;
+    reason: string;
+  };
+
+  /**
    * Phase-14 (Item 4): emitted by the agent-loop's `handleDelegation` path
    * when A1 forced the delegated sub-task to the canonical Verifier persona.
    * Mirrors `workflow:a1_verifier_routed` but for the agent-loop (LLM-driven
@@ -1935,12 +1972,20 @@ export interface VinyanBusEvents {
     taskId: string;
     sessionId?: string;
     goal: string;
-    /** 'llm' = WorkflowPlanSchema.parse succeeded; 'fallback' = both attempts failed. */
-    origin: 'llm' | 'fallback';
     /**
-     * Number of LLM attempts made: 0 if no provider was available,
-     * 1 if the first call succeeded, 2 if a retry was needed (whether the
-     * retry succeeded or both attempts failed and we fell back).
+     * 'llm' = WorkflowPlanSchema.parse succeeded.
+     * 'fallback' = no provider, or both LLM attempts failed (deterministic
+     *   single-step plan).
+     * 'collaboration' = plan synthesized deterministically from a
+     *   `CollaborationDirective` (multi-agent debate / competition / etc.).
+     *   No LLM call made.
+     */
+    origin: 'llm' | 'fallback' | 'collaboration';
+    /**
+     * Number of LLM attempts made: 0 for the no-provider fallback, the
+     * deterministic collaboration path, or any path that bypassed the LLM
+     * planner; 1 if the first call succeeded; 2 if a retry was needed
+     * (whether the retry succeeded or both attempts failed and we fell back).
      */
     attempts: number;
     steps: Array<{

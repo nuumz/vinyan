@@ -182,6 +182,18 @@ export function classifyDecisionKind(plan: WorkflowPlan): WorkflowDecisionKind {
  * plans.
  */
 export function classifyGroupMode(plan: WorkflowPlan): MultiAgentGroupMode | undefined {
+  // First-class collaboration block wins over the synthesisPrompt heuristic
+  // — when the planner emitted a workflow-native collaboration plan, the
+  // intent-derived mode is authoritative. Prevents
+  // `interactionMode='competition'` from being mis-classified as
+  // 'comparison' just because the synthesisPrompt the planner generated
+  // happened to lack the keyword. `'parallel'` collapses to 'comparison'
+  // because the stage manifest's enum has no 'parallel' member.
+  if (plan.collaborationBlock) {
+    const mode = plan.collaborationBlock.groupMode;
+    if (mode === 'parallel') return 'comparison';
+    return mode;
+  }
   const delegateCount = plan.steps.filter((s) => s.strategy === 'delegate-sub-agent').length;
   if (delegateCount < 2) return undefined;
   const synth = plan.synthesisPrompt.toLowerCase();

@@ -73,6 +73,32 @@ export const ComprehensionStateSchema = z.object({
    * user request. Null when there is no prior anchor (e.g. fresh session).
    */
   rootGoal: z.string().nullable(),
+  /**
+   * Generic structural signal — does the user's prompt INSTRUCT something to
+   * be done ('direct'), DISCUSS / REFERENCE / QUOTE behaviour the system
+   * already does or should do ('meta'), or carry mixed/inconclusive cues
+   * ('unknown')?
+   *
+   * Computed deterministically by the rule-comprehender from surface
+   * structure (quoted spans, prefix meta-verbs paired with system nouns,
+   * example-framing prefixes, position of the first execution verb).
+   * Surface-only — no semantic NLP.
+   *
+   * Why it lives in comprehension (not in pre-rule code): it is consumed by
+   * EVERY deterministic intent pre-rule. `composeDeterministicCandidate` —
+   * multi-agent delegation, creative-deliverable, and any future pre-rule
+   * — gates on this field so a prompt that mentions, quotes, or proposes
+   * fixing the trigger phrase ("ออกแบบ parser ให้รองรับ have 3 agents
+   * debate") never gets force-routed into the corresponding execution
+   * runner. The classifier in `intent/collaboration-parser.ts` remains
+   * as a second layer of defense; this is the first.
+   *
+   * Optional purely for backwards compatibility with mock comprehensions
+   * in older tests — production envelopes from the rule and LLM
+   * comprehenders ALWAYS populate it. Consumers MUST treat a missing
+   * field as `'direct'` to preserve the green path.
+   */
+  goalReferenceMode: z.enum(['direct', 'meta', 'unknown']).optional(),
 });
 export type ComprehensionState = z.infer<typeof ComprehensionStateSchema>;
 

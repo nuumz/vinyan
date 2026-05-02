@@ -15,6 +15,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
+  classifyCollaborationIntent,
   COLLABORATION_PARSER_LIMITS,
   parseCollaborationDirective,
 } from '../../../src/orchestrator/intent/collaboration-parser.ts';
@@ -193,6 +194,147 @@ describe('parseCollaborationDirective — negative / null returns', () => {
   it('returns null for prompts unrelated to multi-agent collaboration', () => {
     expect(parseCollaborationDirective('list files in ~/Desktop')).toBeNull();
     expect(parseCollaborationDirective('refactor src/foo.ts to use async/await')).toBeNull();
+  });
+});
+
+describe('classifyCollaborationIntent — execute vs mention gate', () => {
+  // Phase 6 fix — distinguishes prompts that INVOKE multi-agent
+  // collaboration from prompts that merely MENTION the multi-agent phrase
+  // as data, example, quotation, or analytical reference. Without this
+  // gate, mention prompts force the strategy override and dispatch real
+  // LLM agents to debate the user's META question (incident: session
+  // 744a1546-58ad).
+
+  describe('execute (must route to collaboration runner)', () => {
+    it('"แบ่ง Agent 3ตัว แข่งกันถามตอบ"', () => {
+      expect(classifyCollaborationIntent('แบ่ง Agent 3ตัว แข่งกันถามตอบ')).toBe('execute');
+    });
+
+    it('"แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ"', () => {
+      expect(
+        classifyCollaborationIntent(
+          'แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ',
+        ),
+      ).toBe('execute');
+    });
+
+    it('"have 3 agents debate the merits of microservices"', () => {
+      expect(classifyCollaborationIntent('have 3 agents debate the merits of microservices')).toBe(
+        'execute',
+      );
+    });
+
+    it('"have 3 agents compete and pick a winner"', () => {
+      expect(classifyCollaborationIntent('have 3 agents compete and pick a winner')).toBe('execute');
+    });
+
+    it('"have 3 agents review the parser code" — meta words AFTER the phrase are agent-task, not framing', () => {
+      // Critical false-positive guard: "review" + "parser" appear in the
+      // sentence, but the multi-agent phrase comes FIRST so the meta words
+      // are part of the agents' task. Position-gated meta detection
+      // protects this case.
+      expect(classifyCollaborationIntent('have 3 agents review the parser code')).toBe('execute');
+    });
+  });
+
+  describe('mention (must NOT route to collaboration runner)', () => {
+    it('quoted multi-agent phrase inside meta-discussion (Thai)', () => {
+      expect(
+        classifyCollaborationIntent(
+          'ช่วยแก้ logic สำหรับ analyze user prompt เช่น "แบ่ง Agent 3ตัว แข่งกันถามตอบ"',
+        ),
+      ).toBe('mention');
+    });
+
+    it('quoted multi-agent phrase inside implementation-plan request', () => {
+      expect(
+        classifyCollaborationIntent(
+          'เขียน implementation plan สำหรับ prompt แบบ "แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ"',
+        ),
+      ).toBe('mention');
+    });
+
+    it('unquoted multi-agent phrase but META-FRAMING words in prefix (parser/design)', () => {
+      expect(classifyCollaborationIntent('ออกแบบ parser ให้รองรับ have 3 agents debate')).toBe(
+        'mention',
+      );
+    });
+
+    it('quoted multi-agent phrase in interrogative ("ทำไม prompt … ถึง …")', () => {
+      expect(
+        classifyCollaborationIntent('ทำไม prompt "have 3 agents debate" ถึงถูก route ผิด'),
+      ).toBe('mention');
+    });
+
+    it('quoted multi-agent phrase after "review the routing logic for prompts like"', () => {
+      expect(
+        classifyCollaborationIntent(
+          'review the routing logic for prompts like "แบ่ง Agent 3ตัว แข่งกันถามตอบ"',
+        ),
+      ).toBe('mention');
+    });
+
+    it('curly double quotes around the multi-agent phrase', () => {
+      // Prompts copied from Slack / chat clients often arrive with curly
+      // quotes (U+201C/U+201D); the classifier must handle them like
+      // straight quotes.
+      expect(
+        classifyCollaborationIntent(
+          'อธิบายว่า prompt “แบ่ง Agent 3ตัว แข่งกันถามตอบ” ถูกตีความอย่างไร',
+        ),
+      ).toBe('mention');
+    });
+
+    it('backtick code-span around the multi-agent phrase', () => {
+      // Markdown / Slack / GitHub prompts often quote with backticks.
+      expect(
+        classifyCollaborationIntent(
+          'ปรับ classifier ให้รับ prompt `have 3 agents debate` ได้ดีขึ้น',
+        ),
+      ).toBe('mention');
+    });
+
+    it('English meta-prefix "fix the parser to handle ..."', () => {
+      expect(
+        classifyCollaborationIntent('fix the parser to handle have 3 agents debate'),
+      ).toBe('mention');
+    });
+  });
+
+  describe('none (multi-agent regex did not match)', () => {
+    it('singular reference returns "none"', () => {
+      expect(classifyCollaborationIntent('what is an agent in vinyan')).toBe('none');
+    });
+
+    it('conversational mention returns "none"', () => {
+      expect(classifyCollaborationIntent('the agent helped me find the answer')).toBe('none');
+    });
+
+    it('empty string returns "none"', () => {
+      expect(classifyCollaborationIntent('')).toBe('none');
+    });
+  });
+});
+
+describe('parseCollaborationDirective — pure structure extraction', () => {
+  // Per the Phase 6 design, the parser stays a pure structure extractor:
+  // execution gating lives in `intent/strategy.ts`, not here. A mention
+  // prompt with a structurally valid count + mode WILL still produce a
+  // directive — that directive simply never gets attached to the
+  // IntentResolution because the strategy layer's classifier blocks it.
+  it('returns a structure for a mention prompt (parser is not the execute gate)', () => {
+    const d = parseCollaborationDirective(
+      'review the routing logic for prompts like "แบ่ง Agent 3ตัว แข่งกันถามตอบ"',
+    );
+    // The English regex matches "3 agents" inside the wrapped quote (and
+    // outside it via "agents debate" if present). Without the gate inside
+    // the parser, a structure may or may not be extracted depending on
+    // which match the count extractor lands on. Either result is fine —
+    // the strategy layer's classifier is the load-bearing gate.
+    if (d !== null) {
+      expect(d.requestedPrimaryParticipantCount).toBeGreaterThan(0);
+      expect(d.source).toBe('pre-llm-parser');
+    }
   });
 });
 

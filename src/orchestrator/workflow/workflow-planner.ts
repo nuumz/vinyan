@@ -9,16 +9,25 @@
  * A3: fallback to single-step is deterministic.
  */
 import type { VinyanBus } from '../../core/bus.ts';
+import type { PersonaId } from '../../core/agent-vocabulary.ts';
 // (used by sanitizeDelegateAgentIds / formatAgentRoster — keep import even
 // if the only consumer above is implicit)
 import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { Turn } from '../types.ts';
 import type { AgentRegistry } from '../agents/registry.ts';
+import type { CollaborationDirective } from '../intent/collaboration-parser.ts';
+import { buildDebateRoomContract, DebateRoomBuildFailure } from '../room/presets/debate-room.ts';
+import { selectPersonasViaLLM } from '../room/presets/llm-persona-selector.ts';
 import { buildKnowledgeContext, type KnowledgeContextDeps } from './knowledge-context.ts';
 import { normalizeWorkflowPlan } from './plan-normalizer.ts';
 import { formatSessionTranscript } from './session-transcript.ts';
-import { type WorkflowPlan, WorkflowPlanSchema } from './types.ts';
+import {
+  type CollaborationBlock,
+  type WorkflowPlan,
+  WorkflowPlanSchema,
+  type WorkflowStep,
+} from './types.ts';
 
 export interface WorkflowPlannerDeps {
   llmRegistry?: LLMProviderRegistry;
@@ -63,6 +72,16 @@ export interface PlannerOptions {
    * single-turn behaviour.
    */
   sessionTurns?: Turn[];
+  /**
+   * Multi-agent collaboration metadata parsed deterministically by the
+   * intent layer. When present (and `deps.agentRegistry` can satisfy the
+   * requested participant count), the planner BYPASSES the LLM and emits
+   * a deterministic plan whose `collaborationBlock` instructs the executor
+   * to run rebuttal-aware rounds. This replaces the old
+   * `collaboration-runner` fork in the core loop — a single execution path
+   * for `agentic-workflow`.
+   */
+  collaborationDirective?: CollaborationDirective;
 }
 
 const SYSTEM_PROMPT = `You are a workflow planner for the Vinyan autonomous agent orchestrator.
@@ -160,12 +179,18 @@ Guidelines:
 
 export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptions): Promise<WorkflowPlan> {
   // Single emit site for `workflow:plan_created`. Every exit path of this
-  // function flows through `finalize()` so the audit row is recorded for both
-  // the LLM-success path (origin='llm') and the deterministic fallback path
-  // (origin='fallback', no provider OR both LLM attempts failed). Keeping
-  // emit centralized prevents the retry loop from double-emitting on its
-  // second iteration if the structure is later edited.
-  const finalize = (plan: WorkflowPlan, origin: 'llm' | 'fallback', attempts: number): WorkflowPlan => {
+  // function flows through `finalize()` so the audit row is recorded for
+  // every origin: the LLM-success path ('llm'), the deterministic fallback
+  // path ('fallback' — no provider OR both LLM attempts failed), and the
+  // deterministic multi-agent collaboration path ('collaboration' — built
+  // from the intent layer's `CollaborationDirective`). Keeping emit
+  // centralized prevents the retry loop from double-emitting on its second
+  // iteration if the structure is later edited.
+  const finalize = (
+    plan: WorkflowPlan,
+    origin: 'llm' | 'fallback' | 'collaboration',
+    attempts: number,
+  ): WorkflowPlan => {
     deps.bus?.emit('workflow:plan_created', {
       taskId: opts.taskId,
       sessionId: opts.sessionId,
@@ -181,6 +206,103 @@ export async function planWorkflow(deps: WorkflowPlannerDeps, opts: PlannerOptio
     });
     return plan;
   };
+
+  // Multi-agent collaboration shortcut. When the intent layer parsed a
+  // `CollaborationDirective` AND the registry can honour the requested
+  // participant count, build a deterministic plan WITH a
+  // `collaborationBlock` and skip the LLM workflow planner. The executor
+  // sees the block and dispatches the primaries in rebuttal-aware rounds.
+  //
+  // Persona selection (Phase 2): BEFORE handing off to the deterministic
+  // builder, we ask the LLM persona selector to read the goal + roster and
+  // pick personas matching the goal's domain. The previous design always
+  // used alphabetical-by-class slicing, which produced
+  // `architect, author, developer` for ANY 3-agent request regardless of
+  // whether the goal was about code, prose, philosophy, or recipes. The
+  // selector is best-effort: any failure (no provider, parse error,
+  // validation rejection) collapses back to the alphabetical fallback in
+  // `selectPrimaryAgents` — same green path as before.
+  //
+  // The deterministic plan structure (rebuttal block, integrator slot,
+  // round semantics) stays unchanged. Only the persona-id assignment
+  // differs between the two paths.
+  if (opts.collaborationDirective && deps.agentRegistry) {
+    let preferredPrimaryIds: readonly PersonaId[] | undefined;
+    let preferredIntegratorId: PersonaId | undefined;
+    let selectionRationale: string | undefined;
+    let selectionAttempts = 0;
+    let selectionOrigin: 'llm' | 'fallback' = 'fallback';
+
+    if (deps.llmRegistry) {
+      try {
+        const selection = await selectPersonasViaLLM({
+          goal: opts.goal,
+          directive: opts.collaborationDirective,
+          registry: deps.agentRegistry,
+          llmRegistry: deps.llmRegistry,
+        });
+        if (selection) {
+          preferredPrimaryIds = selection.primaryIds;
+          preferredIntegratorId = selection.integratorId;
+          selectionRationale = selection.rationale;
+          selectionAttempts = selection.attempts;
+          selectionOrigin = 'llm';
+        }
+      } catch (err) {
+        // Selector should never throw (it returns null on every failure
+        // path), but defend against future regressions so a buggy
+        // selector cannot block multi-agent planning entirely.
+        deps.bus?.emit('workflow:persona_selection_failed', {
+          taskId: opts.taskId,
+          ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    deps.bus?.emit('workflow:persona_selection_completed', {
+      taskId: opts.taskId,
+      ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+      origin: selectionOrigin,
+      attempts: selectionAttempts,
+      requestedCount: opts.collaborationDirective.requestedPrimaryParticipantCount,
+      ...(preferredPrimaryIds ? { primaryIds: [...preferredPrimaryIds] } : {}),
+      ...(preferredIntegratorId ? { integratorId: preferredIntegratorId } : {}),
+      ...(selectionRationale ? { rationale: selectionRationale } : {}),
+    });
+
+    try {
+      const collaborationPlan = buildCollaborationPlan(
+        opts.goal,
+        opts.collaborationDirective,
+        deps.agentRegistry,
+        opts.taskId,
+        {
+          ...(preferredPrimaryIds ? { preferredPrimaryIds } : {}),
+          ...(preferredIntegratorId ? { preferredIntegratorId } : {}),
+        },
+      );
+      return finalize(collaborationPlan, 'collaboration', selectionAttempts);
+    } catch (err) {
+      if (err instanceof DebateRoomBuildFailure) {
+        // Honest failure: registry has too few non-verifier personas.
+        // Surface a single-step plan whose description carries the
+        // failure reason so the synthesizer can relay it to the user.
+        // Going through the LLM planner here would just synthesize a
+        // multi-persona plan the registry cannot satisfy — the same
+        // class of bug the original collaboration runner refused to
+        // paper over.
+        return finalize(buildCollaborationFailurePlan(opts.goal, err), 'fallback', 0);
+      }
+      // Unexpected (programming error in the preset etc.) — log and fall
+      // through to the LLM planner rather than refuse to plan at all.
+      console.warn(
+        `[vinyan] buildCollaborationPlan threw, falling through to LLM planner: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
 
   const provider = deps.llmRegistry?.selectByTier('balanced') ?? deps.llmRegistry?.selectByTier('fast');
   if (!provider) return finalize(fallbackPlan(opts.goal), 'fallback', 0);
@@ -381,6 +503,156 @@ function formatAgentRoster(registry: AgentRegistry): string {
     .slice(0, MAX_AGENTS)
     .map((a) => `  - ${a.id}: ${a.description ?? '(no description)'}`);
   return lines.join('\n');
+}
+
+/**
+ * Pure helper — translate a `CollaborationDirective` into a deterministic
+ * `WorkflowPlan` with a populated `collaborationBlock`. No LLM call, no
+ * I/O. Same inputs always produce the same plan; persona selection is
+ * captured by `buildDebateRoomContract(...)` from the registry snapshot.
+ *
+ * Step shape: ONE `delegate-sub-agent` step per primary participant —
+ * NOT one per (participant, round). The rounds loop is internal to the
+ * executor; UI surfaces see one card per agent that animates across
+ * rounds. Optional integrator `llm-reasoning` step depends on every
+ * primary.
+ *
+ * `opts.preferredPrimaryIds` / `opts.preferredIntegratorId` (when
+ * supplied) bypass the alphabetical-by-class fallback in
+ * `selectPrimaryAgents` so the planner can use content-aware persona
+ * selection (see `selectPersonasViaLLM`). Validation/fallback to
+ * alphabetical happens inside `buildDebateRoomContract` — invalid
+ * preferences silently degrade to the deterministic path so the
+ * planner never refuses to plan because the LLM picked a stale id.
+ *
+ * Throws `DebateRoomBuildFailure` when the registry has too few
+ * non-verifier personas. The caller (`planWorkflow`) maps that to a
+ * single-step honest-failure plan via `buildCollaborationFailurePlan`.
+ */
+export interface BuildCollaborationPlanOptions {
+  preferredPrimaryIds?: readonly PersonaId[];
+  preferredIntegratorId?: PersonaId;
+}
+
+export function buildCollaborationPlan(
+  goal: string,
+  directive: CollaborationDirective,
+  registry: AgentRegistry,
+  parentTaskId: string,
+  opts: BuildCollaborationPlanOptions = {},
+): WorkflowPlan {
+  const bundle = buildDebateRoomContract({
+    parentTaskId,
+    goal,
+    directive,
+    registry,
+    ...(opts.preferredPrimaryIds ? { preferredPrimaryIds: opts.preferredPrimaryIds } : {}),
+    ...(opts.preferredIntegratorId ? { preferredIntegratorId: opts.preferredIntegratorId } : {}),
+  });
+
+  const totalRounds = 1 + directive.rebuttalRounds;
+  const groupMode: CollaborationBlock['groupMode'] = (() => {
+    switch (directive.interactionMode) {
+      case 'debate':
+        return 'debate';
+      case 'competition':
+        return 'competition';
+      case 'comparison':
+        return 'comparison';
+      case 'parallel-answer':
+        return 'parallel';
+    }
+  })();
+
+  // Primary participant steps. Each gets ~70% of the budget split evenly;
+  // the integrator (when present) takes the remaining ~30%. When no
+  // integrator runs (parallel-answer / comparison), primaries split 1.0.
+  const primaryCount = bundle.primaryParticipantIds.length;
+  const hasIntegrator = bundle.integratorParticipantId !== null;
+  const primaryFraction = (hasIntegrator ? 0.7 : 1.0) / Math.max(1, primaryCount);
+
+  const roundLabel = totalRounds > 1 ? ` · ${totalRounds} rounds` : '';
+  const primarySteps: WorkflowStep[] = bundle.primaryParticipantIds.map((personaId) => {
+    const stepId = `p-${personaId}`;
+    return {
+      id: stepId,
+      description: `${personaId} answers${roundLabel}`,
+      strategy: 'delegate-sub-agent',
+      dependencies: [],
+      inputs: {},
+      expectedOutput: 'A direct answer to the user goal as the assigned persona.',
+      budgetFraction: primaryFraction,
+      agentId: personaId,
+    };
+  });
+
+  let integratorStepId: string | undefined;
+  const integratorSteps: WorkflowStep[] = [];
+  if (bundle.integratorParticipantId) {
+    integratorStepId = `synth-${bundle.integratorParticipantId}`;
+    integratorSteps.push({
+      id: integratorStepId,
+      description:
+        groupMode === 'competition'
+          ? `${bundle.integratorParticipantId} synthesizes the final answer and emits a competition verdict.`
+          : `${bundle.integratorParticipantId} synthesizes the final answer.`,
+      strategy: 'llm-reasoning',
+      dependencies: primarySteps.map((s) => s.id),
+      inputs: Object.fromEntries(primarySteps.map((s) => [s.id, `$${s.id}.result`])),
+      expectedOutput:
+        groupMode === 'competition'
+          ? 'Coherent synthesis of all primary answers ending with a JSON verdict block { winner, reasoning, scores }.'
+          : 'Coherent synthesis of all primary answers, honouring distinct stances.',
+      budgetFraction: 0.3,
+      agentId: bundle.integratorParticipantId,
+    });
+  }
+
+  const block: CollaborationBlock = {
+    rounds: totalRounds,
+    groupMode,
+    primaryStepIds: primarySteps.map((s) => s.id),
+    ...(integratorStepId ? { integratorStepId } : {}),
+    emitCompetitionVerdict: directive.emitCompetitionVerdict,
+    sharedDiscussion: directive.sharedDiscussion,
+  };
+
+  const synthesisPrompt =
+    groupMode === 'competition'
+      ? 'Synthesize the participant answers honouring distinct stances and end the response with a JSON verdict block: ```json\n{"winner": "<agentId>", "reasoning": "...", "scores": { "<agentId>": 0-10, ... } }\n```'
+      : 'Combine the participant answers into a coherent final answer that honours distinct stances and surfaces meaningful disagreements.';
+
+  return normalizeWorkflowPlan({
+    goal,
+    steps: [...primarySteps, ...integratorSteps],
+    synthesisPrompt,
+    collaborationBlock: block,
+  });
+}
+
+/**
+ * Single-step honest-failure plan when the registry cannot satisfy the
+ * directive's requested participant count. The executor will run the
+ * single `llm-reasoning` step which surfaces the failure reason directly
+ * to the user — no fabricated multi-agent debate, no silent collapse to
+ * one persona role-playing N participants.
+ */
+function buildCollaborationFailurePlan(goal: string, err: DebateRoomBuildFailure): WorkflowPlan {
+  return normalizeWorkflowPlan({
+    goal,
+    steps: [
+      {
+        id: 'step1',
+        description: `${goal}\n\n[Note: ${err.message}. The orchestrator falls back to a single-agent answer rather than fabricating a multi-agent debate it cannot honestly run.]`,
+        strategy: 'llm-reasoning',
+        dependencies: [],
+        inputs: {},
+        expectedOutput: 'A single-agent answer that acknowledges the multi-agent request could not be honoured.',
+        budgetFraction: 1.0,
+      },
+    ],
+    synthesisPrompt: 'Return the result of step1 directly.',
+  });
 }
 
 function fallbackPlan(goal: string): WorkflowPlan {

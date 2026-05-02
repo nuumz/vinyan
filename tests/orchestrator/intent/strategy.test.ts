@@ -361,6 +361,79 @@ describe('composeDeterministicCandidate — multi-agent delegation pre-rule', ()
   });
 });
 
+describe('composeDeterministicCandidate — execute vs mention routing (Phase 6)', () => {
+  // Pins the load-bearing routing contract that prevents the live-session
+  // bug (744a1546-58ad — Vinyan dispatched 3 LLM agents to debate a
+  // META question about parser routing). The classifier in
+  // `intent/collaboration-parser.ts` decides; the strategy layer enforces.
+  //
+  // A meta/quoted/example prompt that structurally matches the multi-agent
+  // regex MUST NOT have its strategy forced to agentic-workflow AND MUST
+  // NOT carry the collaboration directive — both signals are what
+  // `core-loop.ts` reads to dispatch the collaboration runner.
+
+  describe('execute prompts attach the collaboration directive AND force agentic-workflow', () => {
+    const cases = [
+      'แบ่ง Agent 3ตัว แข่งกันถามตอบ',
+      'แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ',
+      'have 3 agents debate the merits of microservices',
+      'have 3 agents compete and pick a winner',
+    ];
+    for (const goal of cases) {
+      it(JSON.stringify(goal), () => {
+        const result = composeDeterministicCandidate(
+          input(goal),
+          stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+        );
+        expect(result.strategy).toBe('agentic-workflow');
+        expect(result.collaboration).toBeDefined();
+        expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+        expect(result.confidence).toBeGreaterThanOrEqual(0.85);
+      });
+    }
+  });
+
+  describe('mention prompts do NOT force the strategy and do NOT attach the directive', () => {
+    // Each case asserts BOTH gates the core-loop dispatch reads:
+    //   1. result.collaboration is undefined → core-loop's
+    //      `if (collaborationDirective ...)` branch is skipped
+    //   2. result.deterministicCandidate.source !== 'multi-agent-delegation-pattern'
+    //      → the strategy was NOT force-overridden by the multi-agent rule;
+    //      STU classified the prompt by its real intent
+    const cases = [
+      'ช่วยแก้ logic สำหรับ analyze user prompt เช่น "แบ่ง Agent 3ตัว แข่งกันถามตอบ"',
+      'เขียน implementation plan สำหรับ prompt แบบ "แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ"',
+      'ออกแบบ parser ให้รองรับ have 3 agents debate',
+      'ทำไม prompt "have 3 agents debate" ถึงถูก route ผิด',
+      'review the routing logic for prompts like "แบ่ง Agent 3ตัว แข่งกันถามตอบ"',
+    ];
+    for (const goal of cases) {
+      it(JSON.stringify(goal), () => {
+        const result = composeDeterministicCandidate(
+          input(goal),
+          stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+        );
+        expect(result.collaboration).toBeUndefined();
+        expect(result.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
+      });
+    }
+  });
+
+  it('preserves the false-positive guard: "have 3 agents review the parser code" still executes', () => {
+    // "review" + "parser" appear in the prompt but BOTH come AFTER the
+    // multi-agent phrase — they are part of the agents' task, not framing
+    // about the prompt. Position-gated meta detection in the classifier
+    // protects this case so the user can legitimately ask 3 agents to
+    // perform a code review without the gate misfiring.
+    const result = composeDeterministicCandidate(
+      input('have 3 agents review the parser code'),
+      stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+    );
+    expect(result.strategy).toBe('agentic-workflow');
+    expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+  });
+});
+
 describe('composeDeterministicCandidate — sub-task recursion guard (STU mapper)', () => {
   // Reported on the Step-2-of-4 author-degeneration screenshot: the parent
   // workflow planned `step2: author — Develop a set of practical, high-
@@ -423,6 +496,168 @@ describe('composeDeterministicCandidate — sub-task recursion guard (STU mapper
     );
     expect(result.deterministicCandidate.source).not.toBe('creative-deliverable-pattern');
     expect(result.strategy).not.toBe('agentic-workflow');
+  });
+});
+
+describe('composeDeterministicCandidate — goalReferenceMode gating (Phase 1)', () => {
+  // The architectural fix for the pre-rule false-activation bug class.
+  //
+  // composeDeterministicCandidate now accepts an optional `comprehension`
+  // argument carrying the rule-comprehender's `goalReferenceMode`. The gate
+  // applies UNIFORMLY to every surface-pattern pre-rule (multi-agent
+  // delegation, creative-deliverable, …) — so adding a new pre-rule does
+  // not require remembering to gate it; the helper does.
+  //
+  // Three modes the test pins:
+  //   - 'direct':   pre-rule fires at PRE_RULE_DIRECT_CONFIDENCE (0.9), type=known
+  //   - 'meta':     pre-rule yields to STU; result.collaboration MUST be
+  //                 absent and source MUST NOT equal the pre-rule source
+  //   - 'unknown':  pre-rule fires at PRE_RULE_UNKNOWN_CONFIDENCE (0.7) so
+  //                 [B.skip] (DETERMINISTIC_SKIP_THRESHOLD=0.85) does NOT
+  //                 bypass the LLM advisor. type='uncertain'.
+
+  describe('multi-agent pre-rule', () => {
+    it('fires at 0.9 when comprehension says direct', () => {
+      const result = composeDeterministicCandidate(
+        input('แบ่ง Agent 3ตัว แข่งกันถามตอบ'),
+        stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+        { goalReferenceMode: 'direct' },
+      );
+      expect(result.strategy).toBe('agentic-workflow');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.85);
+      expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+      expect(result.type).toBe('known');
+      expect(result.collaboration).toBeDefined();
+    });
+
+    it('YIELDS to STU when comprehension says meta — no override, no directive', () => {
+      // Even though `matchesMultiAgentDelegation` matches, the meta gate
+      // blocks the override. The strategy returns whatever STU mapped to
+      // (here general-reasoning + inquire → conversational), and the
+      // collaboration directive is NOT attached. core-loop's runner gate
+      // therefore never fires.
+      const result = composeDeterministicCandidate(
+        input('แบ่ง Agent 3ตัว แข่งกันถามตอบ'),
+        stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+        { goalReferenceMode: 'meta' },
+      );
+      expect(result.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
+      expect(result.collaboration).toBeUndefined();
+      expect(result.strategy).not.toBe('agentic-workflow');
+    });
+
+    it('fires at 0.7 with type=uncertain when comprehension says unknown', () => {
+      const result = composeDeterministicCandidate(
+        input('แบ่ง Agent 3ตัว แข่งกันถามตอบ'),
+        stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+        { goalReferenceMode: 'unknown' },
+      );
+      expect(result.strategy).toBe('agentic-workflow');
+      expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+      expect(result.confidence).toBeLessThan(0.85);
+      expect(result.confidence).toBeGreaterThanOrEqual(0.65);
+      expect(result.type).toBe('uncertain');
+      expect(result.deterministicCandidate.ambiguous).toBe(true);
+      // Reasoning surfaces the demotion so trace dashboards can tell the
+      // demoted-confidence path apart from the green path.
+      expect(result.reasoning).toMatch(/goalReferenceMode=unknown/);
+    });
+
+    it('treats missing comprehension as direct (backwards compatible)', () => {
+      // Callers that didn't run comprehension (LLM outage, unit tests
+      // wiring the resolver directly) MUST keep the legacy green path.
+      const result = composeDeterministicCandidate(
+        input('แบ่ง Agent 3ตัว แข่งกันถามตอบ'),
+        stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+        // no third argument
+      );
+      expect(result.strategy).toBe('agentic-workflow');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.85);
+      expect(result.deterministicCandidate.source).toBe('multi-agent-delegation-pattern');
+    });
+  });
+
+  describe('creative-deliverable pre-rule', () => {
+    it('fires at 0.9 when comprehension says direct', () => {
+      const result = composeDeterministicCandidate(
+        input('เขียนนิยายสัก 2 บท'),
+        stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
+        { goalReferenceMode: 'direct' },
+      );
+      expect(result.strategy).toBe('agentic-workflow');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.85);
+      expect(result.deterministicCandidate.source).toBe('creative-deliverable-pattern');
+    });
+
+    it('YIELDS to STU when comprehension says meta', () => {
+      // Without the gate, this prompt forces agentic-workflow and the
+      // user's META question ("how does the parser handle this prompt?")
+      // gets answered by a workflow planner instead of a chat reply.
+      const result = composeDeterministicCandidate(
+        input(
+          'ช่วยแก้ logic สำหรับ creative writing prompt เช่น "เขียนนิยายสัก 2 บท"',
+        ),
+        stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
+        { goalReferenceMode: 'meta' },
+      );
+      expect(result.deterministicCandidate.source).not.toBe('creative-deliverable-pattern');
+      expect(result.strategy).not.toBe('agentic-workflow');
+    });
+
+    it('fires at 0.7 with type=uncertain when comprehension says unknown', () => {
+      const result = composeDeterministicCandidate(
+        input('เขียนนิยายสัก 2 บท'),
+        stu({ taskDomain: 'conversational', taskIntent: 'inquire', toolRequirement: 'none' }),
+        { goalReferenceMode: 'unknown' },
+      );
+      expect(result.strategy).toBe('agentic-workflow');
+      expect(result.deterministicCandidate.source).toBe('creative-deliverable-pattern');
+      expect(result.confidence).toBeLessThan(0.85);
+      expect(result.type).toBe('uncertain');
+      expect(result.deterministicCandidate.ambiguous).toBe(true);
+    });
+  });
+
+  describe('cross-rule generality', () => {
+    // The architectural claim: ONE comprehension signal protects EVERY
+    // pre-rule. These tests assert the claim by checking that a single
+    // 'meta' value blocks BOTH multi-agent and creative-deliverable
+    // overrides without per-rule logic.
+    it('a meta classification blocks both multi-agent and creative-deliverable in one pass', () => {
+      // Combined prompt that would trigger BOTH pre-rules without the gate.
+      const combined = composeDeterministicCandidate(
+        input('have 3 agents write a 2-chapter bedtime story'),
+        stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+        { goalReferenceMode: 'meta' },
+      );
+      expect(combined.deterministicCandidate.source).not.toBe('multi-agent-delegation-pattern');
+      expect(combined.deterministicCandidate.source).not.toBe('creative-deliverable-pattern');
+      expect(combined.collaboration).toBeUndefined();
+    });
+  });
+
+  describe('regression: direct-execution prompts stay green', () => {
+    // The user explicitly called this out as the must-not-regress contract.
+    // Each of these classifies as 'direct' (per goal-reference-mode tests)
+    // and MUST yield a high-confidence pre-rule fire.
+    const cases: ReadonlyArray<readonly [string, 'multi-agent-delegation-pattern' | 'creative-deliverable-pattern']> = [
+      ['แบ่ง Agent 3ตัว แข่งกันถามตอบ', 'multi-agent-delegation-pattern'],
+      ['เขียนนิยายสัก 2 บท', 'creative-deliverable-pattern'],
+      ['have 3 agents debate microservices', 'multi-agent-delegation-pattern'],
+      ['have 3 agents review the parser code', 'multi-agent-delegation-pattern'],
+    ];
+    for (const [goal, expectedSource] of cases) {
+      it(`${JSON.stringify(goal)} → ${expectedSource}`, () => {
+        const result = composeDeterministicCandidate(
+          input(goal),
+          stu({ taskDomain: 'general-reasoning', taskIntent: 'inquire', toolRequirement: 'none' }),
+          { goalReferenceMode: 'direct' },
+        );
+        expect(result.strategy).toBe('agentic-workflow');
+        expect(result.confidence).toBeGreaterThanOrEqual(0.85);
+        expect(result.deterministicCandidate.source).toBe(expectedSource);
+      });
+    }
   });
 });
 

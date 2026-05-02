@@ -24,7 +24,77 @@ import type {
   SemanticTaskUnderstanding,
   TaskInput,
 } from '../types.ts';
-import { parseCollaborationDirective } from './collaboration-parser.ts';
+import { classifyCollaborationIntent, parseCollaborationDirective } from './collaboration-parser.ts';
+
+/**
+ * Comprehension-derived signals that gate deterministic pre-rules.
+ *
+ * `goalReferenceMode` distinguishes prompts that INSTRUCT something
+ * (`'direct'`) from prompts that DISCUSS / QUOTE / FRAME system behaviour
+ * (`'meta'`). Surface-only signal computed by the rule comprehender; this
+ * module is one of its consumers.
+ *
+ * `'meta'` blocks the override entirely (the prompt structurally cannot be
+ * an execution request). `'unknown'` keeps the override fired but at
+ * REDUCED confidence so the LLM advisory tier runs and contributes to the
+ * merge instead of being bypassed by `[B.skip]`. Missing field defaults to
+ * `'direct'` to preserve the green path for callers that didn't run
+ * comprehension.
+ */
+export interface ComprehensionSignals {
+  goalReferenceMode?: 'direct' | 'meta' | 'unknown';
+}
+
+/** High-confidence pre-rule trigger when goalReferenceMode is direct. */
+const PRE_RULE_DIRECT_CONFIDENCE = 0.9;
+/**
+ * Demoted pre-rule confidence when goalReferenceMode is unknown. Below the
+ * resolver's `DETERMINISTIC_SKIP_THRESHOLD` (0.85) so `[B.skip]` does NOT
+ * bypass the LLM — the merge layer gets a second opinion.
+ */
+const PRE_RULE_UNKNOWN_CONFIDENCE = 0.7;
+
+/**
+ * Pre-rule activation decision derived from `comprehension.goalReferenceMode`.
+ * Single source of truth so multi-agent / creative-deliverable / future
+ * pre-rules apply IDENTICAL gating without each branch repeating the
+ * mode → confidence/type ternary chain.
+ */
+interface PreRuleGate {
+  /** False only when goalReferenceMode === 'meta'; gate skips the override. */
+  readonly allowed: boolean;
+  /** Confidence to attach to the pre-rule result (matched fire path). */
+  readonly confidence: number;
+  /** `'uncertain'` when refMode is 'unknown' so [D] runs; `'known'` otherwise. */
+  readonly type: IntentResolution['type'];
+  /** True only when refMode is 'unknown' — surfaces in deterministicCandidate. */
+  readonly ambiguous: boolean;
+  /** Reason suffix appended to the human-readable reasoning string. */
+  readonly reasonSuffix: string;
+}
+
+function buildPreRuleGate(comprehension: ComprehensionSignals | undefined): PreRuleGate {
+  const refMode = comprehension?.goalReferenceMode ?? 'direct';
+  if (refMode === 'meta') {
+    return { allowed: false, confidence: 0, type: 'known', ambiguous: false, reasonSuffix: '' };
+  }
+  if (refMode === 'unknown') {
+    return {
+      allowed: true,
+      confidence: PRE_RULE_UNKNOWN_CONFIDENCE,
+      type: 'uncertain',
+      ambiguous: true,
+      reasonSuffix: ' (goalReferenceMode=unknown — confidence demoted, LLM advisor consulted)',
+    };
+  }
+  return {
+    allowed: true,
+    confidence: PRE_RULE_DIRECT_CONFIDENCE,
+    type: 'known',
+    ambiguous: false,
+    reasonSuffix: '',
+  };
+}
 
 /**
  * Plain fallback mapping used when the LLM tier is unavailable or when
@@ -260,11 +330,28 @@ export function matchesMultiAgentDelegation(text: string): boolean {
  * When both `classifyDirectTool` and `mapUnderstandingToStrategy` agree on
  * direct-tool, the result carries a fully-formed `directToolCall` (resolved
  * via platform-aware `resolveCommand`).
+ *
+ * `comprehension` is an optional generic signal carrier from the
+ * orchestrator's comprehension phase. When `goalReferenceMode === 'meta'`,
+ * EVERY surface-pattern pre-rule (multi-agent, creative-deliverable, …)
+ * yields to STU classification — the user is structurally not instructing
+ * the matched phrase to be executed. When `goalReferenceMode === 'unknown'`,
+ * pre-rules still fire but at `PRE_RULE_UNKNOWN_CONFIDENCE` so the LLM
+ * advisory layer is consulted. Missing/`'direct'` preserves the legacy
+ * `PRE_RULE_DIRECT_CONFIDENCE` behaviour. This is the primary fix for the
+ * pre-rule false-activation bug class — see the field doc on
+ * `ComprehensionStateSchema.goalReferenceMode` for the architectural
+ * rationale.
  */
 export function composeDeterministicCandidate(
   input: TaskInput,
   understanding: SemanticTaskUnderstanding,
+  comprehension?: ComprehensionSignals,
 ): IntentResolution & { deterministicCandidate: IntentDeterministicCandidate } {
+  // `'meta'` short-circuits the pre-rules entirely — they fall through to
+  // STU mapping. `'unknown'` lets them fire at the reduced confidence band
+  // so [B.skip] in the resolver does not bypass the LLM advisor.
+  const preRuleGate = buildPreRuleGate(comprehension);
   // Recursion guard root flag. Sub-tasks (anything dispatched via
   // delegate-sub-agent) carry `parentTaskId` from the workflow executor.
   // Both forced-agentic-workflow pre-rules below and the STU mapper's
@@ -292,31 +379,58 @@ export function composeDeterministicCandidate(
   // delegation because `delegate_task` requires L2+). Forcing
   // `agentic-workflow` here gives coordinator the delegate_task capability so
   // the request is fulfilled instead of mocked in prose. Top-level only.
-  if (!isSubTask && matchesMultiAgentDelegation(input.goal)) {
-    // Phase 1: extract the structured CollaborationDirective from the prompt
-    // text. When present, downstream wiring (Phase 3) routes the strategy
-    // through the Room text-answer dispatcher so the same N participants
-    // persist across rebuttal rounds. When the parser cannot extract a
-    // count, we still force agentic-workflow (legacy behaviour) but the
-    // collaboration field is left undefined and the planner path runs.
-    const collaboration = parseCollaborationDirective(input.goal);
-    return {
-      strategy: 'agentic-workflow',
-      refinedGoal: input.goal,
-      confidence: 0.9,
-      reasoning: collaboration
-        ? `Deterministic multi-agent collaboration directive parsed (count=${collaboration.requestedPrimaryParticipantCount}, mode=${collaboration.interactionMode}, rebuttalRounds=${collaboration.rebuttalRounds}) — agentic-workflow forced; collaboration runner will dispatch a persistent-participant room.`
-        : 'Deterministic multi-agent delegation pattern matched (plural/numbered "agents" + delegation/competition verb) — agentic-workflow forced so coordinator has delegate_task access.',
-      reasoningSource: 'deterministic',
-      type: 'known',
-      deterministicCandidate: {
+  //
+  // Two gates protect against false activation:
+  //   1. comprehension.goalReferenceMode (Phase 1 fix) — generic structural
+  //      signal from the comprehension envelope. 'meta' falls through to
+  //      STU; 'unknown' demotes confidence so the LLM advisor runs.
+  //   2. classifyCollaborationIntent (existing) — multi-agent-specific
+  //      execute-vs-mention check kept as belt-and-suspenders defense.
+  if (!isSubTask && preRuleGate.allowed && matchesMultiAgentDelegation(input.goal)) {
+    // Phase 6 — execute-vs-mention gate. The multi-agent regex matches
+    // raw text patterns ("have N agents debate", "แบ่ง Agent N ตัว …")
+    // without distinguishing intent. Forcing agentic-workflow + attaching
+    // the collaboration directive on EVERY structural match dispatches
+    // mention prompts (the user is discussing/quoting/exemplifying the
+    // phrase) into the collaboration runner, which then sends real LLM
+    // agents to debate the user's META question — incident: session
+    // 744a1546-58ad. The classifier inspects surface cues (quoted spans,
+    // example-framing prefix, system-terminology prefix) to gate the
+    // override on actionable intent only.
+    const collaborationIntent = classifyCollaborationIntent(input.goal);
+    if (collaborationIntent === 'execute') {
+      // Extract the structured CollaborationDirective. When present,
+      // downstream wiring (Phase 3) routes the strategy through the Room
+      // text-answer dispatcher so the same N participants persist across
+      // rebuttal rounds. When the parser cannot extract a count, we
+      // still force agentic-workflow (legacy behaviour for the no-count
+      // delegation path) but the collaboration field is left undefined
+      // and the planner path runs.
+      const collaboration = parseCollaborationDirective(input.goal);
+      return {
         strategy: 'agentic-workflow',
-        confidence: 0.9,
-        source: 'multi-agent-delegation-pattern',
-        ambiguous: false,
-      },
-      ...(collaboration ? { collaboration } : {}),
-    };
+        refinedGoal: input.goal,
+        confidence: preRuleGate.confidence,
+        reasoning: collaboration
+          ? `Deterministic multi-agent collaboration directive parsed (count=${collaboration.requestedPrimaryParticipantCount}, mode=${collaboration.interactionMode}, rebuttalRounds=${collaboration.rebuttalRounds}) — agentic-workflow forced; collaboration runner will dispatch a persistent-participant room.${preRuleGate.reasonSuffix}`
+          : `Deterministic multi-agent delegation pattern matched (plural/numbered "agents" + delegation/competition verb) — agentic-workflow forced so coordinator has delegate_task access.${preRuleGate.reasonSuffix}`,
+        reasoningSource: 'deterministic',
+        type: preRuleGate.type,
+        deterministicCandidate: {
+          strategy: 'agentic-workflow',
+          confidence: preRuleGate.confidence,
+          source: 'multi-agent-delegation-pattern',
+          ambiguous: preRuleGate.ambiguous,
+        },
+        ...(collaboration ? { collaboration } : {}),
+      };
+    }
+    // collaborationIntent === 'mention': fall through to normal STU
+    // classification. The user's prompt is asking ABOUT the multi-agent
+    // phrase (fix the parser, design the routing, quote/example), not
+    // asking it to execute. STU will classify the prompt by its real
+    // intent (typically reasoning / full-pipeline / conversational) and
+    // the collaboration directive is NOT attached.
   }
 
   // Highest-priority pre-rule: explicit creative-deliverable pattern
@@ -328,20 +442,24 @@ export function composeDeterministicCandidate(
   // Top-level only — the parent workflow already decided this is creative
   // work; nested sub-task descriptions like "draft chapter 2 prose" must
   // not re-plan as their own workflow.
-  if (!isSubTask && matchesCreativeDeliverable(input.goal)) {
+  //
+  // Same goalReferenceMode gate as the multi-agent rule above: a meta
+  // prompt that contains an authoring verb + creative noun ("ช่วยแก้ logic
+  // สำหรับ creative writing prompt เช่น 'เขียนนิยายสัก 2 บท'") falls through
+  // to STU; 'unknown' demotes confidence so the LLM weighs in.
+  if (!isSubTask && preRuleGate.allowed && matchesCreativeDeliverable(input.goal)) {
     return {
       strategy: 'agentic-workflow',
       refinedGoal: input.goal,
-      confidence: 0.9,
-      reasoning:
-        'Deterministic creative-deliverable pattern matched (verb + artifact noun proximity) — agentic-workflow forced regardless of STU classification.',
+      confidence: preRuleGate.confidence,
+      reasoning: `Deterministic creative-deliverable pattern matched (verb + artifact noun proximity) — agentic-workflow forced regardless of STU classification.${preRuleGate.reasonSuffix}`,
       reasoningSource: 'deterministic',
-      type: 'known',
+      type: preRuleGate.type,
       deterministicCandidate: {
         strategy: 'agentic-workflow',
-        confidence: 0.9,
+        confidence: preRuleGate.confidence,
         source: 'creative-deliverable-pattern',
-        ambiguous: false,
+        ambiguous: preRuleGate.ambiguous,
       },
     };
   }

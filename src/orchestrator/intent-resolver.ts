@@ -587,7 +587,19 @@ export async function resolveIntent(
   }
 
   // [B] Deterministic candidate (tier 0.8). Null when caller supplied no STU.
-  const deterministic = understanding ? composeDeterministicCandidate(input, understanding) : null;
+  //
+  // Pass the comprehension's `goalReferenceMode` so EVERY surface-pattern
+  // pre-rule in `composeDeterministicCandidate` (multi-agent delegation,
+  // creative-deliverable, and any future ones) can distinguish prompts
+  // that INSTRUCT a phrase from prompts that DISCUSS / QUOTE / FRAME it.
+  // See ComprehensionSignals doc for the architectural rationale — this
+  // is the single threading point so every pre-rule benefits without
+  // having to know about comprehension itself.
+  const goalReferenceMode = deps.comprehension?.params.data?.state.goalReferenceMode;
+  const comprehensionSignals = goalReferenceMode ? { goalReferenceMode } : undefined;
+  const deterministic = understanding
+    ? composeDeterministicCandidate(input, understanding, comprehensionSignals)
+    : null;
 
   // [B.skip] High-confidence deterministic → bypass LLM entirely.
   // Exception: when this turn is a clarification answer, the user's reply

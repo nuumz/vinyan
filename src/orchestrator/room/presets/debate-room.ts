@@ -19,9 +19,9 @@
  * verifier). The dispatcher's per-round role gate runs primaries on
  * rounds [0, rebuttalRounds] and the integrator only on the final round.
  */
-import { tryAsPersonaId, type PersonaId } from '../../../core/agent-vocabulary.ts';
-import type { AgentRegistry } from '../../agents/registry.ts';
+import { type PersonaId, tryAsPersonaId } from '../../../core/agent-vocabulary.ts';
 import { personaClassOf } from '../../agents/persona-class.ts';
+import type { AgentRegistry } from '../../agents/registry.ts';
 import type { CollaborationDirective } from '../../intent/collaboration-parser.ts';
 import type { AgentSpec } from '../../types.ts';
 import type { RoleSpec, RoomContract } from '../types.ts';
@@ -55,6 +55,25 @@ export interface DebateRoomBuildOptions {
   registry: AgentRegistry;
   /** Override per-turn token estimate (defaults to PER_TURN_TOKEN_BUDGET). */
   perTurnTokenBudget?: number;
+  /**
+   * Pre-selected primary persona ids — bypasses the alphabetical-by-class
+   * fallback in `selectPrimaryAgents`. Supplied by `selectPersonasViaLLM`
+   * so persona choice is content-aware (developer/architect for code,
+   * author for prose, researcher for inquiry) instead of always returning
+   * `architect, author, developer` for any 3-agent request. Must be of
+   * length `directive.requestedPrimaryParticipantCount`; ids must exist
+   * in the registry; on any validation failure the builder falls back
+   * to the deterministic alphabetical path.
+   */
+  preferredPrimaryIds?: readonly PersonaId[];
+  /**
+   * Pre-selected integrator persona id — overrides the
+   * `coordinator → registry.defaultAgent()` fallback chain. Validated the
+   * same way as `preferredPrimaryIds`; failed validation drops back to
+   * the default. Ignored when `directive.interactionMode='parallel-answer'`
+   * (no integrator in that mode).
+   */
+  preferredIntegratorId?: PersonaId;
 }
 
 /**
@@ -95,6 +114,7 @@ export function buildDebateRoomContract(opts: DebateRoomBuildOptions): DebateRoo
   const primaryAgents = selectPrimaryAgents(
     registry.listAgents(),
     directive.requestedPrimaryParticipantCount,
+    opts.preferredPrimaryIds,
   );
   if (primaryAgents.length < directive.requestedPrimaryParticipantCount) {
     throw new DebateRoomBuildFailure(
@@ -125,8 +145,15 @@ export function buildDebateRoomContract(opts: DebateRoomBuildOptions): DebateRoo
 
   let integratorId: PersonaId | null = null;
   if (directive.interactionMode !== 'parallel-answer') {
-    const integratorAgent =
-      registry.getAgent(DEFAULT_INTEGRATOR_PERSONA_ID) ?? registry.defaultAgent();
+    // Preference order: caller-supplied (LLM-selected) → 'coordinator' →
+    // registry.defaultAgent(). Every step is validated against the registry
+    // so an LLM that suggested a stale id silently falls back to the
+    // default rather than misattributing the synthesizer.
+    let integratorAgent =
+      opts.preferredIntegratorId !== undefined ? (registry.getAgent(opts.preferredIntegratorId) ?? null) : null;
+    if (!integratorAgent) {
+      integratorAgent = registry.getAgent(DEFAULT_INTEGRATOR_PERSONA_ID) ?? registry.defaultAgent();
+    }
     const pid = tryAsPersonaId(integratorAgent.id);
     if (pid) {
       integratorId = pid;
@@ -147,10 +174,7 @@ export function buildDebateRoomContract(opts: DebateRoomBuildOptions): DebateRoo
   // per-turn estimate; the supervisor's `tokensConsumed > tokenBudget`
   // gate enforces the cap as a hard upper bound.
   const perTurn = opts.perTurnTokenBudget ?? PER_TURN_TOKEN_BUDGET;
-  const totalTurns =
-    primaryAgents.length * primaryRounds +
-    (oversightId ? primaryRounds : 0) +
-    (hasIntegrator ? 1 : 0);
+  const totalTurns = primaryAgents.length * primaryRounds + (oversightId ? primaryRounds : 0) + (hasIntegrator ? 1 : 0);
   const tokenBudget = totalTurns * perTurn;
 
   const contract: RoomContract = {
@@ -179,20 +203,55 @@ export function buildDebateRoomContract(opts: DebateRoomBuildOptions): DebateRoo
 }
 
 /**
- * Pick `n` agents to serve as primary participants. Generator-class first
- * (developer, architect, author, researcher), then mixed-class (mentor,
- * assistant, concierge — but NEVER `coordinator`, which is reserved for
- * the integrator role). Verifier-class personas (`reviewer`) are skipped:
- * the user explicitly asked for primary participants, not reviewers, and
- * conflating the two would weaken A1 even when no formal verification
- * step is configured.
+ * Pick `n` agents to serve as primary participants.
  *
- * Returns up to `n` distinct agents. May return fewer when the registry
- * has too few eligible personas; the caller (the preset entry point)
- * raises `DebateRoomBuildFailure` when this happens so the runner can
- * surface an honest error.
+ * Two paths:
+ *   1. **Caller-supplied** — when `preferredIds` is provided AND every id
+ *      resolves to a registered agent AND the resolved set has size `n`,
+ *      use it verbatim. Order is preserved (the LLM-selector already
+ *      ordered them). Coordinator/reviewer slipping through the
+ *      caller-supplied path are still allowed at this layer because the
+ *      selector itself is responsible for the A1 reservation gate (see
+ *      `llm-persona-selector.ts:PRIMARY_SLOT_BLOCKLIST`); this function
+ *      only validates "do these ids exist".
+ *   2. **Alphabetical fallback** — generator-class first (developer,
+ *      architect, author, researcher), then mixed-class (mentor,
+ *      assistant, concierge — but NEVER `coordinator`, which is reserved
+ *      for the integrator role). Verifier-class personas (`reviewer`) are
+ *      skipped: the user explicitly asked for primary participants, not
+ *      reviewers, and conflating the two would weaken A1 even when no
+ *      formal verification step is configured.
+ *
+ * Returns up to `n` distinct agents. May return fewer when the fallback
+ * registry has too few eligible personas; the caller (the preset entry
+ * point) raises `DebateRoomBuildFailure` when this happens so the runner
+ * can surface an honest error.
  */
-function selectPrimaryAgents(allAgents: AgentSpec[], n: number): AgentSpec[] {
+function selectPrimaryAgents(allAgents: AgentSpec[], n: number, preferredIds?: readonly PersonaId[]): AgentSpec[] {
+  if (preferredIds && preferredIds.length === n) {
+    const byId = new Map(allAgents.map((a) => [a.id, a]));
+    const resolved: AgentSpec[] = [];
+    const seen = new Set<string>();
+    let allValid = true;
+    for (const id of preferredIds) {
+      if (seen.has(id)) {
+        allValid = false;
+        break;
+      }
+      const agent = byId.get(id);
+      if (!agent) {
+        allValid = false;
+        break;
+      }
+      seen.add(id);
+      resolved.push(agent);
+    }
+    if (allValid && resolved.length === n) return resolved;
+    // Any validation failure → fall through to alphabetical (caller still
+    // gets honest output rather than a misattributed mix of LLM choice +
+    // alphabetical fill).
+  }
+
   // Sort each pool alphabetically first, then concat — that way generators
   // ALWAYS precede mixed-class fallbacks regardless of overall id order.
   // Sorting the combined list mixes the two pools (e.g. `assistant` would

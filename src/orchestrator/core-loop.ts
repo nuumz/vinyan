@@ -211,6 +211,13 @@ export interface OrchestratorDeps {
    */
   skillOutcomeStore?: import('../db/skill-outcome-store.ts').SkillOutcomeStore;
   /**
+   * Phase A2.5 — per-step audit store for role-protocol runs. Set by the
+   * factory when migration 041 has applied. When unset, phase-generate
+   * skips persistence (driver still runs but rows are not recorded —
+   * useful for tests with `:memory:` databases that don't run migrations).
+   */
+  roleProtocolRunStore?: import('../db/role-protocol-run-store.ts').RoleProtocolRunStore;
+  /**
    * Phase-6: runtime skill acquirer. When present, the worker pool checks
    * task gaps before dispatch and asks the acquirer to fill them with
    * skills already cached in `.vinyan/skills/`. Defaults to NullSkillAcquirer

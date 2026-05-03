@@ -86,8 +86,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [1_000, 24 * 60 * 60 * 1000],
     axiom: 'A4',
     owner: 'intent-resolver',
-    description:
-      'How long an intent classification stays in the LRU+TTL cache before re-resolution.',
+    description: 'How long an intent classification stays in the LRU+TTL cache before re-resolution.',
     tunable: true,
   },
   {
@@ -97,8 +96,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [0, 1],
     axiom: 'A2',
     owner: 'intent-merge',
-    description:
-      'LLM confidence below which the merge result is flagged uncertain (clarification candidate).',
+    description: 'LLM confidence below which the merge result is flagged uncertain (clarification candidate).',
     tunable: true,
   },
 
@@ -122,8 +120,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [1, 1000],
     axiom: 'A7',
     owner: 'sleep-cycle',
-    description:
-      'Minimum number of supporting observations before a pattern is eligible for promotion.',
+    description: 'Minimum number of supporting observations before a pattern is eligible for promotion.',
     tunable: true,
   },
   {
@@ -133,8 +130,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [0, 1],
     axiom: 'A7',
     owner: 'sleep-cycle',
-    description:
-      'Minimum Wilson lower-bound confidence required for a pattern to promote.',
+    description: 'Minimum Wilson lower-bound confidence required for a pattern to promote.',
     tunable: true,
   },
 
@@ -262,8 +258,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [10_000, 60 * 60 * 1000],
     axiom: 'A6',
     owner: 'approval-gate',
-    description:
-      'Default time window for human approval before auto-reject. UI/operator deployments may want longer.',
+    description: 'Default time window for human approval before auto-reject. UI/operator deployments may want longer.',
     tunable: true,
   },
 
@@ -297,6 +292,52 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
       'because file-hash drift correlates with elapsed time.',
     tunable: true,
   },
+  // ── Role protocol — exit + retry tuning (A2/A6) ──
+  {
+    key: 'role.exit.confidence_floor',
+    type: 'number',
+    default: 0.85,
+    range: [0.7, 0.95],
+    axiom: 'A2',
+    owner: 'role-protocol',
+    description:
+      'Override threshold for any `evidence-confidence` exit criterion in a role protocol. ' +
+      'When set, replaces the per-criterion threshold at run time so operators can tighten ' +
+      "or loosen exit thresholds without rewriting the protocol declaration. The protocol's " +
+      'declared threshold is used when this override is at its default ceiling (i.e. when ' +
+      "RoleProtocolRunOptions doesn't pass an override).",
+    tunable: true,
+  },
+  {
+    key: 'role.step.retry_max',
+    type: 'integer',
+    default: 0,
+    range: [0, 5],
+    axiom: 'A6',
+    owner: 'role-protocol',
+    description:
+      'Default `retryMax` for protocol steps that do not declare one. A blocking-oracle ' +
+      'failure on such a step is retried up to this many times before being marked ' +
+      'oracle-blocked. Higher values cost tokens; lower values fail-fast on systematic ' +
+      'miswriting.',
+    tunable: true,
+  },
+
+  // ── Skill admission (A3 governance) ──
+  {
+    key: 'skill.admission.min_overlap_ratio',
+    type: 'number',
+    default: 0,
+    range: [0, 1],
+    axiom: 'A3',
+    owner: 'skill-admission',
+    description:
+      "Minimum fraction of a skill's tags that must match the persona's acquirableSkillTags " +
+      'for the skill to be promoted to `bound`. Default 0 means boolean match suffices ' +
+      '(any-tag-matches-any-pattern). Raise post-MVP to tighten admission without code changes.',
+    tunable: true,
+  },
+
   // ── World-graph retention (A4) ──
   {
     key: 'world_graph.retention_max_age_days',

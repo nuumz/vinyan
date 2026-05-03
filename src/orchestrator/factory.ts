@@ -17,34 +17,29 @@ import { attachTraceListener } from '../bus/trace-listener.ts';
 import { loadConfig } from '../config/loader.ts';
 import type { AgentSpecConfig } from '../config/schema.ts';
 import { createBus, type VinyanBus } from '../core/bus.ts';
-import {
-  ClaudeCodeAdapter,
-  CodingCliConfigSchema,
-  CodingCliWorkflowStrategy,
-  ExternalCodingCliController,
-  GitHubCopilotAdapter,
-} from './external-coding-cli/index.ts';
-import { CodingCliStore } from '../db/coding-cli-store.ts';
 import { AgentContextStore } from '../db/agent-context-store.ts';
 import { AgentProfileStore } from '../db/agent-profile-store.ts';
 import { AgentProposalStore } from '../db/agent-proposal-store.ts';
+import { ApprovalLedgerStore } from '../db/approval-ledger-store.ts';
+import { BidAccuracyStore } from '../db/bid-accuracy-store.ts';
+import { CodingCliStore } from '../db/coding-cli-store.ts';
 import { ComprehensionStore } from '../db/comprehension-store.ts';
 import { LocalOracleProfileStore } from '../db/local-oracle-profile-store.ts';
 import { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
 import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { PatternStore } from '../db/pattern-store.ts';
+import { PersonaOverclaimStore } from '../db/persona-overclaim-store.ts';
 import { PredictionLedger } from '../db/prediction-ledger.ts';
 import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
 import { ProviderTrustStore } from '../db/provider-trust-store.ts';
 import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
+import { RoleProtocolRunStore } from '../db/role-protocol-run-store.ts';
 import { RoomStore } from '../db/room-store.ts';
 import { RuleStore } from '../db/rule-store.ts';
 import { ShadowStore } from '../db/shadow-store.ts';
-import { BidAccuracyStore } from '../db/bid-accuracy-store.ts';
-import { PersonaOverclaimStore } from '../db/persona-overclaim-store.ts';
 import { SkillOutcomeStore } from '../db/skill-outcome-store.ts';
-import { SkillTrustLedgerStore } from '../db/skill-trust-ledger-store.ts';
 import { SkillStore } from '../db/skill-store.ts';
+import { SkillTrustLedgerStore } from '../db/skill-trust-ledger-store.ts';
 import { TaskCheckpointStore } from '../db/task-checkpoint-store.ts';
 import { TaskEventStore } from '../db/task-event-store.ts';
 import { TraceStore } from '../db/trace-store.ts';
@@ -65,21 +60,21 @@ import { type ScheduleRunnerHandle, setupScheduleRunner } from '../gateway/sched
 import { MCPClientPool, type MCPServerConfig } from '../mcp/client.ts';
 import type { McpSourceZone } from '../mcp/ecp-translation.ts';
 import { dedupePreVinyanSources, loadMcpJsonServers, mergeMcpServerSources } from '../mcp/mcp-json-loader.ts';
+import { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import { GapHDetector } from '../observability/gap-h-detector.ts';
 import { MetricsCollector } from '../observability/metrics.ts';
-import { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import { verify as depVerify } from '../oracle/dep/dep-analyzer.ts';
 import { verify as goalAlignmentVerify } from '../oracle/goal-alignment/goal-alignment-verifier.ts';
 import { loadBundleManifests } from '../plugin/index.ts';
 import type { PluginRegistry } from '../plugin/registry.ts';
 import { populateProviderKeysFromKeychain } from '../security/keychain.ts';
 import { SkillArtifactStore } from '../skills/artifact-store.ts';
-import { buildSyncSkillResolver } from '../skills/sync-skill-resolver.ts';
-import { createSimpleSkillRegistry, type SimpleSkillRegistry } from '../skills/simple/registry.ts';
 import { AutonomousSkillCreator } from '../skills/autonomous/creator.ts';
 import { buildLLMDraftGenerator } from '../skills/autonomous/draft-generator-llm.ts';
 import { buildImporterCriticFn } from '../skills/hub/critic-adapter.ts';
 import { buildImporterGateFn } from '../skills/hub/gate-adapter.ts';
+import { createSimpleSkillRegistry, type SimpleSkillRegistry } from '../skills/simple/registry.ts';
+import { buildSyncSkillResolver } from '../skills/sync-skill-resolver.ts';
 import {
   type ReactiveTraceSummary,
   reactiveRuleToEvolutionary,
@@ -99,13 +94,13 @@ import { SoulStore } from './agent-context/soul-store.ts';
 import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
 import { createAgentRouter } from './agent-router.ts';
 import { LocalHubAcquirer } from './agents/local-hub-acquirer.ts';
-import { buildSkillDiscoveryWiring } from './agents/skill-discovery-wiring.ts';
 import { scanAgentMarkdown, soulsByIdFrom } from './agents/markdown-loader.ts';
 import { loadAgentRegistry } from './agents/registry.ts';
+import { registerBuiltinProtocols } from './agents/role-protocols/builtin/researcher-investigate.ts';
 import { NullSkillAcquirer, type SkillAcquirer } from './agents/skill-acquirer.ts';
+import { buildSkillDiscoveryWiring } from './agents/skill-discovery-wiring.ts';
 import { evaluateOverclaim, SkillUsageTracker } from './agents/skill-usage-tracker.ts';
 import { ApprovalGate as ApprovalGateImpl } from './approval-gate.ts';
-import { ApprovalLedgerStore } from '../db/approval-ledger-store.ts';
 import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts';
 import { newLlmComprehender } from './comprehension/llm-comprehender.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
@@ -121,6 +116,13 @@ import { TaskFactsRegistry } from './ecosystem/task-facts-registry.ts';
 import { DefaultEngineSelector } from './engine-selector.ts';
 import { HumanECPBridge } from './engines/human-ecp-bridge.ts';
 import { Z3ReasoningEngine } from './engines/z3-reasoning-engine.ts';
+import {
+  ClaudeCodeAdapter,
+  CodingCliConfigSchema,
+  CodingCliWorkflowStrategy,
+  ExternalCodingCliController,
+  GitHubCopilotAdapter,
+} from './external-coding-cli/index.ts';
 import { CapabilityModel } from './fleet/capability-model.ts';
 import { WorkerLifecycle } from './fleet/worker-lifecycle.ts';
 import { WorkerSelector } from './fleet/worker-selector.ts';
@@ -164,6 +166,7 @@ import { RiskRouterImpl } from './risk-router-adapter.ts';
 import { RoomDispatcher } from './room/room-dispatcher.ts';
 import { ShadowRunner } from './shadow-runner.ts';
 import { SkillManager } from './skill-manager.ts';
+import { createSpecialistRegistry } from './specialist-prompt/registry.ts';
 import { TaskDecomposerImpl, TaskDecomposerStub } from './task-decomposer.ts';
 import { createTaskQueue } from './task-queue.ts';
 import { LLMTestGeneratorImpl } from './test-gen/llm-test-generator.ts';
@@ -173,7 +176,6 @@ import type { Tool } from './tools/tool-interface.ts';
 import { TraceCollectorImpl } from './trace-collector.ts';
 import type { AgentPreferences, AgentProfile, EngineProfile, ReasoningEngine, TaskInput, TaskResult } from './types.ts';
 import { UnderstandingEngine } from './understanding/understanding-engine.ts';
-import { createSpecialistRegistry } from './specialist-prompt/registry.ts';
 import { UserInterestMiner } from './user-context/user-interest-miner.ts';
 import { setupUserMdObserver } from './user-context/wiring.ts';
 import { WorkerPoolImpl } from './worker/worker-pool.ts';
@@ -496,6 +498,12 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     factoryBusUnsubs.push(unsubscribe);
   };
 
+  // Phase A2.5 — register all built-in role protocols with the registry.
+  // Idempotent (re-register overwrites with identical content), so calling
+  // this on every orchestrator boot is safe. Personas with `roleProtocolId`
+  // resolve via this registry in `phase-generate`'s driver routing branch.
+  registerBuiltinProtocols();
+
   // Cleanup stale overlay directories from crashed sessions
   const staleCount = cleanupStaleOverlays(workspace);
   if (staleCount > 0) console.warn(`[vinyan] Cleaned up ${staleCount} stale session overlays`);
@@ -556,6 +564,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let rejectedApproachStore: RejectedApproachStore | undefined;
   let providerTrustStore: ProviderTrustStore | undefined;
   let skillOutcomeStore: SkillOutcomeStore | undefined;
+  let roleProtocolRunStore: import('../db/role-protocol-run-store.ts').RoleProtocolRunStore | undefined;
   // Phase-6: skill acquirer; defaults to NullSkillAcquirer when no DB/workspace
   // path so deps consumers can call `.acquireForGap` unconditionally.
   let skillAcquirer: SkillAcquirer = NullSkillAcquirer;
@@ -578,6 +587,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     rejectedApproachStore = new RejectedApproachStore(db.getDb());
     providerTrustStore = new ProviderTrustStore(db.getDb());
     skillOutcomeStore = new SkillOutcomeStore(db.getDb());
+    // Phase A2.5 — role-protocol per-step audit store. Consumed by
+    // phase-generate via OrchestratorDeps.
+    roleProtocolRunStore = new RoleProtocolRunStore(db.getDb());
 
     // Phase-6: skill acquirer scans `.vinyan/skills/` for skills that match
     // a runtime gap. Phase-15 (Item 1) layers an optional hub-fetch path
@@ -1575,13 +1587,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // R5: when DB is available, wire the durable ledger so pending /
   // resolved / timed_out approvals survive process restart and audit
   // replay can reconstruct the full lifecycle.
-  const approvalLedgerStore: ApprovalLedgerStore | undefined = db
-    ? new ApprovalLedgerStore(db.getDb())
-    : undefined;
-  const approvalGate = new ApprovalGateImpl(
-    bus,
-    approvalLedgerStore ? { ledger: approvalLedgerStore } : undefined,
-  );
+  const approvalLedgerStore: ApprovalLedgerStore | undefined = db ? new ApprovalLedgerStore(db.getDb()) : undefined;
+  const approvalGate = new ApprovalGateImpl(bus, approvalLedgerStore ? { ledger: approvalLedgerStore } : undefined);
 
   // External Coding CLI (Claude Code / GitHub Copilot) — controller +
   // workflow strategy. Always constructed so:
@@ -2022,6 +2029,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     providerTrustStore,
     // Phase-3: per-(persona, skill, taskSig) outcome attribution
     skillOutcomeStore,
+    // Phase A2.5: per-step audit log for role-protocol runs
+    roleProtocolRunStore,
     // Phase-6: runtime skill acquirer (LocalHubAcquirer / NullSkillAcquirer)
     skillAcquirer,
     // Adaptive parameter store — runtime-tunable ceilings (A10 freshness, etc.).
@@ -2819,25 +2828,22 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       ? (() => {
           // Lazy import to keep the gateway/scheduling module out of
           // load paths that don't touch the API server (e.g. CLI run).
-          const {
-            GatewayScheduleStore: GatewaySchedStoreCtor,
-          } = require('../db/gateway-schedule-store.ts') as typeof import('../db/gateway-schedule-store.ts');
+          const { GatewayScheduleStore: GatewaySchedStoreCtor } =
+            require('../db/gateway-schedule-store.ts') as typeof import('../db/gateway-schedule-store.ts');
           return new GatewaySchedStoreCtor(db.getDb());
         })()
       : undefined,
     skillProposalStore: db
       ? (() => {
-          const {
-            SkillProposalStore: SkillProposalStoreCtor,
-          } = require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
+          const { SkillProposalStore: SkillProposalStoreCtor } =
+            require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
           return new SkillProposalStoreCtor(db.getDb());
         })()
       : undefined,
     skillAutogenStateStore: db
       ? (() => {
-          const {
-            SkillAutogenStateStore: AutogenStoreCtor,
-          } = require('../skills/autogen-state-store.ts') as typeof import('../skills/autogen-state-store.ts');
+          const { SkillAutogenStateStore: AutogenStoreCtor } =
+            require('../skills/autogen-state-store.ts') as typeof import('../skills/autogen-state-store.ts');
           return new AutogenStoreCtor(db.getDb());
         })()
       : undefined,

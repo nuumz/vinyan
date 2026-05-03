@@ -297,6 +297,21 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
       'because file-hash drift correlates with elapsed time.',
     tunable: true,
   },
+  // ── Skill admission (A3 governance) ──
+  {
+    key: 'skill.admission.min_overlap_ratio',
+    type: 'number',
+    default: 0,
+    range: [0, 1],
+    axiom: 'A3',
+    owner: 'skill-admission',
+    description:
+      'Minimum fraction of a skill\'s tags that must match the persona\'s acquirableSkillTags ' +
+      'for the skill to be promoted to `bound`. Default 0 means boolean match suffices ' +
+      '(any-tag-matches-any-pattern). Raise post-MVP to tighten admission without code changes.',
+    tunable: true,
+  },
+
   // ── World-graph retention (A4) ──
   {
     key: 'world_graph.retention_max_age_days',

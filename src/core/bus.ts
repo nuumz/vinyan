@@ -1226,6 +1226,20 @@ export interface VinyanBusEvents {
     locale?: 'thai' | 'english';
   };
   /**
+   * Sub-task (task with `parentTaskId` set) emitted the escape sentinel or
+   * hallucinated-delegation prose, but the recursion guard suppressed the
+   * re-route to agentic-workflow. The conversational answer is returned
+   * as-is. Surfaces a real signal that the persona's [SUB-TASK CONTRACT]
+   * was ignored by the underlying model — distinct from a clean
+   * conversational turn.
+   */
+  'intent:escape_suppressed_subtask': {
+    taskId: string;
+    parentTaskId?: string;
+    persona?: string;
+    reason: 'sentinel' | 'hallucinated-delegation';
+  };
+  /**
    * Deterministic short-affirmative pre-classifier reconstructed intent from
    * the immediately prior unfulfilled deliverable proposal. Avoids one LLM
    * call and prevents the "ack-without-action" failure mode.
@@ -2336,6 +2350,14 @@ export interface VinyanBusEvents {
   'coding-cli:failed': import('../orchestrator/external-coding-cli/types.ts').CodingCliFailedEvent;
   'coding-cli:stalled': import('../orchestrator/external-coding-cli/types.ts').CodingCliStalledEvent;
   'coding-cli:cancelled': import('../orchestrator/external-coding-cli/types.ts').CodingCliCancelledEvent;
+
+  // ── A8 Unified Audit Surface ─────────────────────────────────────────
+  // Single canonical AuditEntry per logical orchestrator action (thought,
+  // tool_call, decision, verdict, plan_step, delegate, gate, final). Wire
+  // policy: record-only (sse:false, record:true) — see manifest. Live UI
+  // synthesizes its audit log from existing events; persisted rows are
+  // merged on reconcile. Schema lives in `src/core/audit.ts`.
+  'audit:entry': import('./audit.ts').AuditEntry;
 }
 
 // ── Bus implementation ───────────────────────────────────────────────

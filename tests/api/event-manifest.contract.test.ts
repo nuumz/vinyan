@@ -119,4 +119,18 @@ describe('event manifest contract', () => {
       seen.add(entry.event);
     }
   });
+
+  test('audit:entry is registered as record-only (no SSE fanout)', () => {
+    // The A8 audit surface is intentionally durable-only: live UI derives
+    // its audit log from existing events; the persisted log is read on
+    // reload. Flipping `sse:true` would multiply per-task wire volume
+    // (every tool call, every decision, every verdict gains a second
+    // event on the stream) without backpressure. If a future PR needs
+    // live audit:entry on the wire, design a coalescing strategy first.
+    const entry = lookupManifestEntry('audit:entry');
+    expect(entry, 'audit:entry must be on the manifest').toBeDefined();
+    expect(entry?.sse, 'audit:entry must remain sse:false').toBe(false);
+    expect(entry?.record, 'audit:entry must be persisted').toBe(true);
+    expect(entry?.scope, 'audit:entry is task-scoped').toBe('task');
+  });
 });

@@ -53,6 +53,9 @@ const PROJECTION_RELEVANT_PREFIXES: readonly string[] = [
   'oracle:',
   'agent:tool_',
   'agent:routed',
+  // A8 audit surface — every audit:* event must be classified so a future
+  // audit-kind addition surfaces in the projection coverage contract.
+  'audit:',
 ];
 
 function isProjectionRelevant(eventName: string): boolean {

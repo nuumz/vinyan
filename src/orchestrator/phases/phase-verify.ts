@@ -6,6 +6,7 @@
  * the confidence decision (allow / re-verify / escalate / refuse).
  */
 
+import { emitAuditEntry } from '../../core/audit-emit.ts';
 import { buildComplexityContext, computeQualityScore } from '../../gate/quality-score.ts';
 import { withLevel } from '../../gate/risk-router.ts';
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
@@ -114,10 +115,22 @@ export async function executeVerifyPhase(
 ): Promise<PhaseContinue<VerifyResult> | PhaseReturn | PhaseEscalate> {
   const { input, deps, startTime, workingMemory, explorationFlag } = ctx;
   const {
-    routing, perception, understanding, plan, workerResult,
-    isAgenticResult, lastAgentResult, dagResult,
-    prediction, predictionConfidence, metaPredictionConfidence, forwardPrediction,
-    workerSelection, lastWorkerSelection, retry, roomId,
+    routing,
+    perception,
+    understanding,
+    plan,
+    workerResult,
+    isAgenticResult,
+    lastAgentResult,
+    dagResult,
+    prediction,
+    predictionConfidence,
+    metaPredictionConfidence,
+    forwardPrediction,
+    workerSelection,
+    lastWorkerSelection,
+    retry,
+    roomId,
   } = vi;
   const { matchedSkill } = vi;
 
@@ -170,6 +183,19 @@ export async function executeVerifyPhase(
   const failedOracles: string[] = [];
   for (const [oracleName, verdict] of Object.entries(verification.verdicts)) {
     deps.bus?.emit('oracle:verdict', { taskId: input.id, oracleName, verdict });
+    emitAuditEntry({
+      bus: deps.bus,
+      taskId: input.id,
+      actor: { type: 'oracle', id: oracleName },
+      variant: {
+        kind: 'verdict',
+        source: 'oracle',
+        pass: verdict.verified,
+        ...(typeof verdict.confidence === 'number' ? { confidence: verdict.confidence } : {}),
+        ...(verdict.falsifiableBy ? { falsifiableBy: verdict.falsifiableBy } : {}),
+        oracleId: oracleName,
+      },
+    });
     if (verdict.verified) passedOracles.push(oracleName);
     else failedOracles.push(oracleName);
   }
@@ -188,11 +214,16 @@ export async function executeVerifyPhase(
       const fromLevel = routing.level;
       const toLevel = (routing.level + 1) as RoutingLevel;
       deps.bus?.emit('verification:contradiction_escalated', {
-        taskId: input.id, fromLevel, toLevel,
-        passed: passedOracles, failed: failedOracles,
+        taskId: input.id,
+        fromLevel,
+        toLevel,
+        passed: passedOracles,
+        failed: failedOracles,
       });
       deps.bus?.emit('task:escalate', {
-        taskId: input.id, fromLevel, toLevel,
+        taskId: input.id,
+        fromLevel,
+        toLevel,
         reason: `Contradiction: ${passedOracles.join(',')} passed but ${failedOracles.join(',')} failed`,
       });
       return Phase.escalate(withLevel(routing, toLevel));
@@ -200,7 +231,9 @@ export async function executeVerifyPhase(
 
     // L3 contradiction: nowhere to escalate — terminal failure
     deps.bus?.emit('verification:contradiction_unresolved', {
-      taskId: input.id, passed: passedOracles, failed: failedOracles,
+      taskId: input.id,
+      passed: passedOracles,
+      failed: failedOracles,
     });
     const verdictBooleans: Record<string, boolean> = {};
     for (const [name, v] of Object.entries(verification.verdicts)) {
@@ -244,7 +277,8 @@ export async function executeVerifyPhase(
   for (const [oracleName, verdict] of Object.entries(verification.verdicts)) {
     if (verdict.deliberationRequest) {
       deps.bus?.emit('oracle:deliberation_request', {
-        taskId: input.id, oracleName,
+        taskId: input.id,
+        oracleName,
         reason: verdict.deliberationRequest.reason,
         suggestedBudget: verdict.deliberationRequest.suggestedBudget,
       });
@@ -256,7 +290,9 @@ export async function executeVerifyPhase(
     if (routing.level < 2) {
       const fromLevel = routing.level;
       deps.bus?.emit('task:escalate', {
-        taskId: input.id, fromLevel, toLevel: (routing.level + 1) as RoutingLevel,
+        taskId: input.id,
+        fromLevel,
+        toLevel: (routing.level + 1) as RoutingLevel,
         reason: 'deliberation_request',
       });
     }
@@ -399,8 +435,12 @@ export async function executeVerifyPhase(
 
   const effectiveOutcome: ExecutionTrace['outcome'] =
     routing.level === 0 || !confidenceDecision
-      ? verification.passed ? 'success' : 'failure'
-      : zeroMutationPass || confidenceDecision === 'allow' ? 'success' : 'failure';
+      ? verification.passed
+        ? 'success'
+        : 'failure'
+      : zeroMutationPass || confidenceDecision === 'allow'
+        ? 'success'
+        : 'failure';
 
   const trace: ExecutionTrace = {
     id: `trace-${input.id}-${routing.level}-${retry}-${Math.random().toString(36).slice(2, 6)}`,
@@ -438,9 +478,7 @@ export async function executeVerifyPhase(
     confidenceDecision: confidenceDecision
       ? { action: confidenceDecision, confidence: pipelineConf?.composite ?? 0, reason: pipelineConf?.formula }
       : undefined,
-    pipelineConfidence: pipelineConf
-      ? { composite: pipelineConf.composite, formula: pipelineConf.formula }
-      : undefined,
+    pipelineConfidence: pipelineConf ? { composite: pipelineConf.composite, formula: pipelineConf.formula } : undefined,
     thinkingMode: routing.thinkingConfig
       ? routing.thinkingConfig.type === 'adaptive'
         ? `adaptive:${routing.thinkingConfig.effort}`
@@ -505,7 +543,9 @@ export async function executeVerifyPhase(
     switch (confidenceDecision) {
       case 're-verify': {
         deps.bus?.emit('pipeline:re-verify', {
-          taskId: input.id, composite: pipelineConf?.composite, routing,
+          taskId: input.id,
+          composite: pipelineConf?.composite,
+          routing,
         });
         const reVerification = await deps.oracleGate.verify(
           workerResult.mutations.map((m) => ({ file: m.file, content: m.content })),
@@ -524,7 +564,9 @@ export async function executeVerifyPhase(
         if (reVerDecision === 'allow' || reVerification.passed) {
           trace.verificationConfidence = reVerConfidence;
           trace.confidenceDecision = {
-            action: reVerDecision, confidence: reVerPipeline.composite, reason: reVerPipeline.formula,
+            action: reVerDecision,
+            confidence: reVerPipeline.composite,
+            reason: reVerPipeline.formula,
           };
           trace.pipelineConfidence = { composite: reVerPipeline.composite, formula: reVerPipeline.formula };
           trace.outcome = 'success';
@@ -533,7 +575,10 @@ export async function executeVerifyPhase(
         } else {
           const classified = classifyAllFailures(verification.verdicts);
           workingMemory.recordFailedApproach(
-            trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0],
+            trace.approach,
+            verification.reason ?? 'unknown',
+            verificationConfidence,
+            failedOracles[0],
             classified.length > 0 ? classified : undefined,
           );
           if (isAgenticResult && lastAgentResult) {
@@ -541,7 +586,8 @@ export async function executeVerifyPhase(
           }
           for (const oName of failedOracles) {
             deps.bus?.emit('context:verdict_omitted', {
-              taskId: input.id, oracleName: oName,
+              taskId: input.id,
+              oracleName: oName,
               reason: 'Oracle verdict available but not propagated to worker context on retry',
             });
           }
@@ -555,10 +601,15 @@ export async function executeVerifyPhase(
       }
       case 'escalate': {
         deps.bus?.emit('pipeline:escalate', {
-          taskId: input.id, composite: pipelineConf?.composite, fromLevel: routing.level,
+          taskId: input.id,
+          composite: pipelineConf?.composite,
+          fromLevel: routing.level,
         });
         workingMemory.recordFailedApproach(
-          trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0],
+          trace.approach,
+          verification.reason ?? 'unknown',
+          verificationConfidence,
+          failedOracles[0],
           classifyAllFailures(verification.verdicts),
         );
         if (isAgenticResult && lastAgentResult) {
@@ -573,11 +624,15 @@ export async function executeVerifyPhase(
       }
       case 'refuse': {
         deps.bus?.emit('pipeline:refuse', {
-          taskId: input.id, composite: pipelineConf?.composite,
+          taskId: input.id,
+          composite: pipelineConf?.composite,
           reason: 'Pipeline confidence below refuse threshold',
         });
         workingMemory.recordFailedApproach(
-          trace.approach, verification.reason ?? 'unknown', verificationConfidence, failedOracles[0],
+          trace.approach,
+          verification.reason ?? 'unknown',
+          verificationConfidence,
+          failedOracles[0],
           classifyAllFailures(verification.verdicts),
         );
         if (isAgenticResult && lastAgentResult) {
@@ -601,7 +656,7 @@ export async function executeVerifyPhase(
     qualityScore,
     pipelineConf: pipelineConf ? { composite: pipelineConf.composite, formula: pipelineConf.formula } : undefined,
     confidenceDecision,
-    shouldCommit: shouldContinue ? false : (shouldCommit || reVerifyPassed),
+    shouldCommit: shouldContinue ? false : shouldCommit || reVerifyPassed,
     activeHint,
     oracleFailurePattern,
     trace,

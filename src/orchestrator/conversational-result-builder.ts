@@ -228,8 +228,17 @@ export async function buildConversationalResult(
   // sub-task that bounces back to conversational cannot loop forever; the
   // second match falls through and the conversational answer is returned
   // as-is (degraded-but-safe).
+  //
+  // Recursion guard: when `parentTaskId` is set, this task is already a
+  // delegated sub-task. `enforceSubTaskLeafStrategy` demoted it to
+  // conversational precisely to forbid recursive workflow launches. Re-routing
+  // here would defeat that guard — every fresh sub-task starts with
+  // `intentEscapeAttempts=0`, so the per-task counter cannot prevent
+  // unbounded depth. Suppress both escape paths for sub-tasks; the
+  // conversational answer (delegation prose included) is returned as-is.
+  const isSubTask = typeof input.parentTaskId === 'string' && input.parentTaskId.length > 0;
   const escapeSignal = parseEscapeSentinel(answer);
-  if (escapeSignal.matched && (input.intentEscapeAttempts ?? 0) < 1) {
+  if (escapeSignal.matched && !isSubTask && (input.intentEscapeAttempts ?? 0) < 1) {
     deps.bus?.emit('intent:escape_sentinel_fired', {
       taskId: input.id,
       persona: resolvedAgent?.id,
@@ -256,8 +265,9 @@ export async function buildConversationalResult(
   // delegation prose ("ขณะนี้โจทย์ถูกส่งไปยัง Developer และ Mentor"), leaving
   // the user with a fake acknowledgment and zero sub-tasks. When detected,
   // re-route as if the sentinel had fired so the work actually happens. Same
-  // re-route budget as the sentinel path to prevent loops.
-  if ((input.intentEscapeAttempts ?? 0) < 1) {
+  // re-route budget as the sentinel path to prevent loops. Same sub-task
+  // suppression as above — see recursion-guard comment on the sentinel path.
+  if (!isSubTask && (input.intentEscapeAttempts ?? 0) < 1) {
     const halluc = detectHallucinatedDelegation(answer);
     if (halluc.matched) {
       deps.bus?.emit('intent:hallucinated_delegation_detected', {
@@ -283,6 +293,18 @@ export async function buildConversationalResult(
         updatedInput: { ...input, intentEscapeAttempts: 1 },
       };
     }
+  }
+  if (isSubTask && (escapeSignal.matched || detectHallucinatedDelegation(answer).matched)) {
+    // Observability: surface that we suppressed the re-route so dashboards
+    // can count "sub-task wanted to escape but was held in conversational"
+    // — a real signal that the persona's [SUB-TASK CONTRACT] was ignored
+    // by the underlying model, distinct from a clean conversational turn.
+    deps.bus?.emit('intent:escape_suppressed_subtask', {
+      taskId: input.id,
+      parentTaskId: input.parentTaskId,
+      persona: resolvedAgent?.id,
+      reason: escapeSignal.matched ? 'sentinel' : 'hallucinated-delegation',
+    });
   }
 
   const trace: ExecutionTrace = {

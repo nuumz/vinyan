@@ -116,6 +116,10 @@ interface DepsOpts {
   capturedMessages?: Array<HistoryMessage[] | undefined>;
   /** Optional roster override; defaults to [COORDINATOR, AUTHOR]. */
   roster?: AgentSpec[];
+  /** Provider response content override. Default: 'ok'. */
+  providerContent?: string;
+  /** Captures bus emissions: array of [eventName, payload]. */
+  busSink?: Array<[string, unknown]>;
 }
 
 function makeDeps(opts: DepsOpts): any {
@@ -130,7 +134,7 @@ function makeDeps(opts: DepsOpts): any {
     }) => {
       opts.capturedSystemPrompt.push(req.systemPrompt);
       opts.capturedMessages?.push(req.messages);
-      return { content: 'ok', tokensUsed: { input: 1, output: 1 } };
+      return { content: opts.providerContent ?? 'ok', tokensUsed: { input: 1, output: 1 } };
     },
   };
   const traces: any[] = [];
@@ -177,7 +181,11 @@ function makeDeps(opts: DepsOpts): any {
         opts.workerIdSink.push(t.workerId);
       },
     },
-    bus: { emit: () => {} },
+    bus: {
+      emit: (eventName: string, payload: unknown) => {
+        opts.busSink?.push([eventName, payload]);
+      },
+    },
   };
 }
 
@@ -448,5 +456,99 @@ describe('buildConversationalResult — sub-task isolation', () => {
     expect(standalonePrompts[0]).not.toContain('[SUB-TASK CONTRACT]');
     // Escape protocol present on standalone path (regression guard).
     expect(standalonePrompts[0]).toContain('[ESCAPE PROTOCOL]');
+  });
+});
+
+// ── Recursion guard: sub-task escape paths (sentinel + hallucinated delegation) ──
+//
+// The conversational shortcircuit has two routes that re-enter the agentic
+// workflow when a persona signals (or fakes) delegation: the explicit escape
+// sentinel and the hallucinated-delegation prose detector. Both pre-existed
+// the workflow-level recursion guard (`enforceSubTaskLeafStrategy`), and both
+// silently bypassed it: a sub-task whose strategy was correctly demoted to
+// `conversational` could re-emit `agentic-workflow` here because each fresh
+// sub-task starts with `intentEscapeAttempts=0`.
+//
+// Production incident (task `1b74654b...`, 2026-05-03): a researcher
+// sub-task wrote "ส่งต่อข้อมูลทั้งหมดให้ Reviewer" → hallucinated-delegation
+// detector fired → researcher launched its own 5-step multi-agent workflow
+// → unbounded recursion + 17-minute runtime + opaque "agent?" cards because
+// the parent's manifest had no entry for the recursive sub-sub agents.
+//
+// These tests pin: when `parentTaskId` is set, BOTH escape paths suppress
+// the re-route and emit `intent:escape_suppressed_subtask` for observability.
+describe('buildConversationalResult — sub-task recursion guard', () => {
+  test('sub-task with hallucinated-delegation prose returns final, does NOT reroute', async () => {
+    const busSink: Array<[string, unknown]> = [];
+    const deps = makeDeps({
+      capturedSystemPrompt: [],
+      workerIdSink: [],
+      // Production-like Thai delegation prose — same shape that triggered
+      // the original incident's recursive workflow launch.
+      providerContent: 'ส่งต่อข้อมูลทั้งหมดให้ Reviewer ครับ',
+      busSink,
+      roster: [COORDINATOR, RESEARCHER, AUTHOR],
+    });
+    const result = await buildConversationalResult(
+      makeInput({ agentId: asPersonaId('researcher'), parentTaskId: 'parent-1' }),
+      intent(),
+      deps,
+    );
+    expect(result.kind).toBe('final');
+    // No reroute event — the standard hallucinated-delegation event must
+    // NOT fire for sub-tasks (it would imply a re-route happened).
+    const rerouteEvents = busSink.filter(([name]) => name === 'intent:hallucinated_delegation_detected');
+    expect(rerouteEvents.length).toBe(0);
+    // The suppression event MUST fire so dashboards can count this signal.
+    const suppressed = busSink.filter(([name]) => name === 'intent:escape_suppressed_subtask');
+    expect(suppressed.length).toBe(1);
+    expect((suppressed[0]![1] as Record<string, unknown>).reason).toBe('hallucinated-delegation');
+    expect((suppressed[0]![1] as Record<string, unknown>).parentTaskId).toBe('parent-1');
+  });
+
+  test('sub-task that emits the explicit escape sentinel also returns final, does NOT reroute', async () => {
+    const busSink: Array<[string, unknown]> = [];
+    const deps = makeDeps({
+      capturedSystemPrompt: [],
+      workerIdSink: [],
+      providerContent: '<<NEEDS_AGENTIC_WORKFLOW: needs multi-step research>>',
+      busSink,
+      roster: [COORDINATOR, RESEARCHER, AUTHOR],
+    });
+    const result = await buildConversationalResult(
+      makeInput({ agentId: asPersonaId('researcher'), parentTaskId: 'parent-1' }),
+      intent(),
+      deps,
+    );
+    expect(result.kind).toBe('final');
+    const sentinelEvents = busSink.filter(([name]) => name === 'intent:escape_sentinel_fired');
+    expect(sentinelEvents.length).toBe(0);
+    const suppressed = busSink.filter(([name]) => name === 'intent:escape_suppressed_subtask');
+    expect(suppressed.length).toBe(1);
+    expect((suppressed[0]![1] as Record<string, unknown>).reason).toBe('sentinel');
+  });
+
+  test('regression: standalone task (no parentTaskId) STILL reroutes on hallucinated delegation', async () => {
+    // The recursion guard must gate strictly on parentTaskId — top-level
+    // tasks that hallucinate delegation must continue to re-route, otherwise
+    // we'd silently swallow real "needs workflow dispatch" signals.
+    const busSink: Array<[string, unknown]> = [];
+    const deps = makeDeps({
+      capturedSystemPrompt: [],
+      workerIdSink: [],
+      providerContent: 'ส่งต่อข้อมูลทั้งหมดให้ Reviewer ครับ',
+      busSink,
+      roster: [COORDINATOR, RESEARCHER, AUTHOR],
+    });
+    const result = await buildConversationalResult(
+      makeInput({ agentId: asPersonaId('researcher') /* no parentTaskId */ }),
+      intent(),
+      deps,
+    );
+    expect(result.kind).toBe('reroute');
+    const rerouteEvents = busSink.filter(([name]) => name === 'intent:hallucinated_delegation_detected');
+    expect(rerouteEvents.length).toBe(1);
+    const suppressed = busSink.filter(([name]) => name === 'intent:escape_suppressed_subtask');
+    expect(suppressed.length).toBe(0);
   });
 });

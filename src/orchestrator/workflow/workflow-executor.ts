@@ -2081,13 +2081,17 @@ async function buildResult(
       // same content shown twice). For non-competition turns this is
       // a no-op and `cleanedOutput === rawOutput`.
       const { cleanedOutput } = processCompetitionVerdict(deps, input, lastResult!.output);
-      return {
+      return finaliseWithSpecialist({
+        raw: cleanedOutput,
         status,
-        stepResults: allResults,
-        synthesizedOutput: cleanedOutput,
-        totalTokensConsumed: totalTokens,
-        totalDurationMs: Math.round(durationMs),
-      };
+        allResults,
+        completedSteps,
+        plan,
+        deps,
+        taskId: input.id,
+        totalTokens,
+        durationMs,
+      });
     }
   }
 
@@ -2105,13 +2109,17 @@ async function buildResult(
     // structural: skip the LLM entirely when delegates are present and a
     // verbatim concatenation under persona headers would be honest. This
     // preserves per-persona voice and removes the fabrication surface.
-    return {
+    return finaliseWithSpecialist({
+      raw: buildDeterministicDelegateAggregation(plan, stepResults, delegateStepIds),
       status,
-      stepResults: allResults,
-      synthesizedOutput: buildDeterministicDelegateAggregation(plan, stepResults, delegateStepIds),
-      totalTokensConsumed: totalTokens,
-      totalDurationMs: Math.round(durationMs),
-    };
+      allResults,
+      completedSteps,
+      plan,
+      deps,
+      taskId: input.id,
+      totalTokens,
+      durationMs,
+    });
   } else {
     const provider = deps.llmRegistry?.selectByTier('fast');
     if (provider) {
@@ -2264,31 +2272,51 @@ async function buildResult(
     }
   }
 
-  // Phase A — specialist post-synthesis formatting. When the executor
-  // was wired with a registry AND the IntentResolver supplied a target
-  // (or the manual-edit-spec default applies), wrap the raw synthesizer
-  // text through the matching adapter. The unwrapped text is preserved
-  // on `rawSynthesizedOutput` so consumers that want the original still
-  // have access. Failure-state outputs (status='failed' with no
-  // completed steps) are NOT formatted — the caller is meant to read
-  // the failure rationale verbatim, not a "shot script saying it failed".
-  //
-  // Phase A.5 — when the IntentResolver did NOT extract an explicit
-  // specialistTarget BUT the goal is a creative-domain task (per
-  // `specialistFormatContext.creativeDomain !== 'generic'`), default to
-  // `manual-edit-spec`. This ensures every creative deliverable ships in
-  // a structured format (shot list / song outline / design brief / prose
-  // wrapper) instead of raw delegate-aggregation text — closing the
-  // observed gap where pre-rule routing skipped the LLM intent advisor
-  // and therefore never populated `specialistTarget`. The default lives
-  // here (executor) rather than in core-loop so any caller that supplies
-  // a registry + creativeDomain gets the format step automatically.
+  return finaliseWithSpecialist({
+    raw: synthesizedOutput,
+    status,
+    allResults,
+    completedSteps,
+    plan,
+    deps,
+    taskId: input.id,
+    totalTokens,
+    durationMs,
+  });
+}
+
+/**
+ * Phase A + A.5 — wrap a successfully-synthesised workflow output through
+ * the specialist adapter (when configured) before returning the final
+ * `WorkflowResult`. Used by every successful return path in `buildResult`
+ * so the format step fires consistently regardless of whether the
+ * synthesizer was skipped (deterministic delegate aggregation) or ran
+ * (LLM synthesizer path).
+ *
+ * Phase A — fires when an explicit `specialistTarget` was supplied.
+ * Phase A.5 — defaults to `manual-edit-spec` when the goal is a creative
+ * domain (`specialistFormatContext.creativeDomain !== 'generic'`) and no
+ * explicit target was extracted. Closes the observed gap where pre-rule
+ * intent routing skipped the LLM advisor and therefore never populated
+ * `specialistTarget`, leaving creative deliverables in raw delegate-
+ * aggregation form.
+ */
+async function finaliseWithSpecialist(args: {
+  raw: string;
+  status: WorkflowResult['status'];
+  allResults: WorkflowStepResult[];
+  completedSteps: WorkflowStepResult[];
+  plan: WorkflowPlan;
+  deps: WorkflowExecutorDeps;
+  taskId: string;
+  totalTokens: number;
+  durationMs: number;
+}): Promise<WorkflowResult> {
+  const { raw, status, allResults, completedSteps, plan, deps, taskId, totalTokens, durationMs } = args;
   const creativeDomain = deps.specialistFormatContext?.creativeDomain;
   const effectiveTarget =
     deps.specialistTarget ?? (creativeDomain && creativeDomain !== 'generic' ? 'manual-edit-spec' : undefined);
-  const finalSynthesized = synthesizedOutput;
-  let rawForResult: string | undefined;
-  let specialistFormatted: WorkflowResult['specialistFormatted'];
+
   if (deps.specialistRegistry && effectiveTarget && status !== 'failed' && completedSteps.length > 0) {
     try {
       const { formatForSpecialist } = await import('../specialist-prompt/builder.ts');
@@ -2297,7 +2325,7 @@ async function buildResult(
         effectiveTarget,
         {
           goalSummary,
-          synthesisOutput: finalSynthesized,
+          synthesisOutput: raw,
           ...(creativeDomain ? { creativeDomain } : {}),
           ...(deps.specialistFormatContext?.clarification
             ? { clarification: deps.specialistFormatContext.clarification }
@@ -2307,31 +2335,26 @@ async function buildResult(
         deps.specialistRegistry,
         deps.bus ? { bus: deps.bus } : {},
       );
-      rawForResult = finalSynthesized;
-      specialistFormatted = {
-        specialistId: formatted.resolvedSpecialistId,
-        fellBack: formatted.fellBack,
-        ...(formatted.parameters ? { parameters: formatted.parameters } : {}),
-        ...(formatted.notes ? { notes: formatted.notes } : {}),
-      };
       return {
         status,
         stepResults: allResults,
         synthesizedOutput: formatted.prompt,
-        rawSynthesizedOutput: rawForResult,
-        specialistFormatted,
+        rawSynthesizedOutput: raw,
+        specialistFormatted: {
+          specialistId: formatted.resolvedSpecialistId,
+          fellBack: formatted.fellBack,
+          ...(formatted.parameters ? { parameters: formatted.parameters } : {}),
+          ...(formatted.notes ? { notes: formatted.notes } : {}),
+        },
         totalTokensConsumed: totalTokens,
         totalDurationMs: Math.round(durationMs),
       };
     } catch (err) {
-      // Non-fatal: skip the specialist transform and return the raw
-      // synthesizer text. The bus event was already emitted by the
-      // builder (or by the adapter on its own failure path).
       const reason = err instanceof Error ? err.message : String(err);
       deps.bus?.emit(
         'specialist:format_skipped' as never,
         {
-          taskId: input.id,
+          taskId,
           requestedId: effectiveTarget,
           reason,
         } as never,
@@ -2342,7 +2365,7 @@ async function buildResult(
   return {
     status,
     stepResults: allResults,
-    synthesizedOutput: finalSynthesized,
+    synthesizedOutput: raw,
     totalTokensConsumed: totalTokens,
     totalDurationMs: Math.round(durationMs),
   };

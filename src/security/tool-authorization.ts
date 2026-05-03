@@ -11,12 +11,16 @@ import type { AgentContract, Capability } from '../core/agent-contract.ts';
 import { parseMcpToolName } from '../orchestrator/mcp/mcp-tool-adapter.ts';
 import { isReadOnlyCommand } from '../orchestrator/tools/shell-policy.ts';
 
-interface AuthorizationResult {
+export interface AuthorizationResult {
   authorized: boolean;
   violation?: string;
+  /** When `authorized: true` — the contract capability that matched the call. */
+  matchedCapability?: Capability;
+  /** When `authorized: false` — the capability the call would have needed. */
+  requiredCapability?: RequiredCapability;
 }
 
-interface RequiredCapability {
+export interface RequiredCapability {
   type: Capability['type'];
   scope: string[];
 }
@@ -45,7 +49,7 @@ export function authorizeToolCall(
                 ? cap.servers
                 : [];
       if (matchesScope(required.scope, capScope)) {
-        return { authorized: true };
+        return { authorized: true, matchedCapability: cap };
       }
     }
   }
@@ -53,6 +57,7 @@ export function authorizeToolCall(
   return {
     authorized: false,
     violation: `Tool '${toolName}' requires ${required.type} capability, not granted at L${contract.routingLevel}`,
+    requiredCapability: required,
   };
 }
 
@@ -74,7 +79,12 @@ export function classifyTool(toolName: string, args: Record<string, unknown>): R
     return { type: 'file_write', scope: [String(args.path ?? args.filePath ?? '')] };
   }
   // Shell tools — use centralized shell policy for read-only classification
-  if (toolName === 'run_command' || toolName === 'shell' || toolName === 'run_in_terminal' || toolName === 'shell_exec') {
+  if (
+    toolName === 'run_command' ||
+    toolName === 'shell' ||
+    toolName === 'run_in_terminal' ||
+    toolName === 'shell_exec'
+  ) {
     const cmd = String(args.command ?? '');
     const firstWord = cmd.trim().split(/\s+/)[0] ?? '';
     return {

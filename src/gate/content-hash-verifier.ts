@@ -8,8 +8,8 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { OracleVerdict } from '../core/types.ts';
 import type { VinyanBus } from '../core/bus.ts';
+import type { OracleVerdict } from '../core/types.ts';
 
 export interface HashMismatch {
   oracleName: string;
@@ -21,6 +21,39 @@ export interface HashMismatch {
 export interface ContentHashVerification {
   passed: boolean;
   mismatches: HashMismatch[];
+}
+
+export interface VerifyFileHashResult {
+  match: boolean;
+  /** SHA-256 of the file's current content (or `<read-error>` on read failure). */
+  actual: string;
+  /** True when the file was missing on disk; `actual` then equals sha256(''). */
+  missing: boolean;
+}
+
+/**
+ * Hash one file under a workspace and compare to an expected sha256.
+ * Pure (no bus, no event), reusable across the oracle verifier and the
+ * `/api/v1/files/check-hash` HTTP endpoint that the audit-view evidence
+ * chip calls on click. Workspace-relative paths only — callers are
+ * responsible for the workspace boundary check upstream.
+ */
+export function verifyFileHash(workspace: string, relativePath: string, expected: string): VerifyFileHashResult {
+  const absPath = resolve(workspace, relativePath);
+  let actual: string;
+  let missing = false;
+  try {
+    if (!existsSync(absPath)) {
+      missing = true;
+      actual = createHash('sha256').update('').digest('hex');
+    } else {
+      const content = readFileSync(absPath, 'utf-8');
+      actual = createHash('sha256').update(content).digest('hex');
+    }
+  } catch {
+    actual = '<read-error>';
+  }
+  return { match: actual === expected, actual, missing };
 }
 
 /**
@@ -49,25 +82,9 @@ export function verifyContentHashes(
 
     for (const [filePath, expectedHash] of Object.entries(verdict.fileHashes)) {
       if (!expectedHash) continue;
-
-      const absPath = resolve(workspace, filePath);
-      let actualHash: string;
-
-      try {
-        if (!existsSync(absPath)) {
-          // File missing — hash of empty string as sentinel
-          actualHash = createHash('sha256').update('').digest('hex');
-        } else {
-          const content = readFileSync(absPath, 'utf-8');
-          actualHash = createHash('sha256').update(content).digest('hex');
-        }
-      } catch {
-        // Read failure — treat as mismatch
-        actualHash = '<read-error>';
-      }
-
-      if (actualHash !== expectedHash) {
-        mismatches.push({ oracleName, file: filePath, expected: expectedHash, actual: actualHash });
+      const { match, actual } = verifyFileHash(workspace, filePath, expectedHash);
+      if (!match) {
+        mismatches.push({ oracleName, file: filePath, expected: expectedHash, actual });
       }
     }
   }

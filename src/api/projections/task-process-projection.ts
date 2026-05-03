@@ -31,6 +31,7 @@
  *        throwing — front-end keeps rendering, operator still sees
  *        what we DO know.
  */
+import { type AuditEntry, safeParseAuditEntry } from '../../core/audit.ts';
 import type { ApprovalLedgerRecord, ApprovalLedgerStore } from '../../db/approval-ledger-store.ts';
 import type { ApprovalRow, CodingCliStore } from '../../db/coding-cli-store.ts';
 import type { SessionTaskRow } from '../../db/session-store.ts';
@@ -262,6 +263,47 @@ export interface TaskProcessHistory {
   descendantTaskIds: string[];
 }
 
+// ── A8 Audit surface ────────────────────────────────────────────────
+
+/** Logical buckets the audit-view tabs consume. */
+export type AuditSection =
+  | 'thoughts'
+  | 'toolCalls'
+  | 'decisions'
+  | 'verdicts'
+  | 'planSteps'
+  | 'delegates'
+  | 'gates'
+  | 'finals';
+
+export interface TaskProcessAuditBySection {
+  thoughts: AuditEntry[];
+  toolCalls: AuditEntry[];
+  decisions: AuditEntry[];
+  verdicts: AuditEntry[];
+  planSteps: AuditEntry[];
+  delegates: AuditEntry[];
+  gates: AuditEntry[];
+  finals: AuditEntry[];
+}
+
+export interface TaskProcessProvenance {
+  policyVersions: string[];
+  modelIds: string[];
+  oracleIds: string[];
+  promptHashes: string[];
+}
+
+export type TaskProcessSectionCompletenessKind = 'complete' | 'partial' | 'unclassifiable';
+
+export interface TaskProcessSectionCompleteness {
+  section: AuditSection;
+  kind: TaskProcessSectionCompletenessKind;
+  count: number;
+  /** Free-form for `partial` / `unclassifiable` (e.g., "no thought-block boundary"). */
+  reason?: string;
+}
+
 export interface TaskProcessProjection {
   lifecycle: TaskProcessLifecycle;
   completeness: TaskProcessCompleteness;
@@ -270,6 +312,19 @@ export interface TaskProcessProjection {
   codingCliSessions: TaskProcessCodingCliSession[];
   diagnostics: TaskProcessDiagnostics;
   history: TaskProcessHistory;
+  /**
+   * A8 audit log — chronological, deduped by id. Real `audit:entry` rows
+   * (PR-3 onwards) are merged with synthesized rows derived from legacy
+   * events for backward-compat with tasks recorded before the emit sites
+   * landed. Optional so existing API consumers stay green.
+   */
+  auditLog?: AuditEntry[];
+  /** Per-section grouping for fast UI consumption. Mirrors `auditLog` content. */
+  bySection?: TaskProcessAuditBySection;
+  /** Provenance roll-up across the audit log (policy versions, model ids, oracle ids, prompt hashes seen). */
+  provenance?: TaskProcessProvenance;
+  /** Per-section completeness — honest signal per kind, never overclaiming. */
+  completenessBySection?: TaskProcessSectionCompleteness[];
 }
 
 // ── Service deps + impl ─────────────────────────────────────────────
@@ -365,6 +420,9 @@ export const PROJECTION_INTERPRETED_EVENTS: ReadonlySet<string> = new Set([
   'agent:tool_started',
   'agent:tool_executed',
   'agent:routed',
+  // A8 audit log — folded into TaskProcessProjection.auditLog. Old tasks
+  // without these rows get a synthesized log derived from legacy events.
+  'audit:entry',
 ]);
 
 /**
@@ -388,40 +446,22 @@ export const PROJECTION_IGNORED_EVENTS: ReadonlyMap<string, string> = new Map<st
     'task:stage_update',
     'live progress label only — projection lifecycle is derived from terminal events, not stage labels',
   ],
-  [
-    'task:retry_requested',
-    'lineage is exposed via TaskInput.parentTaskId on the new task — the event is audit-only',
-  ],
+  ['task:retry_requested', 'lineage is exposed via TaskInput.parentTaskId on the new task — the event is audit-only'],
   // Workflow step retry / fallback observability — final step state is in workflow:step_complete
   [
     'workflow:step_fallback',
     'fallback usage is reflected in the final step status (fallbackUsed); event is audit-only',
   ],
-  [
-    'workflow:step_retry',
-    'retry attempts are observability — projection surfaces only the final step outcome',
-  ],
-  [
-    'workflow:step_retry_skipped',
-    'budget-veto observability — projection lifecycle reflects the resulting failure',
-  ],
+  ['workflow:step_retry', 'retry attempts are observability — projection surfaces only the final step outcome'],
+  ['workflow:step_retry_skipped', 'budget-veto observability — projection lifecycle reflects the resulting failure'],
   // Delegate sub-task lifecycle — projection.plan.multiAgentSubtasks already tracks via subtask_updated
   [
     'workflow:delegate_completed',
     'workflow:subtask_updated already carries the same lifecycle data; this event duplicates for live UX',
   ],
-  [
-    'workflow:delegate_timeout',
-    'workflow:subtask_updated reports the timeout outcome on the subtask',
-  ],
-  [
-    'workflow:delegate_failed',
-    'workflow:subtask_updated reports the failure outcome on the subtask',
-  ],
-  [
-    'workflow:synthesizer_compression_detected',
-    'synthesizer telemetry — not part of process state surface',
-  ],
+  ['workflow:delegate_timeout', 'workflow:subtask_updated reports the timeout outcome on the subtask'],
+  ['workflow:delegate_failed', 'workflow:subtask_updated reports the failure outcome on the subtask'],
+  ['workflow:synthesizer_compression_detected', 'synthesizer telemetry — not part of process state surface'],
   // Coding-CLI session lifecycle — projection reads CodingCliStore session row directly,
   // not by folding events. The store column already carries the durable state.
   ['coding-cli:session_created', 'projection reads session row from CodingCliStore.getByTaskId, not from events'],
@@ -465,18 +505,10 @@ export class TaskProcessProjectionService {
     const result = this.findResult(taskId, taskRow);
     const isInFlight = this.deps.inFlightTaskIds().has(taskId);
     const pendingApproval = this.deps.pendingApprovalTaskIds().has(taskId);
-    const codingCliPresent =
-      !!this.deps.codingCliStore && this.deps.codingCliStore.getByTaskId(taskId).length > 0;
+    const codingCliPresent = !!this.deps.codingCliStore && this.deps.codingCliStore.getByTaskId(taskId).length > 0;
 
     // Existence check — every signal is empty AND the task is unknown.
-    if (
-      events.length === 0 &&
-      !taskRow &&
-      !result &&
-      !isInFlight &&
-      !pendingApproval &&
-      !codingCliPresent
-    ) {
+    if (events.length === 0 && !taskRow && !result && !isInFlight && !pendingApproval && !codingCliPresent) {
       return null;
     }
 
@@ -487,7 +519,20 @@ export class TaskProcessProjectionService {
     const codingCliSessions = this.buildCodingCliSessions(taskId);
     const diagnostics = this.buildDiagnostics(events);
     const history = this.buildHistory(taskId, events);
-    return { lifecycle, completeness, gates, plan, codingCliSessions, diagnostics, history };
+    const audit = this.buildAuditLog(taskId, events);
+    return {
+      lifecycle,
+      completeness,
+      gates,
+      plan,
+      codingCliSessions,
+      diagnostics,
+      history,
+      auditLog: audit.entries,
+      bySection: audit.bySection,
+      provenance: audit.provenance,
+      completenessBySection: audit.completenessBySection,
+    };
   }
 
   // ── private builders ────────────────────────────────────────────────
@@ -547,10 +592,8 @@ export class TaskProcessProjectionService {
       if (resultStatus === 'partial') return 'completed'; // partial result is a completion type
       if (terminalEvent?.eventType === 'task:cancelled') return 'cancelled';
       if (terminalEvent?.eventType === 'task:timeout') return 'timeout';
-      if (terminalEvent?.eventType === 'task:failed' || terminalEvent?.eventType === 'task:escalate')
-        return 'failed';
-      if (terminalEvent?.eventType === 'task:complete' || terminalEvent?.eventType === 'task:done')
-        return 'completed';
+      if (terminalEvent?.eventType === 'task:failed' || terminalEvent?.eventType === 'task:escalate') return 'failed';
+      if (terminalEvent?.eventType === 'task:complete' || terminalEvent?.eventType === 'task:done') return 'completed';
       if (dbStatus === 'running') return 'running';
       if (dbStatus === 'completed') return 'completed';
       if (dbStatus === 'failed') return 'failed';
@@ -636,11 +679,7 @@ export class TaskProcessProjectionService {
     const { taskId, events, pendingApproval } = args;
     return {
       approval: this.buildApprovalGate(taskId, events, pendingApproval),
-      workflowHumanInput: pairGate(
-        events,
-        'workflow:human_input_needed',
-        'workflow:human_input_provided',
-      ),
+      workflowHumanInput: pairGate(events, 'workflow:human_input_needed', 'workflow:human_input_provided'),
       partialDecision: pairGate(
         events,
         'workflow:partial_failure_decision_needed',
@@ -701,10 +740,7 @@ export class TaskProcessProjectionService {
     return EMPTY_GATE;
   }
 
-  private buildCodingCliGate(
-    taskId: string,
-    events: readonly PersistedTaskEvent[],
-  ): TaskProcessGate {
+  private buildCodingCliGate(taskId: string, events: readonly PersistedTaskEvent[]): TaskProcessGate {
     // Prefer the durable approval row from CodingCliStore — it is the
     // ground truth used by `/api/v1/coding-cli/...` resolution. Falls
     // back to the bus-event pair if the store is not wired.
@@ -822,8 +858,7 @@ export class TaskProcessProjectionService {
               const existing = todoMap.get(todo.id);
               todoMap.set(todo.id, {
                 id: todo.id,
-                content:
-                  typeof todo.content === 'string' ? todo.content : (existing?.content ?? ''),
+                content: typeof todo.content === 'string' ? todo.content : (existing?.content ?? ''),
                 status: typeof todo.status === 'string' ? todo.status : (existing?.status ?? 'pending'),
                 ...(typeof todo.activeForm === 'string'
                   ? { activeForm: todo.activeForm }
@@ -881,9 +916,7 @@ export class TaskProcessProjectionService {
           stepMap.set(p.stepId, {
             ...existing,
             status: 'running',
-            ...(typeof p.startedAt === 'number'
-              ? { startedAt: p.startedAt }
-              : { startedAt: ev.ts }),
+            ...(typeof p.startedAt === 'number' ? { startedAt: p.startedAt } : { startedAt: ev.ts }),
           });
           break;
         }
@@ -897,9 +930,7 @@ export class TaskProcessProjectionService {
           stepMap.set(p.stepId, {
             ...existing,
             status: typeof p.status === 'string' ? p.status : 'done',
-            ...(typeof p.finishedAt === 'number'
-              ? { finishedAt: p.finishedAt }
-              : { finishedAt: ev.ts }),
+            ...(typeof p.finishedAt === 'number' ? { finishedAt: p.finishedAt } : { finishedAt: ev.ts }),
             ...(typeof p.fallbackUsed === 'boolean' ? { fallbackUsed: p.fallbackUsed } : {}),
           });
           break;
@@ -1099,6 +1130,53 @@ export class TaskProcessProjectionService {
       descendantTaskIds: descendants,
     };
   }
+
+  /**
+   * A8 audit-log fold. Real `audit:entry` rows (PR-3 onwards) are
+   * merged with synthesized rows derived from legacy events for tasks
+   * that pre-date the emit sites. Per-kind dedup: if a task carries any
+   * real entry of kind K, synthesis for kind K is skipped — this is the
+   * honest answer during the rollout window. The synthesis path can be
+   * removed in the release after every emit site has shipped.
+   */
+  private buildAuditLog(
+    _taskId: string,
+    events: readonly PersistedTaskEvent[],
+  ): {
+    entries: AuditEntry[];
+    bySection: TaskProcessAuditBySection;
+    provenance: TaskProcessProvenance;
+    completenessBySection: TaskProcessSectionCompleteness[];
+  } {
+    const entries: AuditEntry[] = [];
+    const realKindsSeen = new Set<AuditEntry['kind']>();
+
+    // Pass 1 — real audit:entry rows. Drop on schema-fail; never throw.
+    for (const ev of events) {
+      if (ev.eventType !== 'audit:entry') continue;
+      const result = safeParseAuditEntry(ev.payload);
+      if (!result.ok) continue;
+      entries.push(result.entry);
+      realKindsSeen.add(result.entry.kind);
+    }
+
+    // Pass 2 — synthesize from legacy events for kinds without real coverage.
+    for (const ev of events) {
+      if (ev.eventType === 'audit:entry') continue;
+      const synth = synthesizeAuditEntry(ev, realKindsSeen);
+      if (synth) entries.push(synth);
+    }
+
+    // Stable chronological order. Same-ts entries fall back to id for determinism.
+    entries.sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
+
+    return {
+      entries,
+      bySection: groupAuditBySection(entries),
+      provenance: computeAuditProvenance(entries),
+      completenessBySection: computeAuditCompleteness(entries, events),
+    };
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -1142,11 +1220,7 @@ function isGateCloseEvent(eventType: string): boolean {
   return false;
 }
 
-function pairGate(
-  events: readonly PersistedTaskEvent[],
-  openedType: string,
-  resolvedType: string,
-): TaskProcessGate {
+function pairGate(events: readonly PersistedTaskEvent[], openedType: string, resolvedType: string): TaskProcessGate {
   let open = 0;
   let lastOpened: PersistedTaskEvent | undefined;
   let lastResolved: PersistedTaskEvent | undefined;
@@ -1203,10 +1277,7 @@ function safeOpenLedger(store: ApprovalLedgerStore, taskId: string): ApprovalLed
   }
 }
 
-function safeFindByTask(
-  store: ApprovalLedgerStore,
-  taskId: string,
-): readonly ApprovalLedgerRecord[] {
+function safeFindByTask(store: ApprovalLedgerStore, taskId: string): readonly ApprovalLedgerRecord[] {
   try {
     return store.findByTask(taskId);
   } catch {
@@ -1233,11 +1304,7 @@ interface TerminalContext {
  * are only read when the session's `state` matches — defensive against
  * an old stalled event lingering on a successful session.
  */
-function readTerminalContext(
-  store: CodingCliStore,
-  sessionId: string,
-  state: string,
-): TerminalContext {
+function readTerminalContext(store: CodingCliStore, sessionId: string, state: string): TerminalContext {
   let events: ReadonlyArray<{
     event_type: string;
     payload_json: string;
@@ -1259,11 +1326,7 @@ function readTerminalContext(
       const payload = safeParsePayload(ev.payload_json);
       const reason = pickStringField(payload, 'reason') ?? pickStringField(payload, 'error');
       failureDetail = { ...(reason ? { reason } : {}), at: ev.ts };
-    } else if (
-      state === 'cancelled' &&
-      !cancelDetail &&
-      ev.event_type === 'coding-cli:cancelled'
-    ) {
+    } else if (state === 'cancelled' && !cancelDetail && ev.event_type === 'coding-cli:cancelled') {
       const payload = safeParsePayload(ev.payload_json);
       const by = pickStringField(payload, 'by') ?? pickStringField(payload, 'cancelledBy');
       const reason = pickStringField(payload, 'reason');
@@ -1308,4 +1371,315 @@ function pickNumberField(payload: Record<string, unknown> | null, key: string): 
   if (!payload) return undefined;
   const v = payload[key];
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+// ── A8 audit synthesis + grouping ───────────────────────────────────
+
+const SYNTH_POLICY_VERSION = 'audit-synth-v1';
+const ZERO_HASH = '0'.repeat(64);
+
+/**
+ * Translate a legacy persisted event into a synthesized AuditEntry when the
+ * task has no real entry of the same kind. Returns undefined when the event
+ * has no audit-relevant mapping or when the kind is already covered by a
+ * real `audit:entry` row in the same task.
+ */
+function synthesizeAuditEntry(
+  ev: PersistedTaskEvent,
+  realKinds: ReadonlySet<AuditEntry['kind']>,
+): AuditEntry | undefined {
+  const p = (ev.payload ?? {}) as Record<string, unknown>;
+  const taskId = typeof p.taskId === 'string' ? p.taskId : ev.taskId;
+  const baseId = `synth:${ev.id}`;
+  const wrapper = {
+    id: baseId,
+    taskId,
+    ts: ev.ts,
+    schemaVersion: 1 as const,
+    policyVersion: SYNTH_POLICY_VERSION,
+  };
+
+  switch (ev.eventType) {
+    case 'agent:tool_executed': {
+      if (realKinds.has('tool_call')) return undefined;
+      const tool = typeof p.toolName === 'string' ? p.toolName : typeof p.tool === 'string' ? p.tool : 'unknown';
+      const isError = p.isError === true || p.status === 'error' || p.status === 'denied';
+      const latency = typeof p.durationMs === 'number' ? p.durationMs : undefined;
+      return {
+        ...wrapper,
+        actor: { type: 'worker' },
+        kind: 'tool_call',
+        lifecycle: isError ? 'failed' : 'executed',
+        toolId: tool,
+        argsHash: ZERO_HASH,
+        argsRedacted: undefined,
+        ...(latency !== undefined ? { latencyMs: latency } : {}),
+      };
+    }
+    case 'agent:tool_denied': {
+      if (realKinds.has('decision')) return undefined;
+      const tool = typeof p.toolName === 'string' ? p.toolName : 'unknown';
+      const violation = typeof p.violation === 'string' ? p.violation : 'denied';
+      return {
+        ...wrapper,
+        actor: { type: 'orchestrator' },
+        kind: 'decision',
+        decisionType: 'tool_deny',
+        verdict: `denied:${tool}`,
+        rationale: violation,
+        ruleId: 'legacy:tool-deny',
+        tier: 'deterministic',
+      };
+    }
+    case 'oracle:verdict': {
+      if (realKinds.has('verdict')) return undefined;
+      const oracle =
+        typeof p.oracleName === 'string' ? p.oracleName : typeof p.oracle === 'string' ? p.oracle : 'unknown';
+      const verdictPayload = (p.verdict ?? {}) as Record<string, unknown>;
+      const verified = verdictPayload?.verified;
+      const confidence = typeof verdictPayload.confidence === 'number' ? verdictPayload.confidence : undefined;
+      const pass: boolean | 'unknown' = typeof verified === 'boolean' ? verified : 'unknown';
+      return {
+        ...wrapper,
+        actor: { type: 'oracle', id: oracle },
+        kind: 'verdict',
+        source: 'oracle',
+        pass,
+        ...(confidence !== undefined ? { confidence } : {}),
+        oracleId: oracle,
+      };
+    }
+    case 'critic:verdict': {
+      if (realKinds.has('verdict')) return undefined;
+      const accepted = p.accepted === true;
+      const confidence = typeof p.confidence === 'number' ? p.confidence : undefined;
+      return {
+        ...wrapper,
+        actor: { type: 'critic' },
+        kind: 'verdict',
+        source: 'critic',
+        pass: accepted,
+        ...(confidence !== undefined ? { confidence } : {}),
+      };
+    }
+    case 'task:escalate': {
+      if (realKinds.has('decision')) return undefined;
+      const fromLevel = typeof p.fromLevel === 'number' ? p.fromLevel : undefined;
+      const toLevel = typeof p.toLevel === 'number' ? p.toLevel : undefined;
+      const reason = typeof p.reason === 'string' ? p.reason : 'escalated';
+      return {
+        ...wrapper,
+        actor: { type: 'orchestrator' },
+        kind: 'decision',
+        decisionType: 'escalate',
+        verdict: `L${fromLevel ?? '?'}→L${toLevel ?? '?'}`,
+        rationale: reason,
+        ruleId: 'legacy:escalate',
+        tier: 'deterministic',
+      };
+    }
+    case 'agent:routed': {
+      if (realKinds.has('decision')) return undefined;
+      const reason = typeof p.reason === 'string' ? p.reason : 'routed';
+      const agentId = typeof p.agentId === 'string' ? p.agentId : undefined;
+      return {
+        ...wrapper,
+        actor: { type: 'orchestrator' },
+        kind: 'decision',
+        decisionType: 'route',
+        verdict: agentId ? `route:${agentId}` : 'route',
+        rationale: reason,
+        ruleId: 'legacy:route',
+        tier: 'deterministic',
+      };
+    }
+    case 'workflow:winner_determined': {
+      if (realKinds.has('decision')) return undefined;
+      const winner = typeof p.winnerAgentId === 'string' ? p.winnerAgentId : undefined;
+      const reasoning = typeof p.reasoning === 'string' ? p.reasoning : 'winner determined';
+      return {
+        ...wrapper,
+        actor: { type: 'orchestrator' },
+        kind: 'decision',
+        decisionType: 'synthesize',
+        verdict: winner ? `winner:${winner}` : 'winner:none',
+        rationale: reasoning,
+        ruleId: 'legacy:synthesize',
+        tier: 'deterministic',
+      };
+    }
+    case 'approval:ledger_resolved': {
+      if (realKinds.has('gate')) return undefined;
+      const decisionRaw = p.decision;
+      const decision: 'approve' | 'reject' | undefined =
+        decisionRaw === 'approved' ? 'approve' : decisionRaw === 'rejected' ? 'reject' : undefined;
+      return {
+        ...wrapper,
+        actor: { type: 'user' },
+        kind: 'gate',
+        gateName: 'approval',
+        phase: 'answered',
+        ...(decision ? { decision } : {}),
+      };
+    }
+    case 'workflow:human_input_provided': {
+      if (realKinds.has('gate')) return undefined;
+      return {
+        ...wrapper,
+        actor: { type: 'user' },
+        kind: 'gate',
+        gateName: 'human_input',
+        phase: 'answered',
+        decision: 'answer',
+      };
+    }
+    default:
+      return undefined;
+  }
+}
+
+function groupAuditBySection(entries: readonly AuditEntry[]): TaskProcessAuditBySection {
+  const out: TaskProcessAuditBySection = {
+    thoughts: [],
+    toolCalls: [],
+    decisions: [],
+    verdicts: [],
+    planSteps: [],
+    delegates: [],
+    gates: [],
+    finals: [],
+  };
+  for (const e of entries) {
+    switch (e.kind) {
+      case 'thought':
+        out.thoughts.push(e);
+        break;
+      case 'tool_call':
+        out.toolCalls.push(e);
+        break;
+      case 'decision':
+        out.decisions.push(e);
+        break;
+      case 'verdict':
+        out.verdicts.push(e);
+        break;
+      case 'plan_step':
+        out.planSteps.push(e);
+        break;
+      case 'delegate':
+        out.delegates.push(e);
+        break;
+      case 'gate':
+        out.gates.push(e);
+        break;
+      case 'final':
+        out.finals.push(e);
+        break;
+    }
+  }
+  return out;
+}
+
+function computeAuditProvenance(entries: readonly AuditEntry[]): TaskProcessProvenance {
+  const policyVersions = new Set<string>();
+  const modelIds = new Set<string>();
+  const oracleIds = new Set<string>();
+  const promptHashes = new Set<string>();
+  for (const e of entries) {
+    policyVersions.add(e.policyVersion);
+    if (e.kind === 'decision' && e.modelId) modelIds.add(e.modelId);
+    if (e.kind === 'verdict' && e.oracleId) oracleIds.add(e.oracleId);
+    if (e.actor.type === 'oracle' && e.actor.id) oracleIds.add(e.actor.id);
+  }
+  return {
+    policyVersions: [...policyVersions].sort(),
+    modelIds: [...modelIds].sort(),
+    oracleIds: [...oracleIds].sort(),
+    promptHashes: [...promptHashes].sort(),
+  };
+}
+
+/**
+ * Per-section completeness — honest signals only. Today the only section
+ * with a known unclassifiable case is `thoughts`, because thought-block
+ * boundaries land in PR-5; until then a task's CoT can't be honestly
+ * classified per-block. Other sections report 'complete' with the count
+ * of folded entries, which is true at the projection layer regardless of
+ * what synthesis vs real-row balance produced them.
+ */
+function computeAuditCompleteness(
+  entries: readonly AuditEntry[],
+  events: readonly PersistedTaskEvent[],
+): TaskProcessSectionCompleteness[] {
+  const counts: Record<AuditSection, number> = {
+    thoughts: 0,
+    toolCalls: 0,
+    decisions: 0,
+    verdicts: 0,
+    planSteps: 0,
+    delegates: 0,
+    gates: 0,
+    finals: 0,
+  };
+  for (const e of entries) {
+    switch (e.kind) {
+      case 'thought':
+        counts.thoughts += 1;
+        break;
+      case 'tool_call':
+        counts.toolCalls += 1;
+        break;
+      case 'decision':
+        counts.decisions += 1;
+        break;
+      case 'verdict':
+        counts.verdicts += 1;
+        break;
+      case 'plan_step':
+        counts.planSteps += 1;
+        break;
+      case 'delegate':
+        counts.delegates += 1;
+        break;
+      case 'gate':
+        counts.gates += 1;
+        break;
+      case 'final':
+        counts.finals += 1;
+        break;
+    }
+  }
+
+  // Tool-call partial: count `agent:tool_started` without a matching
+  // `agent:tool_executed`. The pair contract is the only honest "did this
+  // call ever finish?" signal we have without per-entry source links.
+  const startedCallIds = new Set<string>();
+  const endedCallIds = new Set<string>();
+  for (const ev of events) {
+    const p = (ev.payload ?? {}) as Record<string, unknown>;
+    const callId =
+      typeof p.toolCallId === 'string' ? p.toolCallId : typeof p.callId === 'string' ? p.callId : undefined;
+    if (!callId) continue;
+    if (ev.eventType === 'agent:tool_started') startedCallIds.add(callId);
+    if (ev.eventType === 'agent:tool_executed') endedCallIds.add(callId);
+  }
+  const orphanStarted = [...startedCallIds].filter((id) => !endedCallIds.has(id)).length;
+
+  const result: TaskProcessSectionCompleteness[] = [];
+  result.push({
+    section: 'thoughts',
+    kind: counts.thoughts > 0 ? 'partial' : 'unclassifiable',
+    count: counts.thoughts,
+    reason: counts.thoughts > 0 ? undefined : 'no thought-block boundaries until PR-5 lands',
+  });
+  result.push({
+    section: 'toolCalls',
+    kind: orphanStarted > 0 ? 'partial' : 'complete',
+    count: counts.toolCalls,
+    ...(orphanStarted > 0 ? { reason: `${orphanStarted} tool_started without tool_executed` } : {}),
+  });
+  for (const section of ['decisions', 'verdicts', 'planSteps', 'delegates', 'gates', 'finals'] as const) {
+    result.push({ section, kind: 'complete', count: counts[section] });
+  }
+  return result;
 }

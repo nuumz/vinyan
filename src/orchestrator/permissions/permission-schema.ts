@@ -43,6 +43,15 @@ const PermissionRuleSchema = z.object({
    * LLM) when a deny rule fires so the model can course-correct.
    */
   reason: z.string().optional(),
+  /**
+   * Optional operator-supplied stable identifier. Surfaces in audit rows so
+   * a denial cross-references back to the rule that produced it. When
+   * omitted, the audit emit site computes a stable fingerprint from the
+   * canonical-JSON of the rule. Editing `tool` / `match` / `reason`
+   * changes the synthesized id — that's intentional, audit rows of a
+   * removed rule should distinguish themselves from rows of its successor.
+   */
+  id: z.string().min(1).optional(),
 });
 
 /**

@@ -9,6 +9,7 @@
  */
 
 import type { AgentContract } from '../../core/agent-contract.ts';
+import { emitAuditEntry, previewString, sha256OfJson } from '../../core/audit-emit.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import { type SilentAgentConfig, SilentAgentDetector } from '../../guardrails/silent-agent.ts';
 import { authorizeToolCall } from '../../security/tool-authorization.ts';
@@ -1047,8 +1048,7 @@ export async function runAgentLoop(
           steps: progress.plan.map((t) => ({
             id: String(t.id),
             label: t.status === 'in_progress' ? t.activeForm : t.content,
-            status:
-              t.status === 'in_progress' ? 'running' : t.status === 'completed' ? 'done' : 'pending',
+            status: t.status === 'in_progress' ? 'running' : t.status === 'completed' ? 'done' : 'pending',
           })),
         });
       }
@@ -1124,20 +1124,22 @@ export async function runAgentLoop(
       }
     }
 
-    session = deps.createSession?.(proc as SubprocessHandle) ?? new AgentSession(proc as SubprocessHandle, (delta) => {
-      // Phase 2: forward LLM token deltas to bus as `llm:stream_delta`. The
-      // legacy `agent:text_delta` mirror was removed — content lives in the
-      // canonical event with `kind: 'content'`. Observational only (A3) —
-      // no effect on verification / commit paths.
-      if (deps.streamingAssistantDelta) {
-        deps.bus?.emit('llm:stream_delta', {
-          taskId: input.id,
-          turnId: delta.turnId,
-          kind: 'content',
-          text: delta.text,
-        });
-      }
-    });
+    session =
+      deps.createSession?.(proc as SubprocessHandle) ??
+      new AgentSession(proc as SubprocessHandle, (delta) => {
+        // Phase 2: forward LLM token deltas to bus as `llm:stream_delta`. The
+        // legacy `agent:text_delta` mirror was removed — content lives in the
+        // canonical event with `kind: 'content'`. Observational only (A3) —
+        // no effect on verification / commit paths.
+        if (deps.streamingAssistantDelta) {
+          deps.bus?.emit('llm:stream_delta', {
+            taskId: input.id,
+            turnId: delta.turnId,
+            kind: 'content',
+            text: delta.text,
+          });
+        }
+      });
 
     // Phase 7a: resolve M1-M4 instruction hierarchy in-process (we have workspace
     // access here; the subprocess worker does not). This closes the gap where
@@ -1194,13 +1196,11 @@ export async function runAgentLoop(
     // the subprocess boundary via the init turn. All three sources are
     // optional — absent registry/store/builder => legacy workspace path.
     const agentProfile =
-      input.agentId && deps.agentRegistry ? deps.agentRegistry.getAgent(input.agentId) ?? undefined : undefined;
+      input.agentId && deps.agentRegistry ? (deps.agentRegistry.getAgent(input.agentId) ?? undefined) : undefined;
     const soulContent =
-      input.agentId && deps.soulStore ? deps.soulStore.loadSoulRaw(input.agentId) ?? undefined : undefined;
+      input.agentId && deps.soulStore ? (deps.soulStore.loadSoulRaw(input.agentId) ?? undefined) : undefined;
     const agentContext =
-      input.agentId && deps.agentContextBuilder
-        ? deps.agentContextBuilder.buildContext(input.agentId)
-        : undefined;
+      input.agentId && deps.agentContextBuilder ? deps.agentContextBuilder.buildContext(input.agentId) : undefined;
 
     // Build and send init turn
     const initTurn: OrchestratorTurn = {
@@ -1293,6 +1293,20 @@ export async function runAgentLoop(
             turnId: turn.turnId,
             rationale: turn.rationale,
           });
+          // A8: thought-block boundary. The model just stopped thinking
+          // and is about to act (tool_calls turn). One audit entry per
+          // logical block — replay-deterministic, no token-pause heuristic.
+          emitAuditEntry({
+            bus: deps.bus,
+            taskId: input.id,
+            turn: turn.turnId,
+            actor: { type: 'worker', id: routing.workerId ?? 'agent-loop' },
+            variant: {
+              kind: 'thought',
+              content: turn.rationale,
+              trigger: 'pre-tool',
+            },
+          });
         }
 
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
@@ -1362,6 +1376,23 @@ export async function runAgentLoop(
                 toolName: call.tool,
                 violation: auth.violation,
               });
+              const required = auth.requiredCapability;
+              emitAuditEntry({
+                bus: deps.bus,
+                taskId: input.id,
+                turn: turn.turnId,
+                actor: { type: 'orchestrator' },
+                variant: {
+                  kind: 'decision',
+                  decisionType: 'tool_deny',
+                  verdict: `denied:${call.tool}`,
+                  rationale: auth.violation ?? `Capability denied for ${call.tool}`,
+                  ruleId: required
+                    ? `contract:${required.type}:${required.scope.join('+') || '*'}`
+                    : 'contract:unknown',
+                  tier: 'deterministic',
+                },
+              });
               // Violation policy: kill immediately or after exceeding tolerance
               if (contract.onViolation === 'kill' || contractViolations > contract.violationTolerance) {
                 deps.bus?.emit('agent:contract_violation', {
@@ -1393,6 +1424,21 @@ export async function runAgentLoop(
                 toolName: call.tool,
                 violation: `Permission DSL: ${perm.reason ?? 'denied'}`,
               });
+              const ruleId = perm.matchedRule?.id ?? `dsl:${sha256OfJson(perm.matchedRule).slice(0, 12)}`;
+              emitAuditEntry({
+                bus: deps.bus,
+                taskId: input.id,
+                turn: turn.turnId,
+                actor: { type: 'orchestrator' },
+                variant: {
+                  kind: 'decision',
+                  decisionType: 'tool_deny',
+                  verdict: `denied:${call.tool}`,
+                  rationale: `Permission DSL: ${perm.reason ?? 'denied'}`,
+                  ruleId,
+                  tier: 'deterministic',
+                },
+              });
               continue;
             }
           }
@@ -1423,6 +1469,20 @@ export async function runAgentLoop(
                 taskId: input.id,
                 toolName: call.tool,
                 violation: `PreToolUse hook: ${pre.reason ?? 'blocked'}`,
+              });
+              emitAuditEntry({
+                bus: deps.bus,
+                taskId: input.id,
+                turn: turn.turnId,
+                actor: { type: 'orchestrator' },
+                variant: {
+                  kind: 'decision',
+                  decisionType: 'tool_deny',
+                  verdict: `denied:${call.tool}`,
+                  rationale: `PreToolUse hook: ${pre.reason ?? 'blocked'}`,
+                  ruleId: 'hook:PreToolUse',
+                  tier: 'deterministic',
+                },
               });
               continue;
             }
@@ -1471,13 +1531,31 @@ export async function runAgentLoop(
           }
 
           results.push(result);
+          const toolLatencyMs = Math.round(performance.now() - toolStart);
           deps.bus?.emit('agent:tool_executed', {
             taskId: input.id,
             turnId: turn.turnId,
             toolName: call.tool,
             toolCallId: call.id,
-            durationMs: Math.round(performance.now() - toolStart),
+            durationMs: toolLatencyMs,
             isError: result.status !== 'success',
+          });
+          const argsForAudit = call.parameters ?? {};
+          emitAuditEntry({
+            bus: deps.bus,
+            taskId: input.id,
+            turn: turn.turnId,
+            actor: { type: 'worker', id: routing.workerId ?? 'agent-loop' },
+            variant: {
+              kind: 'tool_call',
+              lifecycle: result.status === 'success' ? 'executed' : 'failed',
+              toolId: call.tool,
+              argsHash: sha256OfJson(argsForAudit),
+              argsRedacted: argsForAudit,
+              resultHash: sha256OfJson(result.output ?? ''),
+              resultRedacted: previewString(result.output ?? '', 1024),
+              latencyMs: toolLatencyMs,
+            },
           });
         }
 
@@ -1613,6 +1691,24 @@ export async function runAgentLoop(
 
         const mutations = overlay.computeDiff();
         await session.drainAndClose(); // fix #1: drainAndClose for uncertain too
+
+        // A8 safety-net: an uncertain terminal carries reflection in `reason`
+        // that's the closest analogue to a thought block on a non-tool turn.
+        // Emit one audit entry so the audit log never misses a worker's
+        // final reasoning when the loop ends without a tool_calls turn.
+        if (turn.reason) {
+          emitAuditEntry({
+            bus: deps.bus,
+            taskId: input.id,
+            turn: turn.turnId,
+            actor: { type: 'worker', id: routing.workerId ?? 'agent-loop' },
+            variant: {
+              kind: 'thought',
+              content: turn.reason,
+              trigger: 'reflect',
+            },
+          });
+        }
 
         // Agent Conversation: input-required is a distinct outcome from plain uncertain
         const needsUserInput = turn.needsUserInput === true;

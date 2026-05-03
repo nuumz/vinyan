@@ -289,6 +289,14 @@ export const EVENT_MANIFEST: readonly EventManifestEntry[] = [
   { event: 'coding-cli:failed', sse: true, record: true, scope: 'task' },
   { event: 'coding-cli:stalled', sse: true, record: true, scope: 'task' },
   { event: 'coding-cli:cancelled', sse: true, record: true, scope: 'task' },
+
+  // ── A8 Unified Audit Surface ────────────────────────────────────────
+  // Record-only (sse:false). The projection lazy-synthesizes the audit log
+  // from existing events for live mode and merges persisted rows on reload.
+  // Flipping sse:true would multiply wire volume per task without backpressure
+  // (`src/api/sse.ts` enqueues synchronously); the audit-fanout regression
+  // test in `tests/api/event-manifest.contract.test.ts` guards this invariant.
+  { event: 'audit:entry', sse: false, record: true, scope: 'task' },
 ];
 
 /** Derived list: every event flagged for SSE forwarding. */

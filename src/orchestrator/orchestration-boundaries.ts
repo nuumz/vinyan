@@ -10,6 +10,7 @@
  * file's size and isolate the boundary contract for focused testing.
  * Behavior, event order, and trace shape are unchanged.
  */
+import { emitAuditEntry } from '../core/audit-emit.ts';
 import {
   buildGoalGroundingClarificationQuestions,
   buildGoalGroundingProvenance,
@@ -49,6 +50,23 @@ export async function enforceGoalGroundingBoundary(
   if (!check) return { ctx };
 
   ctx.deps.bus?.emit('grounding:checked', check);
+  // A8: a goal-grounding check is a verdict from the goal-grounding subsystem.
+  // pass=true when the check decided to continue without action — any other
+  // action (downgrade / re-ground / abort) means the check found drift or
+  // stale evidence. The accompanying decision row (below) records the action
+  // itself when one fired.
+  emitAuditEntry({
+    bus: ctx.deps.bus,
+    taskId: ctx.input.id,
+    policyVersion: check.policyVersion,
+    actor: { type: 'orchestrator' },
+    variant: {
+      kind: 'verdict',
+      source: 'goal-grounding',
+      pass: check.action === 'continue',
+      ...(typeof check.minFactConfidence === 'number' ? { confidence: check.minFactConfidence } : {}),
+    },
+  });
   const nextCtx = {
     ...ctx,
     goalGroundingChecks: [...(ctx.goalGroundingChecks ?? []), check],
@@ -65,6 +83,22 @@ export async function enforceGoalGroundingBoundary(
     action: check.action,
     phase: check.phase,
     reason: check.reason,
+  });
+  // A8: the action itself is a deterministic governance decision — record it
+  // as a decision audit entry alongside the verdict the check produced.
+  emitAuditEntry({
+    bus: ctx.deps.bus,
+    taskId: ctx.input.id,
+    policyVersion: check.policyVersion,
+    actor: { type: 'orchestrator' },
+    variant: {
+      kind: 'decision',
+      decisionType: 'gate_open',
+      verdict: `grounding:${check.action}`,
+      rationale: check.reason,
+      ruleId: `goal-grounding:${check.phase}`,
+      tier: 'deterministic',
+    },
   });
 
   // re-ground-context / re-verify-evidence: lightweight, do not restart the
@@ -85,8 +119,7 @@ export async function enforceGoalGroundingBoundary(
           `A10 grounding detected possible stale evidence during ${check.phase}: ${check.reason}. Should I refresh the evidence before continuing?`,
         ]
       : buildGoalGroundingClarificationQuestions(check);
-  const traceApproach =
-    check.action === 'abort-unsafe-drift' ? 'goal-grounding-abort' : 'goal-grounding-clarification';
+  const traceApproach = check.action === 'abort-unsafe-drift' ? 'goal-grounding-abort' : 'goal-grounding-clarification';
   const traceOutcome: ExecutionTrace['outcome'] = check.action === 'abort-unsafe-drift' ? 'failure' : 'success';
   const trace: ExecutionTrace = {
     id: `trace-${ctx.input.id}-${traceApproach}`,

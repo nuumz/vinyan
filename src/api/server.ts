@@ -9,6 +9,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type BunServer = any;
 
+import { isAbsolute, relative as pathRelative, resolve as pathResolve } from 'node:path';
 import { z } from 'zod/v4';
 import type { A2AManagerImpl } from '../a2a/a2a-manager.ts';
 import { A2ABridge } from '../a2a/bridge.ts';
@@ -18,6 +19,7 @@ import type { RuleStore } from '../db/rule-store.ts';
 import { TREE_TASKID_CAP } from '../db/task-event-store.ts';
 import type { TraceStore } from '../db/trace-store.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
+import { verifyFileHash } from '../gate/content-hash-verifier.ts';
 import type { DegradationStatusTracker } from '../observability/degradation-status.ts';
 import type { MetricsCollector } from '../observability/metrics.ts';
 import { getSystemMetrics } from '../observability/metrics.ts';
@@ -30,10 +32,7 @@ import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { handleCodingCliRoute } from './coding-cli-routes.ts';
 import { handleMemoryWikiRoute, type MemoryWikiRouteDeps } from './memory-wiki-routes.ts';
-import {
-  TaskProcessProjectionService,
-  type TaskProcessProjection,
-} from './projections/task-process-projection.ts';
+import { type TaskProcessProjection, TaskProcessProjectionService } from './projections/task-process-projection.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
 import type { Session, SessionManager } from './session-manager.ts';
 import { createSessionSSEStream, createSSEStream } from './sse.ts';
@@ -403,6 +402,14 @@ export class VinyanAPIServer {
       return jsonResponse({ status: 'ok', uptime_ms: process.uptime() * 1000 });
     }
 
+    // ── A8 evidence freshness check ──────────────────────────
+    // Returns whether a workspace-relative file's current sha256 matches the
+    // expected hash captured at observation time. Powers `<EvidenceChip>` in
+    // the audit view: on click, verify drift before opening the file.
+    if (method === 'GET' && path === '/api/v1/files/check-hash') {
+      return this.handleCheckFileHash(req);
+    }
+
     // G1: Wire real Prometheus metrics
     if (method === 'GET' && path === '/api/v1/metrics') {
       return this.handleMetrics(req);
@@ -606,10 +613,7 @@ export class VinyanAPIServer {
     // Ask the LLM to propose N candidate answers for the human-input
     // question — surfaced as chips on the inline answer card so the user
     // doesn't have to start from scratch when they're unsure.
-    if (
-      method === 'POST' &&
-      path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/human-input\/suggest$/)
-    ) {
+    if (method === 'POST' && path.match(/^\/api\/v1\/sessions\/[^/]+\/workflow\/human-input\/suggest$/)) {
       const sessionId = path.split('/')[4]!;
       return this.handleWorkflowHumanInputSuggest(sessionId, req);
     }
@@ -951,6 +955,44 @@ export class VinyanAPIServer {
 
   // ── Metrics Handler (G1: real Prometheus metrics) ────────────
 
+  /**
+   * A8 evidence-stale check. Validates a workspace-relative file's current
+   * sha256 against an expected hash, with a workspace boundary check so a
+   * `?path=../../etc/passwd` cannot escape the project root. Returns
+   * `{ match, actual, missing, outOfWorkspace }` for the audit-view
+   * evidence chip.
+   */
+  private handleCheckFileHash(req: Request): Response {
+    const workspace = this.deps.workspace;
+    if (!workspace) {
+      return jsonResponse({ error: 'workspace not configured' }, 503);
+    }
+    const url = new URL(req.url);
+    const requestedPath = url.searchParams.get('path');
+    const expectedHash = url.searchParams.get('sha256');
+    if (!requestedPath || !expectedHash) {
+      return jsonResponse({ error: 'path and sha256 query params required' }, 400);
+    }
+    if (!/^[0-9a-f]{64}$/.test(expectedHash)) {
+      return jsonResponse({ error: 'sha256 must be 64 lowercase hex chars' }, 400);
+    }
+    if (isAbsolute(requestedPath)) {
+      return jsonResponse({ error: 'path must be workspace-relative' }, 400);
+    }
+    const absResolved = pathResolve(workspace, requestedPath);
+    const rel = pathRelative(workspace, absResolved);
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+      return jsonResponse({ error: 'path escapes workspace boundary' }, 400);
+    }
+    const result = verifyFileHash(workspace, requestedPath, expectedHash);
+    return jsonResponse({
+      match: result.match,
+      actual: result.actual,
+      missing: result.missing,
+      path: requestedPath,
+    });
+  }
+
   private handleMetrics(req: Request): Response {
     const url = new URL(req.url);
     const format = url.searchParams.get('format');
@@ -1281,9 +1323,7 @@ export class VinyanAPIServer {
     })();
     const sortParam = params.get('sort');
     const sort: 'created-desc' | 'created-asc' | 'updated-desc' | 'updated-asc' =
-      sortParam === 'created-asc' ||
-      sortParam === 'updated-desc' ||
-      sortParam === 'updated-asc'
+      sortParam === 'created-asc' || sortParam === 'updated-desc' || sortParam === 'updated-asc'
         ? sortParam
         : 'created-desc';
     const fromRaw = params.get('from');
@@ -1369,9 +1409,7 @@ export class VinyanAPIServer {
       }
     };
     const taskEventStore = this.deps.taskEventStore;
-    const pendingApprovalIds = new Set(
-      (this.deps.approvalGate?.getPending() ?? []).map((p) => p.taskId),
-    );
+    const pendingApprovalIds = new Set((this.deps.approvalGate?.getPending() ?? []).map((p) => p.taskId));
     // Defer the open-coding-cli-approval lookup until after we have the
     // full taskId set — the helper takes a batch and SQLite chunks
     // internally, so a single call is cheaper than per-row probes.
@@ -1436,12 +1474,8 @@ export class VinyanAPIServer {
         ...(trace?.approach ? { approach: trace.approach } : {}),
         ...(trace?.modelUsed ? { modelUsed: trace.modelUsed } : {}),
         ...(trace?.workerId !== undefined ? { workerId: trace.workerId } : {}),
-        ...(typeof trace?.tokensConsumed === 'number'
-          ? { tokensConsumed: trace.tokensConsumed }
-          : {}),
-        ...(typeof result?.qualityScore?.composite === 'number'
-          ? { qualityScore: result.qualityScore.composite }
-          : {}),
+        ...(typeof trace?.tokensConsumed === 'number' ? { tokensConsumed: trace.tokensConsumed } : {}),
+        ...(typeof result?.qualityScore?.composite === 'number' ? { qualityScore: result.qualityScore.composite } : {}),
         ...(Array.isArray(trace?.affectedFiles) ? { affectedFiles: trace.affectedFiles } : {}),
         ...(errorSummary ? { errorSummary } : {}),
         ...(result?.status ? { resultStatus: result.status } : {}),
@@ -1514,9 +1548,7 @@ export class VinyanAPIServer {
     // resolved the gate (continue/abort). The authoritative signal is
     // the event log: a `_needed` event without a paired `_provided`.
     if (taskEventStore && summaries.length > 0) {
-      const candidatePartial = summaries
-        .filter((s) => s.needsActionType === 'partial-decision')
-        .map((s) => s.taskId);
+      const candidatePartial = summaries.filter((s) => s.needsActionType === 'partial-decision').map((s) => s.taskId);
       const openPartial =
         candidatePartial.length > 0
           ? taskEventStore.listOpenGates(
@@ -1683,11 +1715,7 @@ export class VinyanAPIServer {
 
     // Status priority: in-flight wins, then session detail (which honours
     // rich result.status preservation), then async result.
-    const status = inFlight
-      ? 'running'
-      : sessionDetail
-        ? sessionDetail.status
-        : (asyncResult?.status ?? 'completed');
+    const status = inFlight ? 'running' : sessionDetail ? sessionDetail.status : (asyncResult?.status ?? 'completed');
     const result = sessionDetail?.result ?? asyncResult ?? undefined;
     const trace = result?.trace;
     const taskInput = sessionDetail?.taskInput;
@@ -1707,7 +1735,7 @@ export class VinyanAPIServer {
     try {
       const recent = this.deps.sessionManager.listAllTasks(500);
       for (const t of recent) {
-        const childInput = (t.result?.id ? null : null);
+        const childInput = t.result?.id ? null : null;
         // We don't have the raw input here, so re-read via getTaskDetail
         // for each candidate is too expensive. Instead, lean on the
         // lineage event (`task:retry_requested`) when a recorder is
@@ -1762,9 +1790,11 @@ export class VinyanAPIServer {
       const store = this.deps.codingCliStore;
       if (!store) return undefined;
       try {
-        const rows = (store as unknown as {
-          listSessionsForTask?: (id: string) => unknown[];
-        }).listSessionsForTask?.(taskId);
+        const rows = (
+          store as unknown as {
+            listSessionsForTask?: (id: string) => unknown[];
+          }
+        ).listSessionsForTask?.(taskId);
         if (Array.isArray(rows) && rows.length > 0) return rows;
         return undefined;
       } catch {
@@ -1792,11 +1822,7 @@ export class VinyanAPIServer {
       if (!this.deps.taskEventStore) return false;
       try {
         return this.deps.taskEventStore
-          .listOpenGates(
-            [taskId],
-            'workflow:human_input_needed',
-            'workflow:human_input_provided',
-          )
+          .listOpenGates([taskId], 'workflow:human_input_needed', 'workflow:human_input_provided')
           .has(taskId);
       } catch {
         return false;
@@ -1902,11 +1928,7 @@ export class VinyanAPIServer {
     }
 
     if (sessionDetail) {
-      const persisted = this.deps.sessionManager.cancelTask(
-        sessionDetail.sessionId,
-        taskId,
-        reason,
-      );
+      const persisted = this.deps.sessionManager.cancelTask(sessionDetail.sessionId, taskId, reason);
       if (persisted) cancelled = true;
     }
 
@@ -2047,8 +2069,7 @@ export class VinyanAPIServer {
     // the durable timeout signal lives on `trace.outcome`. We still
     // accept `parent.status === 'timeout'` defensively (older code paths)
     // by reading the lookup row's status string.
-    const parentTimedOut =
-      parent.status === 'timeout' || parentResult?.trace?.outcome === 'timeout';
+    const parentTimedOut = parent.status === 'timeout' || parentResult?.trace?.outcome === 'timeout';
     type RetryPolicy = 'timeout' | 'standard' | 'client-override';
     let policy: RetryPolicy;
     let budget: TaskInput['budget'];
@@ -2305,10 +2326,7 @@ export class VinyanAPIServer {
    * return 503 so the UI can keep showing the "type your own answer" path
    * instead of presenting fake-looking placeholder options.
    */
-  private async handleWorkflowHumanInputSuggest(
-    sessionId: string,
-    req: Request,
-  ): Promise<Response> {
+  private async handleWorkflowHumanInputSuggest(sessionId: string, req: Request): Promise<Response> {
     const llm = this.deps.llmRegistry?.selectByTier('fast') ?? this.deps.llmRegistry?.selectByTier('balanced');
     if (!llm) {
       return jsonResponse({ error: 'No LLM provider configured for suggestions' }, 503);
@@ -2498,7 +2516,7 @@ export class VinyanAPIServer {
       return jsonResponse({ error: 'invalid JSON body' }, 400);
     }
     if (typeof body.signature !== 'string' || body.signature.trim().length === 0) {
-      return jsonResponse({ error: "body.signature must be a non-empty string" }, 400);
+      return jsonResponse({ error: 'body.signature must be a non-empty string' }, 400);
     }
     const signature = body.signature.trim();
     const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
@@ -2547,9 +2565,7 @@ export class VinyanAPIServer {
     const statusParam = url.searchParams.get('status');
 
     if (statusParam && this.deps.skillStore) {
-      const cached = this.deps.skillStore.findByStatus(
-        statusParam as 'active' | 'probation' | 'demoted',
-      );
+      const cached = this.deps.skillStore.findByStatus(statusParam as 'active' | 'probation' | 'demoted');
       return jsonResponse({ skills: cached });
     }
 
@@ -2632,10 +2648,7 @@ export class VinyanAPIServer {
     const parsedId = parseCatalogId(id);
     if (!parsedId) return jsonResponse({ error: `invalid skill id '${id}'` }, 400);
     if (parsedId.kind !== 'simple') {
-      return jsonResponse(
-        { error: `editing ${parsedId.kind} skills is not supported via this endpoint` },
-        405,
-      );
+      return jsonResponse({ error: `editing ${parsedId.kind} skills is not supported via this endpoint` }, 405);
     }
     if (!this.deps.workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
 
@@ -2651,10 +2664,7 @@ export class VinyanAPIServer {
     const existing = parseSimpleIdPayload(parsedId.payload);
     if (!existing) return jsonResponse({ error: `invalid simple skill id '${id}'` }, 400);
     if (parsed.value.name !== existing.name) {
-      return jsonResponse(
-        { error: 'body.name must match the URL id (rename = create + delete)' },
-        400,
-      );
+      return jsonResponse({ error: 'body.name must match the URL id (rename = create + delete)' }, 400);
     }
     if (parsed.value.scope !== existing.scope) {
       return jsonResponse({ error: 'body.scope must match the URL id' }, 400);
@@ -2687,10 +2697,7 @@ export class VinyanAPIServer {
     const parsedId = parseCatalogId(id);
     if (!parsedId) return jsonResponse({ error: `invalid skill id '${id}'` }, 400);
     if (parsedId.kind !== 'simple') {
-      return jsonResponse(
-        { error: `deleting ${parsedId.kind} skills is not supported via this endpoint` },
-        405,
-      );
+      return jsonResponse({ error: `deleting ${parsedId.kind} skills is not supported via this endpoint` }, 405);
     }
     if (!this.deps.workspace) return jsonResponse({ error: 'workspace not configured' }, 503);
 
@@ -3325,20 +3332,15 @@ export class VinyanAPIServer {
     profile: string,
   ): Response | null {
     const headerOrigin = req.headers.get('X-Vinyan-Origin');
-    const bodyOrigin =
-      body && typeof body === 'object' ? (body as { originSource?: unknown }).originSource : undefined;
-    const isRecursive =
-      headerOrigin === 'gateway-cron' || bodyOrigin === 'gateway-cron';
+    const bodyOrigin = body && typeof body === 'object' ? (body as { originSource?: unknown }).originSource : undefined;
+    const isRecursive = headerOrigin === 'gateway-cron' || bodyOrigin === 'gateway-cron';
     if (!isRecursive) return null;
     this.deps.bus.emit('scheduler:recursion_blocked', {
       scheduleId: scheduleId ?? 'unknown',
       profile,
       blockedPath: new URL(req.url).pathname,
     });
-    return jsonResponse(
-      { error: 'Scheduled tasks may not mutate scheduler state', code: 'recursion-blocked' },
-      423,
-    );
+    return jsonResponse({ error: 'Scheduled tasks may not mutate scheduler state', code: 'recursion-blocked' }, 423);
   }
 
   private handleListScheduledJobs(req: Request): Response {
@@ -3404,15 +3406,11 @@ export class VinyanAPIServer {
         const { parseCronFields } = await import('../gateway/scheduling/cron-parser.ts');
         parseCronFields(cron);
       } catch (err) {
-        return jsonResponse(
-          { error: `invalid cron: ${err instanceof Error ? err.message : String(err)}` },
-          400,
-        );
+        return jsonResponse({ error: `invalid cron: ${err instanceof Error ? err.message : String(err)}` }, 400);
       }
     } else if (typeof body.nl === 'string' && body.nl.trim().length > 0) {
       const { parseCron } = await import('../gateway/scheduling/cron-parser.ts');
-      const fallbackTz =
-        typeof body.timezone === 'string' && body.timezone.length > 0 ? body.timezone : 'UTC';
+      const fallbackTz = typeof body.timezone === 'string' && body.timezone.length > 0 ? body.timezone : 'UTC';
       const parsed = parseCron(body.nl, { defaultTimezone: fallbackTz });
       if (!parsed.ok) {
         return jsonResponse({ error: `cannot parse natural-language schedule: ${parsed.detail}` }, 400);
@@ -3425,9 +3423,7 @@ export class VinyanAPIServer {
     }
 
     const constraints =
-      body.constraints && typeof body.constraints === 'object'
-        ? (body.constraints as Record<string, unknown>)
-        : {};
+      body.constraints && typeof body.constraints === 'object' ? (body.constraints as Record<string, unknown>) : {};
     const id = crypto.randomUUID();
     const now = Date.now();
     const { nextFireAt: nextFireAtFn } = await import('../gateway/scheduling/cron-parser.ts');
@@ -3505,19 +3501,12 @@ export class VinyanAPIServer {
         const { parseCronFields } = await import('../gateway/scheduling/cron-parser.ts');
         parseCronFields(body.cron);
       } catch (err) {
-        return jsonResponse(
-          { error: `invalid cron: ${err instanceof Error ? err.message : String(err)}` },
-          400,
-        );
+        return jsonResponse({ error: `invalid cron: ${err instanceof Error ? err.message : String(err)}` }, 400);
       }
       nextCron = body.cron;
       fields.push('cron');
     }
-    if (
-      typeof body.timezone === 'string' &&
-      body.timezone.length > 0 &&
-      body.timezone !== existing.timezone
-    ) {
+    if (typeof body.timezone === 'string' && body.timezone.length > 0 && body.timezone !== existing.timezone) {
       nextTimezone = body.timezone;
       fields.push('timezone');
     }
@@ -3907,13 +3896,13 @@ export class VinyanAPIServer {
     const profileResolved = resolveRequestProfile(req, {}, this.deps.defaultProfile);
     if ('error' in profileResolved) return jsonResponse({ error: profileResolved.error }, 400);
 
-    let snapshot: ReturnType<typeof import('../skills/autogen-policy.ts').computeAdaptiveThreshold> | null =
-      null;
-    let history: ReturnType<typeof import('../orchestrator/adaptive-params/parameter-ledger.ts').ParameterLedger.prototype.history> = [];
+    let snapshot: ReturnType<typeof import('../skills/autogen-policy.ts').computeAdaptiveThreshold> | null = null;
+    let history: ReturnType<
+      typeof import('../orchestrator/adaptive-params/parameter-ledger.ts').ParameterLedger.prototype.history
+    > = [];
     try {
-      const { computeAdaptiveThreshold, AUTOGEN_THRESHOLD_PARAM_NAME } = require(
-        '../skills/autogen-policy.ts',
-      ) as typeof import('../skills/autogen-policy.ts');
+      const { computeAdaptiveThreshold, AUTOGEN_THRESHOLD_PARAM_NAME } =
+        require('../skills/autogen-policy.ts') as typeof import('../skills/autogen-policy.ts');
       snapshot = computeAdaptiveThreshold(store, profileResolved.profile);
       if (this.deps.parameterLedger) {
         history = this.deps.parameterLedger.history(AUTOGEN_THRESHOLD_PARAM_NAME, 50);
@@ -4007,10 +3996,7 @@ export class VinyanAPIServer {
       tier !== 'official' &&
       tier !== 'builtin'
     ) {
-      return jsonResponse(
-        { error: 'tier must be one of: quarantined, community, trusted, official, builtin' },
-        400,
-      );
+      return jsonResponse({ error: 'tier must be one of: quarantined, community, trusted, official, builtin' }, 400);
     }
     const existing = store.get(id, profileResolved.profile);
     if (!existing) return jsonResponse({ error: 'proposal not found' }, 404);
@@ -4056,7 +4042,8 @@ export class VinyanAPIServer {
     if (typeof body.skillMd !== 'string') {
       return jsonResponse({ error: 'skillMd (string) is required' }, 400);
     }
-    const { MAX_SKILL_MD_BYTES } = require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
+    const { MAX_SKILL_MD_BYTES } =
+      require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
     if (Buffer.byteLength(body.skillMd, 'utf-8') > MAX_SKILL_MD_BYTES) {
       return jsonResponse(
         {
@@ -4114,12 +4101,10 @@ export class VinyanAPIServer {
       return jsonResponse({ error: 'actor is required (audit trail must name a human)' }, 400);
     }
     // G1 — size cap (regex-DOS guard).
-    const { MAX_SKILL_MD_BYTES } = require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
+    const { MAX_SKILL_MD_BYTES } =
+      require('../db/skill-proposal-store.ts') as typeof import('../db/skill-proposal-store.ts');
     if (Buffer.byteLength(body.skillMd, 'utf-8') > MAX_SKILL_MD_BYTES) {
-      return jsonResponse(
-        { error: `skillMd exceeds ${MAX_SKILL_MD_BYTES} bytes`, maxBytes: MAX_SKILL_MD_BYTES },
-        413,
-      );
+      return jsonResponse({ error: `skillMd exceeds ${MAX_SKILL_MD_BYTES} bytes`, maxBytes: MAX_SKILL_MD_BYTES }, 413);
     }
     // G2 — optimistic locking. `expectedRevision`, when supplied, is
     // the revision number the operator was viewing when they started
@@ -4296,8 +4281,7 @@ export class VinyanAPIServer {
     const probes: ReturnType<VinyanAPIServer['buildDoctorRuntimeProbes']> = {
       recorderActive: !!this.deps.taskEventStore,
       schedulerActive: !!this.deps.gatewayScheduleStore,
-      skillsActive:
-        !!this.deps.simpleSkillRegistry || !!this.deps.skillArtifactStore,
+      skillsActive: !!this.deps.simpleSkillRegistry || !!this.deps.skillArtifactStore,
       memoryWikiActive: !!this.deps.memoryWiki,
       inFlightTaskCount: this.inFlightTasks.size,
     };
@@ -4338,10 +4322,8 @@ export class VinyanAPIServer {
       probes.autogenPolicy = () => {
         try {
           const profile = this.deps.defaultProfile ?? 'default';
-          const {
-            computeAdaptiveThreshold,
-            AUTOGEN_THRESHOLD_PARAM_NAME,
-          } = require('../skills/autogen-policy.ts') as typeof import('../skills/autogen-policy.ts');
+          const { computeAdaptiveThreshold, AUTOGEN_THRESHOLD_PARAM_NAME } =
+            require('../skills/autogen-policy.ts') as typeof import('../skills/autogen-policy.ts');
           const snap = computeAdaptiveThreshold(this.deps.skillProposalStore!, profile);
           const recentChanges = this.deps.parameterLedger
             ? this.deps.parameterLedger.history(AUTOGEN_THRESHOLD_PARAM_NAME, 50).length
@@ -4559,8 +4541,7 @@ export class VinyanAPIServer {
     }
 
     const maxDepthParam = url.searchParams.get('maxDepth');
-    const maxDepth =
-      maxDepthParam !== null ? Math.max(1, Math.min(5, parseInt(maxDepthParam, 10) || 3)) : 3;
+    const maxDepth = maxDepthParam !== null ? Math.max(1, Math.min(5, parseInt(maxDepthParam, 10) || 3)) : 3;
     const { taskIds, truncated } = this.resolveTaskTree(store, taskId, maxDepth);
     const rootSession = store.lookupSessionId(taskId);
     const sinceCursor = url.searchParams.get('since') ?? undefined;
@@ -4619,8 +4600,7 @@ export class VinyanAPIServer {
           return undefined;
         }
       },
-      pendingApprovalTaskIds: () =>
-        new Set((this.deps.approvalGate?.getPending() ?? []).map((p) => p.taskId)),
+      pendingApprovalTaskIds: () => new Set((this.deps.approvalGate?.getPending() ?? []).map((p) => p.taskId)),
       asyncResults: () => this.asyncResults,
       inFlightTaskIds: () => new Set(this.inFlightTasks.keys()),
     });
@@ -5677,12 +5657,7 @@ function parseSimpleSkillWriteBody(
     return { ok: false, error: 'body must be a string' };
   }
   const rawScope = (r.scope as string | undefined) ?? 'project';
-  if (
-    rawScope !== 'user' &&
-    rawScope !== 'project' &&
-    rawScope !== 'user-agent' &&
-    rawScope !== 'project-agent'
-  ) {
+  if (rawScope !== 'user' && rawScope !== 'project' && rawScope !== 'user-agent' && rawScope !== 'project-agent') {
     return { ok: false, error: "scope must be 'user' | 'project' | 'user-agent' | 'project-agent'" };
   }
   const agentId = typeof r.agentId === 'string' && r.agentId.length > 0 ? r.agentId : undefined;
@@ -5713,9 +5688,7 @@ function parseSimpleSkillWriteBody(
  *
  * Returns null on any malformed input — callers should surface 400.
  */
-function parseSimpleIdPayload(
-  payload: string,
-): { scope: SimpleSkillScope; name: string; agentId?: string } | null {
+function parseSimpleIdPayload(payload: string): { scope: SimpleSkillScope; name: string; agentId?: string } | null {
   const parts = payload.split(':');
   if (parts.length === 2) {
     const [scope, name] = parts;
@@ -5745,9 +5718,7 @@ function parseSimpleIdPayload(
  * UI (evidenceHash, hermes user id, full constraints — surfaces just
  * the keys) and derives lastRun/nextRun summaries.
  */
-function projectScheduleJob(
-  tuple: import('../gateway/scheduling/types.ts').ScheduledHypothesisTuple,
-): {
+function projectScheduleJob(tuple: import('../gateway/scheduling/types.ts').ScheduledHypothesisTuple): {
   id: string;
   profile: string;
   cron: string;

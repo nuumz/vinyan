@@ -14,6 +14,7 @@
 
 import { resolve as resolvePath } from 'node:path';
 import { asPersonaId } from '../core/agent-vocabulary.ts';
+import { emitAuditEntry } from '../core/audit-emit.ts';
 import type { VinyanBus } from '../core/bus.ts';
 import { LEVEL_CONFIG, withLevel } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
@@ -3557,6 +3558,17 @@ async function executeTaskCore(
                 confidence: criticResult.confidence,
                 reason: criticResult.reason,
               });
+              emitAuditEntry({
+                bus: deps.bus,
+                taskId: input.id,
+                actor: { type: 'critic' },
+                variant: {
+                  kind: 'verdict',
+                  source: 'critic',
+                  pass: criticResult.approved,
+                  confidence: criticResult.confidence,
+                },
+              });
               if (!criticResult.approved) {
                 workingMemory.recordFailedApproach(
                   finalTrace.approach,
@@ -3595,6 +3607,17 @@ async function executeTaskCore(
                 accepted: false,
                 confidence: 0,
                 reason: `Critic engine error: ${criticError instanceof Error ? criticError.message : String(criticError)}`,
+              });
+              emitAuditEntry({
+                bus: deps.bus,
+                taskId: input.id,
+                actor: { type: 'critic' },
+                variant: {
+                  kind: 'verdict',
+                  source: 'critic',
+                  pass: false,
+                  confidence: 0,
+                },
               });
               workingMemory.recordFailedApproach(
                 finalTrace.approach,

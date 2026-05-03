@@ -17,6 +17,10 @@ import { buildShortCircuitProvenance } from '../governance-provenance.ts';
 import { hierarchyFromInput } from '../observability/audit-hierarchy.ts';
 import { deriveOracleIndependenceAudit } from '../oracle-independence.ts';
 import {
+  applyInjectedPriorDiscount,
+  lookupInjectedPriorMultiplier,
+} from './injected-prior-discount.ts';
+import {
   type ConfidenceDecision,
   computePipelineConfidence,
   deriveConfidenceDecision,
@@ -179,11 +183,33 @@ export async function executeVerifyPhase(
     commonsenseSignals,
   );
 
+  // ── A5 inject-dependency discount ────────────────────────────
+  // When this task's generation consumed cot-injected reasoning from
+  // a prior round, the verdict is conditional on the prior round's
+  // correctness. Look up the inject-decision row that targeted us
+  // (via the in-memory registry, falling back to the durable log)
+  // and compute a multiplier (default 0.85; tunable via
+  // `verify.injected_prior_discount`). When no inject targets us,
+  // multiplier is 1.0 — verdict confidence unchanged.
+  // Why 0.85 default: light enough to remain actionable, strong
+  // enough that a chain of two dependent rounds drops confidence
+  // by ~28% so the deliberation gate fires sooner. See registry.
+  const injectLookup = lookupInjectedPriorMultiplier({
+    taskId: input.id,
+    ...(input.parentTaskId ? { parentTaskId: input.parentTaskId } : {}),
+    ...(deps.injectDependencyRegistry
+      ? { injectDependencyRegistry: deps.injectDependencyRegistry }
+      : {}),
+    ...(deps.taskEventStore ? { taskEventStore: deps.taskEventStore } : {}),
+    ...(deps.parameterStore ? { parameterStore: deps.parameterStore } : {}),
+  });
+
   // ── Emit per-oracle verdicts ──────────────────────────────────
   const passedOracles: string[] = [];
   const failedOracles: string[] = [];
   for (const [oracleName, verdict] of Object.entries(verification.verdicts)) {
     deps.bus?.emit('oracle:verdict', { taskId: input.id, oracleName, verdict });
+    const discountedConfidence = applyInjectedPriorDiscount(verdict.confidence, injectLookup);
     emitAuditEntry({
       bus: deps.bus,
       taskId: input.id,
@@ -193,7 +219,7 @@ export async function executeVerifyPhase(
         kind: 'verdict',
         source: 'oracle',
         pass: verdict.verified,
-        ...(typeof verdict.confidence === 'number' ? { confidence: verdict.confidence } : {}),
+        ...(typeof discountedConfidence === 'number' ? { confidence: discountedConfidence } : {}),
         ...(verdict.falsifiableBy ? { falsifiableBy: verdict.falsifiableBy } : {}),
         oracleId: oracleName,
       },

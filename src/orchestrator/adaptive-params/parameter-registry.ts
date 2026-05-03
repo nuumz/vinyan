@@ -267,6 +267,36 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     tunable: true,
   },
 
+  // ── Verifier-side confidence discount on injected priors (A5) ──
+  {
+    key: 'verify.injected_prior_discount',
+    type: 'number',
+    default: 0.85,
+    range: [0, 1],
+    axiom: 'A5',
+    owner: 'phase-verify',
+    description:
+      'Multiplier applied to oracle verdict confidence when the verified ' +
+      'generation depended on a CoT-inject decision (ruleId=collab-cot-inject-v1) ' +
+      'targeting the current sub-task. Lower → stricter A5 honesty about ' +
+      'memory-as-evidence dependency; sleep-cycle may tune within range.',
+    tunable: true,
+  },
+  // ── CoT continuity (A10 + A4 freshness) ──
+  {
+    key: 'cot.reuse_max_staleness_ms',
+    type: 'duration-ms',
+    default: 300_000,
+    range: [10_000, 24 * 60 * 60 * 1000],
+    axiom: 'A10',
+    owner: 'collaboration-block',
+    description:
+      'Drop a prior-round thought from CoT injection when its age exceeds this. ' +
+      'Bounds the staleness window introduced when a sub-task pauses on an approval / ' +
+      'human-input gate between rounds — A10 grounded-fresh contract. A4 also benefits ' +
+      'because file-hash drift correlates with elapsed time.',
+    tunable: true,
+  },
   // ── World-graph retention (A4) ──
   {
     key: 'world_graph.retention_max_age_days',

@@ -139,11 +139,31 @@ export interface TaskProcessSubtask {
   outputPreview?: string;
 }
 
+/**
+ * Per-(stepId, round) row for the collaboration block. Distinct from
+ * `multiAgentSubtasks` which keeps "one row per agent" cardinality
+ * (`collaboration-block.ts:12-16`); this surface gives the UI the
+ * round-by-round timeline so the operator can drill into a debate
+ * without breaking the agent-card cardinality contract.
+ */
+export interface TaskProcessCollaborationRound {
+  stepId: string;
+  round: number;
+  agentId?: string;
+  status: 'completed' | 'failed' | string;
+  outputPreview?: string;
+  tokensConsumed?: number;
+  startedAt?: number;
+  completedAt?: number;
+}
+
 export interface TaskProcessPlan {
   decisionStage?: string;
   todoList: TaskProcessTodoItem[];
   steps: TaskProcessPlanStep[];
   multiAgentSubtasks: TaskProcessSubtask[];
+  /** Per-(stepId, round) rows surfaced from `workflow:collaboration_round` events. */
+  collaborationRounds?: TaskProcessCollaborationRound[];
   groupMode?: string;
   winner?: { agentId?: string; reasoning?: string; runnerUpAgentId?: string };
 }
@@ -328,6 +348,12 @@ export interface TaskProcessSectionCompleteness {
   count: number;
   /** Free-form for `partial` / `unclassifiable` (e.g., "no thought-block boundary"). */
   reason?: string;
+  /**
+   * Set when the projection capped the per-section fan-out (today only
+   * the parent-rolled `thoughts` section uses this — children with very
+   * long CoT are bounded so the projection stays under a fixed budget).
+   */
+  truncated?: boolean;
 }
 
 export interface TaskProcessProjection {
@@ -842,10 +868,34 @@ export class TaskProcessProjectionService {
     const todoMap = new Map<string, TaskProcessTodoItem>();
     const stepMap = new Map<string, TaskProcessPlanStep>();
     const subtaskMap = new Map<string, TaskProcessSubtask>();
+    // Per-(stepId, round) keyed so re-emits idempotently update the same
+    // row. Insertion order matters for deterministic UI ordering — Map
+    // preserves insertion order in TS so a chronological event stream
+    // produces a chronological collaborationRounds[] array.
+    const roundsMap = new Map<string, TaskProcessCollaborationRound>();
+    const roundKey = (stepId: string, round: number): string => `${stepId}::${round}`;
 
     for (const ev of events) {
       const p = (ev.payload ?? {}) as Record<string, unknown>;
       switch (ev.eventType) {
+        case 'workflow:collaboration_round': {
+          const stepId = typeof p.stepId === 'string' ? p.stepId : undefined;
+          const round = typeof p.round === 'number' ? p.round : undefined;
+          if (!stepId || round === undefined) break;
+          const key = roundKey(stepId, round);
+          const existing = roundsMap.get(key);
+          roundsMap.set(key, {
+            stepId,
+            round,
+            status: typeof p.status === 'string' ? p.status : (existing?.status ?? 'unknown'),
+            ...(typeof p.agentId === 'string' ? { agentId: p.agentId } : existing?.agentId ? { agentId: existing.agentId } : {}),
+            ...(typeof p.outputPreview === 'string' ? { outputPreview: p.outputPreview } : existing?.outputPreview ? { outputPreview: existing.outputPreview } : {}),
+            ...(typeof p.tokensConsumed === 'number' ? { tokensConsumed: p.tokensConsumed } : existing?.tokensConsumed !== undefined ? { tokensConsumed: existing.tokensConsumed } : {}),
+            ...(typeof p.startedAt === 'number' ? { startedAt: p.startedAt } : existing?.startedAt !== undefined ? { startedAt: existing.startedAt } : {}),
+            ...(typeof p.completedAt === 'number' ? { completedAt: p.completedAt } : existing?.completedAt !== undefined ? { completedAt: existing.completedAt } : {}),
+          });
+          break;
+        }
         case 'workflow:decision_recorded': {
           if (typeof p.stage === 'string') decisionStage = p.stage;
           else if (typeof p.decisionStage === 'string') decisionStage = p.decisionStage;
@@ -866,9 +916,43 @@ export class TaskProcessProjectionService {
           }
           break;
         }
+        // Authoritative source for step descriptions. The executor emits
+        // `workflow:plan_ready` with the finalized `stepsForEvent` array
+        // (workflow-executor.ts:589-600, 621-629, 721-726) — `decision_recorded`
+        // above only carries the rule-based decision payload and may not
+        // include `steps[]`. Fold both events; later writes win on
+        // description/strategy so plan_ready becomes the source of truth.
+        case 'workflow:plan_ready': {
+          if (Array.isArray(p.steps)) {
+            for (const step of p.steps as Array<Record<string, unknown>>) {
+              if (typeof step.id !== 'string') continue;
+              const existing = stepMap.get(step.id);
+              stepMap.set(step.id, {
+                id: step.id,
+                description: typeof step.description === 'string' ? step.description : (existing?.description ?? ''),
+                strategy: typeof step.strategy === 'string' ? step.strategy : existing?.strategy,
+                status: existing?.status ?? 'pending',
+                ...(typeof step.agentId === 'string'
+                  ? { agentId: step.agentId }
+                  : existing?.agentId
+                    ? { agentId: existing.agentId }
+                    : {}),
+                ...(typeof step.subTaskId === 'string'
+                  ? { subTaskId: step.subTaskId }
+                  : existing?.subTaskId
+                    ? { subTaskId: existing.subTaskId }
+                    : {}),
+              });
+            }
+          }
+          break;
+        }
         case 'workflow:todo_created': {
-          if (Array.isArray(p.todos)) {
-            for (const todo of p.todos as Array<Record<string, unknown>>) {
+          // Emitter is `workflow-executor.ts:559-564` which carries `todoList`.
+          // Older fixtures / replays may use the alias `todos`; accept both.
+          const list = Array.isArray(p.todoList) ? p.todoList : Array.isArray(p.todos) ? p.todos : null;
+          if (list) {
+            for (const todo of list as Array<Record<string, unknown>>) {
               if (typeof todo.id !== 'string') continue;
               todoMap.set(todo.id, {
                 id: todo.id,
@@ -881,8 +965,9 @@ export class TaskProcessProjectionService {
           break;
         }
         case 'workflow:todo_updated': {
-          if (Array.isArray(p.todos)) {
-            for (const todo of p.todos as Array<Record<string, unknown>>) {
+          const list = Array.isArray(p.todoList) ? p.todoList : Array.isArray(p.todos) ? p.todos : null;
+          if (list) {
+            for (const todo of list as Array<Record<string, unknown>>) {
               if (typeof todo.id !== 'string') continue;
               const existing = todoMap.get(todo.id);
               todoMap.set(todo.id, {
@@ -977,6 +1062,12 @@ export class TaskProcessProjectionService {
       }
     }
 
+    const collaborationRounds = Array.from(roundsMap.values());
+    // Sort rounds: by stepId then round so callers can scan a single
+    // agent's timeline contiguously. Insertion order alone won't give
+    // that when the executor dispatches concurrently.
+    collaborationRounds.sort((a, b) => a.stepId.localeCompare(b.stepId) || a.round - b.round);
+
     return {
       ...(decisionStage ? { decisionStage } : {}),
       ...(groupMode ? { groupMode } : {}),
@@ -984,6 +1075,7 @@ export class TaskProcessProjectionService {
       todoList: Array.from(todoMap.values()),
       steps: Array.from(stepMap.values()),
       multiAgentSubtasks: Array.from(subtaskMap.values()),
+      ...(collaborationRounds.length > 0 ? { collaborationRounds } : {}),
     };
   }
 
@@ -1055,6 +1147,29 @@ export class TaskProcessProjectionService {
     const escalations: TaskProcessEscalation[] = [];
     let routingLevel: number | undefined;
 
+    // Helper: fold a started/completed pair under one phase key. Used for
+    // both raw `phase:*` events and the workflow-lifecycle events we
+    // re-cast as `workflow:<stage>` phases below so the operator sees a
+    // unified phase list whether the task ran through core-loop's
+    // perception/comprehension/etc pipeline or the workflow executor's
+    // decision/plan_ready/dispatch pipeline.
+    const setStarted = (name: string, ts: number): void => {
+      if (!phases.has(name)) {
+        phases.set(name, { name, status: 'started', startedAt: ts });
+      }
+    };
+    const setCompleted = (name: string, ts: number, durationMs?: number): void => {
+      const existing = phases.get(name) ?? { name, status: 'started', startedAt: ts };
+      phases.set(name, {
+        ...existing,
+        status: 'completed',
+        finishedAt: ts,
+        ...(typeof durationMs === 'number'
+          ? { durationMs }
+          : { durationMs: Math.max(0, ts - existing.startedAt) }),
+      });
+    };
+
     for (const ev of events) {
       const p = (ev.payload ?? {}) as Record<string, unknown>;
       switch (ev.eventType) {
@@ -1076,6 +1191,39 @@ export class TaskProcessProjectionService {
           } else {
             phases.set(name, existing);
           }
+          break;
+        }
+        // Workflow-lifecycle events double as phase markers when the task
+        // ran through the workflow executor (which bypasses core-loop's
+        // `phase:*` instrumentation). We name them `workflow:<stage>` so
+        // they cannot collide with native phase names.
+        case 'workflow:decision_recorded': {
+          setCompleted('workflow:decision_recorded', ev.ts);
+          break;
+        }
+        case 'workflow:plan_ready': {
+          setCompleted('workflow:plan_ready', ev.ts);
+          break;
+        }
+        case 'workflow:step_start': {
+          const stepId = typeof p.stepId === 'string' ? p.stepId : 'unknown';
+          setStarted(`workflow:step:${stepId}`, ev.ts);
+          break;
+        }
+        case 'workflow:step_complete': {
+          const stepId = typeof p.stepId === 'string' ? p.stepId : 'unknown';
+          const dur = typeof p.durationMs === 'number' ? p.durationMs : undefined;
+          setCompleted(`workflow:step:${stepId}`, ev.ts, dur);
+          break;
+        }
+        case 'workflow:delegate_dispatched': {
+          const stepId = typeof p.stepId === 'string' ? p.stepId : 'unknown';
+          setStarted(`workflow:delegate:${stepId}`, ev.ts);
+          break;
+        }
+        case 'workflow:delegate_completed': {
+          const stepId = typeof p.stepId === 'string' ? p.stepId : 'unknown';
+          setCompleted(`workflow:delegate:${stepId}`, ev.ts);
           break;
         }
         case 'agent:tool_started': {
@@ -1194,18 +1342,95 @@ export class TaskProcessProjectionService {
     for (const ev of events) {
       if (ev.eventType === 'audit:entry') continue;
       const synth = synthesizeAuditEntry(ev, realKindsSeen);
-      if (synth) entries.push(synth);
+      if (!synth) continue;
+      if (Array.isArray(synth)) {
+        for (const entry of synth) entries.push(entry);
+      } else {
+        entries.push(synth);
+      }
     }
 
     // Stable chronological order. Same-ts entries fall back to id for determinism.
     entries.sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
 
+    const descendantTaskIds = (() => {
+      const store = this.deps.taskEventStore;
+      if (!store) return [] as string[];
+      try {
+        return store.listChildTaskIds(taskId);
+      } catch {
+        return [] as string[];
+      }
+    })();
+
+    // G6: parent rolls up child thoughts. When this task is a
+    // collaboration parent (debate / parallel / comparison), pull
+    // `kind:'thought'` audit rows from each immediate child task and
+    // merge them into the parent's thoughts bucket so the operator
+    // sees the agents' reasoning on one surface. Restricted to
+    // `kind:'thought'` to avoid duplicating tool calls / decisions
+    // that belong to the child's own process-state surface.
+    const isCollaborationParent = ((): boolean => {
+      for (const ev of events) {
+        if (ev.eventType === 'workflow:collaboration_round') return true;
+        if (ev.eventType === 'workflow:subtasks_planned') {
+          const p = (ev.payload ?? {}) as { groupMode?: unknown };
+          if (
+            p.groupMode === 'debate' ||
+            p.groupMode === 'parallel' ||
+            p.groupMode === 'comparison'
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
+    })();
+
+    const childThoughtCap = 200;
+    const childThoughts: AuditEntry[] = [];
+    let childThoughtsTruncated = false;
+    if (isCollaborationParent && descendantTaskIds.length > 0 && this.deps.taskEventStore) {
+      const store = this.deps.taskEventStore;
+      for (const childId of descendantTaskIds) {
+        let childEvents: PersistedTaskEvent[] = [];
+        try {
+          childEvents = store.listForTask(childId, { limit: childThoughtCap * 4 });
+        } catch {
+          continue;
+        }
+        let perChild = 0;
+        for (const ev of childEvents) {
+          if (ev.eventType !== 'audit:entry') continue;
+          const result = safeParseAuditEntry(ev.payload);
+          if (!result.ok) continue;
+          if (result.entry.kind !== 'thought') continue;
+          if (perChild >= childThoughtCap) {
+            childThoughtsTruncated = true;
+            break;
+          }
+          childThoughts.push(result.entry);
+          perChild++;
+        }
+      }
+    }
+
+    const allEntries = childThoughts.length > 0 ? entries.concat(childThoughts) : entries;
+    if (childThoughts.length > 0) {
+      allEntries.sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
+    }
+
+    const completenessBySection = computeAuditCompleteness(allEntries, events, {
+      descendantTaskIds,
+      childThoughtsTruncated,
+    });
+
     return {
-      entries,
-      bySection: groupAuditBySection(entries),
-      byEntity: computeAuditByEntity(taskId, entries),
-      provenance: computeAuditProvenance(entries),
-      completenessBySection: computeAuditCompleteness(entries, events),
+      entries: allEntries,
+      bySection: groupAuditBySection(allEntries),
+      byEntity: computeAuditByEntity(taskId, allEntries),
+      provenance: computeAuditProvenance(allEntries),
+      completenessBySection,
     };
   }
 }
@@ -1414,11 +1639,15 @@ const ZERO_HASH = '0'.repeat(64);
  * task has no real entry of the same kind. Returns undefined when the event
  * has no audit-relevant mapping or when the kind is already covered by a
  * real `audit:entry` row in the same task.
+ *
+ * May return an array when one event maps to multiple kinds (e.g.
+ * `workflow:delegate_dispatched` synthesizes both `subtask` and `subagent`
+ * rows under today's 1:1 invariant — the caller flattens).
  */
 function synthesizeAuditEntry(
   ev: PersistedTaskEvent,
   realKinds: ReadonlySet<AuditEntry['kind']>,
-): AuditEntry | undefined {
+): AuditEntry | AuditEntry[] | undefined {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
   const taskId = typeof p.taskId === 'string' ? p.taskId : ev.taskId;
   const baseId = `synth:${ev.id}`;
@@ -1588,19 +1817,44 @@ function synthesizeAuditEntry(
     case 'workflow:delegate_dispatched': {
       const subTaskId = typeof p.subTaskId === 'string' ? p.subTaskId : undefined;
       if (!subTaskId) return undefined;
-      if (realKinds.has('subtask') || realKinds.has('subagent')) return undefined;
-      // Pick `subtask` as the canonical synth kind for delegate dispatch;
-      // a corresponding subagent row would duplicate today (1:1 mapping).
-      // Real emit sites already produce both, so the realKinds gate above
-      // is what suppresses synthesis once the new emits land.
-      return {
-        ...wrapper,
-        actor: { type: 'orchestrator' },
-        subTaskId,
-        subAgentId: subTaskId,
-        kind: 'subtask',
-        phase: 'spawn',
-      };
+      // Skip synthesis only when BOTH kinds already exist as real rows.
+      // If only one kind has real coverage we still synthesize the other
+      // — older replays may carry one but not the other.
+      const hasSubtask = realKinds.has('subtask');
+      const hasSubagent = realKinds.has('subagent');
+      if (hasSubtask && hasSubagent) return undefined;
+      // Today the 1:1 invariant says one delegate dispatch → one subtask
+      // identity AND one subagent identity. Real emit sites now produce
+      // both (workflow-executor.ts:1712-1730 + collaboration-block dispatch);
+      // legacy event streams (pre-PR-3) carry only `workflow:delegate_dispatched`
+      // — synthesize the missing kind(s) so `bySection.subAgents` is non-
+      // empty for old replays without forcing a backfill migration.
+      const out: AuditEntry[] = [];
+      if (!hasSubtask) {
+        out.push({
+          ...wrapper,
+          actor: { type: 'orchestrator' },
+          subTaskId,
+          subAgentId: subTaskId,
+          kind: 'subtask',
+          phase: 'spawn',
+        });
+      }
+      if (!hasSubagent) {
+        out.push({
+          ...wrapper,
+          // Suffix the id so the two synthesized rows for one source
+          // event don't collide when callers index by AuditEntry.id.
+          id: `${wrapper.id}:subagent`,
+          actor: { type: 'orchestrator' },
+          subTaskId,
+          subAgentId: subTaskId,
+          kind: 'subagent',
+          phase: 'spawn',
+          ...(typeof p.agentId === 'string' && p.agentId ? { persona: p.agentId } : {}),
+        });
+      }
+      return out;
     }
     // Phase 2.7: synthesize session lifecycle (folded by SessionProcessProjectionService).
     case 'session:created': {
@@ -1750,16 +2004,31 @@ function computeAuditProvenance(entries: readonly AuditEntry[]): TaskProcessProv
 }
 
 /**
- * Per-section completeness — honest signals only. Today the only section
- * with a known unclassifiable case is `thoughts`, because thought-block
- * boundaries land in PR-5; until then a task's CoT can't be honestly
- * classified per-block. Other sections report 'complete' with the count
- * of folded entries, which is true at the projection layer regardless of
- * what synthesis vs real-row balance produced them.
+ * Per-section completeness — honest signals only.
+ *
+ * `thoughts` is `partial` when any thought entries exist, otherwise
+ * `unclassifiable` with a routing-aware reason that explains WHY the
+ * task carries no thoughts on its own taskId — without referencing
+ * roadmap labels (PR-N) that go stale the moment the PR lands. The
+ * three branches mirror the three legitimate ways a task can have
+ * `counts.thoughts === 0`:
+ *
+ *   1. The task delegated to children (multi-agent debate / sub-tasks).
+ *      Thoughts live on child taskIds; parent rollup is tracked
+ *      separately (G6 in the gap-closing plan).
+ *   2. The task ran on the L0 routing path which bypasses the
+ *      agent-loop (no agent-loop = no thought-block emission).
+ *   3. None of the above — task ran but produced no thought entries.
+ *      Emit a neutral message so the operator does not chase a ghost.
  */
 function computeAuditCompleteness(
   entries: readonly AuditEntry[],
   events: readonly PersistedTaskEvent[],
+  context?: {
+    descendantTaskIds?: readonly string[];
+    /** True when child-thought rollup hit the per-child cap. */
+    childThoughtsTruncated?: boolean;
+  },
 ): TaskProcessSectionCompleteness[] {
   const counts: Record<AuditSection, number> = {
     thoughts: 0,
@@ -1832,11 +2101,39 @@ function computeAuditCompleteness(
   const orphanStarted = [...startedCallIds].filter((id) => !endedCallIds.has(id)).length;
 
   const result: TaskProcessSectionCompleteness[] = [];
+  const thoughtsReason = ((): string | undefined => {
+    if (counts.thoughts > 0) {
+      // When we have rolled-up child thoughts, the cap-truncation
+      // signal is the only honest reason to surface; otherwise no
+      // reason needed.
+      return context?.childThoughtsTruncated
+        ? 'child-thought rollup capped at 200 per child'
+        : undefined;
+    }
+    if ((context?.descendantTaskIds?.length ?? 0) > 0) {
+      return 'thoughts emitted on child tasks (delegation / multi-agent debate)';
+    }
+    let routingLevel: number | undefined;
+    for (const ev of events) {
+      const p = (ev.payload ?? {}) as Record<string, unknown>;
+      if (
+        (ev.eventType === 'task:start' || ev.eventType === 'agent:routed') &&
+        typeof p.routingLevel === 'number'
+      ) {
+        routingLevel = p.routingLevel;
+      }
+    }
+    if (routingLevel === 0) {
+      return 'L0 routing path bypasses agent-loop; no thoughts emitted';
+    }
+    return 'no thought entries recorded for this task';
+  })();
   result.push({
     section: 'thoughts',
     kind: counts.thoughts > 0 ? 'partial' : 'unclassifiable',
     count: counts.thoughts,
-    reason: counts.thoughts > 0 ? undefined : 'no thought-block boundaries until PR-5 lands',
+    ...(thoughtsReason ? { reason: thoughtsReason } : {}),
+    ...(context?.childThoughtsTruncated ? { truncated: true } : {}),
   });
   result.push({
     section: 'toolCalls',

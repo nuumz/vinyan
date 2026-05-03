@@ -617,6 +617,19 @@ export interface TaskInput {
    */
   capabilityToken?: CapabilityToken;
   /**
+   * CoT continuity inject payload (Task 4 / L2 compaction-survival).
+   * Set by `collaboration-block` on round-N+1 sub-task dispatches when
+   * the inject decision was `cot-inject:N`. Carries the formatted
+   * inject block (the same string appended to `goal`) so agent-loop
+   * can ALSO record it as a preserve-flagged transcript turn — the
+   * transcript copy survives compaction (see `transcript-compactor.ts`
+   * COMPACTION_PRESERVE_FLAG) and resume via `init.turns` so the
+   * inject content remains traceable across long agent-loop runs.
+   *
+   * Absent on round-0 dispatches and on non-collaboration tasks.
+   */
+  cotInjectionPayload?: string;
+  /**
    * Specialist agent ID (e.g., 'developer', 'author'). Set by:
    *   1. CLI `--agent=<id>` (user override, skips auto-classification)
    *   2. Intent resolver auto-classification (when not pre-set)

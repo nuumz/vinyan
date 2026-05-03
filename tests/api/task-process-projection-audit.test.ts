@@ -327,7 +327,170 @@ describe('buildAuditLog — per-section completeness', () => {
     const thoughts = proj?.completenessBySection?.find((c) => c.section === 'thoughts');
     expect(thoughts?.kind).toBe('unclassifiable');
     expect(thoughts?.count).toBe(0);
-    expect(thoughts?.reason).toContain('thought-block boundaries');
+    // Routing-aware reason; this task has no descendants and no L0 routing
+    // signal, so the default branch fires.
+    expect(thoughts?.reason).toBe('no thought entries recorded for this task');
+  });
+
+  test('thoughts section reason credits child tasks when this task delegated', () => {
+    plantTaskRow('task-1');
+    append(
+      'task-1',
+      'workflow:delegate_dispatched',
+      { taskId: 'task-1', subTaskId: 'task-1-delegate-step-a-r0', stepId: 'step-a' },
+      1000,
+    );
+
+    const proj = makeService().build('task-1');
+    const thoughts = proj?.completenessBySection?.find((c) => c.section === 'thoughts');
+    expect(thoughts?.kind).toBe('unclassifiable');
+    expect(thoughts?.count).toBe(0);
+    expect(thoughts?.reason).toBe(
+      'thoughts emitted on child tasks (delegation / multi-agent debate)',
+    );
+  });
+
+  test('parent collaboration task rolls up child kind:thought audit rows', () => {
+    // Multi-agent debate: parent spawns 2 children, each emits 2 thought
+    // entries. The parent's `bySection.thoughts` MUST include all 4 child
+    // thoughts so the operator can read the agents' reasoning on the
+    // parent surface — without this rollup the parent shows nothing
+    // because its own taskId emits no thoughts.
+    plantTaskRow('parent-debate');
+    plantTaskRow('parent-debate-delegate-p-researcher-r0');
+    plantTaskRow('parent-debate-delegate-p-mentor-r0');
+    // Parent registers itself as a debate parent.
+    append(
+      'parent-debate',
+      'workflow:subtasks_planned',
+      {
+        groupMode: 'debate',
+        subtasks: [
+          { subtaskId: 'parent-debate-delegate-p-researcher-r0', stepId: 'p-researcher', status: 'planned', agentId: 'researcher' },
+          { subtaskId: 'parent-debate-delegate-p-mentor-r0', stepId: 'p-mentor', status: 'planned', agentId: 'mentor' },
+        ],
+      },
+      1100,
+    );
+    // Parent's `descendantTaskIds` is computed from delegate_dispatched events.
+    append(
+      'parent-debate',
+      'workflow:delegate_dispatched',
+      { stepId: 'p-researcher', subTaskId: 'parent-debate-delegate-p-researcher-r0' },
+      1110,
+    );
+    append(
+      'parent-debate',
+      'workflow:delegate_dispatched',
+      { stepId: 'p-mentor', subTaskId: 'parent-debate-delegate-p-mentor-r0' },
+      1115,
+    );
+    // Children emit their own thoughts.
+    for (const childId of ['parent-debate-delegate-p-researcher-r0', 'parent-debate-delegate-p-mentor-r0']) {
+      for (const idx of [0, 1]) {
+        append(
+          childId,
+          'audit:entry',
+          buildAuditEntryPayload({
+            id: `${childId}-thought-${idx}`,
+            taskId: childId,
+            kind: 'thought',
+            actor: { type: 'worker' },
+            content: `${childId} thought ${idx}`,
+            ts: 1200 + idx,
+          } as Partial<AuditEntry> & { kind: 'thought' }),
+          1200 + idx,
+        );
+      }
+    }
+    const proj = makeService().build('parent-debate');
+    const thoughts = proj?.bySection?.thoughts ?? [];
+    expect(thoughts).toHaveLength(4);
+    // Each rolled-up thought retains its origin child taskId so the UI
+    // can group by child.
+    const taskIdsOnThoughts = new Set(thoughts.map((t) => t.taskId));
+    expect(taskIdsOnThoughts.has('parent-debate-delegate-p-researcher-r0')).toBe(true);
+    expect(taskIdsOnThoughts.has('parent-debate-delegate-p-mentor-r0')).toBe(true);
+    // Completeness moves from 'unclassifiable' to 'partial' once child
+    // thoughts are folded in.
+    const cb = proj?.completenessBySection?.find((c) => c.section === 'thoughts');
+    expect(cb?.kind).toBe('partial');
+    expect(cb?.count).toBe(4);
+    expect(cb?.truncated).toBeUndefined();
+  });
+
+  test('parent rollup ignored when groupMode does NOT signal collaboration', () => {
+    // Negative gate: a generic delegating task (no collaboration block,
+    // groupMode not in the debate/parallel/comparison set) must NOT pull
+    // child thoughts up — those belong to the child's own surface.
+    plantTaskRow('parent-generic');
+    plantTaskRow('parent-generic-child');
+    append(
+      'parent-generic',
+      'workflow:delegate_dispatched',
+      { stepId: 's1', subTaskId: 'parent-generic-child' },
+      1100,
+    );
+    append(
+      'parent-generic-child',
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: 'parent-generic-child-thought',
+        taskId: 'parent-generic-child',
+        kind: 'thought',
+        actor: { type: 'worker' },
+        content: 'child thought',
+        ts: 1200,
+      } as Partial<AuditEntry> & { kind: 'thought' }),
+      1200,
+    );
+    const proj = makeService().build('parent-generic');
+    expect(proj?.bySection?.thoughts ?? []).toHaveLength(0);
+    // Reason still credits delegated children — descendantTaskIds is set.
+    const cb = proj?.completenessBySection?.find((c) => c.section === 'thoughts');
+    expect(cb?.kind).toBe('unclassifiable');
+    expect(cb?.reason).toBe(
+      'thoughts emitted on child tasks (delegation / multi-agent debate)',
+    );
+  });
+
+  test('legacy workflow:delegate_dispatched synthesizes paired subtask + subagent rows', () => {
+    // Replays from before the real audit emits landed only carry the
+    // `workflow:delegate_dispatched` event. The synthesis fallback must
+    // produce BOTH a `subtask` and a `subagent` audit row so the UI's
+    // bySection.subAgents tab is non-empty for those replays.
+    plantTaskRow('task-1');
+    append(
+      'task-1',
+      'workflow:delegate_dispatched',
+      {
+        taskId: 'task-1',
+        subTaskId: 'task-1-delegate-p-researcher-r0',
+        stepId: 'p-researcher',
+        agentId: 'researcher',
+      },
+      1000,
+    );
+
+    const proj = makeService().build('task-1');
+    expect(proj?.bySection?.subTasks.length).toBe(1);
+    expect(proj?.bySection?.subAgents.length).toBe(1);
+    const subagent = proj?.bySection?.subAgents[0]!;
+    if (subagent.kind !== 'subagent') throw new Error('expected subagent');
+    expect(subagent.subAgentId).toBe('task-1-delegate-p-researcher-r0');
+    expect(subagent.persona).toBe('researcher');
+    expect(subagent.phase).toBe('spawn');
+  });
+
+  test('thoughts section reason names L0 path when routing level was 0', () => {
+    plantTaskRow('task-1');
+    append('task-1', 'task:start', { taskId: 'task-1', routingLevel: 0 }, 1000);
+
+    const proj = makeService().build('task-1');
+    const thoughts = proj?.completenessBySection?.find((c) => c.section === 'thoughts');
+    expect(thoughts?.kind).toBe('unclassifiable');
+    expect(thoughts?.count).toBe(0);
+    expect(thoughts?.reason).toBe('L0 routing path bypasses agent-loop; no thoughts emitted');
   });
 
   test('toolCalls section reports partial when started lacks matching executed', () => {

@@ -1653,6 +1653,29 @@ export interface VinyanBusEvents {
   };
 
   /**
+   * Per-(stepId, round) telemetry from the collaboration block's rounds
+   * loop. Emitted ONCE per primary at the end of each round so the
+   * projection's `plan.collaborationRounds[]` carries the round-by-round
+   * timeline (output preview, tokens, timing) without breaking the
+   * "one card per agent" cardinality contract that
+   * `workflow:delegate_dispatched` upholds. Failed rounds carry an
+   * `errorMessage` and `tokensConsumed: 0`.
+   */
+  'workflow:collaboration_round': {
+    taskId: string;
+    stepId: string;
+    subTaskId: string;
+    agentId?: string;
+    round: number;
+    status: 'completed' | 'failed';
+    tokensConsumed: number;
+    outputPreview?: string;
+    errorMessage?: string;
+    startedAt: number;
+    completedAt: number;
+  };
+
+  /**
    * Synthesizer LLM ignored the STITCHER rule and compressed/paraphrased
    * step outputs into a tight register. Observability event for the
    * compression safety net in `buildResult` — the executor discards the

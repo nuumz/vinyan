@@ -82,6 +82,10 @@ beforeAll(() => {
   bus = createBus();
   const sessionStore = new SessionStore(db);
   const sessionManager = new SessionManager(sessionStore);
+  // Mirror serve.ts wiring — SessionManager is the canonical emit site
+  // for `session:*` lifecycle events; the server layer no longer
+  // re-emits (changed in α to fix the L1 double-emit finding).
+  sessionManager.attachBus(bus);
   const traceStore = new TraceStore(db);
   const metricsCollector = new MetricsCollector();
   metricsCollector.attach(bus);

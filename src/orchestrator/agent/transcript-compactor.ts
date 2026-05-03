@@ -17,11 +17,39 @@ export function estimateTurnTokens(turn: { type: string; [key: string]: unknown 
 }
 
 /**
+ * Marker key recognized by `isEvidenceTurn`. Any turn carrying
+ * `__preserveOnCompaction: true` survives compaction unchanged.
+ *
+ * Strategy decision (Task 4 — L2 transcript compaction survival):
+ *   We picked Strategy (a) — explicit preserve channel — over (b)
+ *   replay-after-compaction. Why (a):
+ *   1. Compaction in `agent-loop.ts:1346` mutates a LOCAL transcript
+ *      var; the running subprocess's LLM context is unaffected. So
+ *      preservation is about RESUME semantics (init.turns on a fresh
+ *      agent-loop), not active context. (a) is a single classification
+ *      hook; (b) would need a redundant audit-log scan and inject
+ *      reconstruction at compact time, with weaker provenance.
+ *   2. Today's cot-injection lands its payload in `init.goal`, NOT in
+ *      the transcript. Compaction therefore has no operational effect
+ *      on cot continuity for L1 (debate within-agent reuse). The
+ *      preserve channel is wired now so any future L2/L3 path that
+ *      DOES emit a transcript-resident inject turn (e.g., a mid-loop
+ *      "## resumed reasoning" reminder) can mark it preservable
+ *      without re-touching the partition contract.
+ *   3. The flag is non-invasive: turns that omit it behave exactly as
+ *      before, so all existing partition tests remain green.
+ */
+export const COMPACTION_PRESERVE_FLAG = '__preserveOnCompaction' as const;
+
+/**
  * Classify a turn as evidence or narrative.
  *
  * Evidence (A4 — content-addressed, immutable):
  *   - tool_results: contains file content, oracle verdicts, execution output
  *   - tool_calls: verification-related tool invocations (the request side of evidence)
+ *   - any turn carrying `__preserveOnCompaction: true` (preserve channel,
+ *     reserved for orchestrator-injected continuity payloads — see
+ *     `COMPACTION_PRESERVE_FLAG` doc above).
  *
  * Narrative (compactable):
  *   - done: final LLM reasoning summary
@@ -29,7 +57,9 @@ export function estimateTurnTokens(turn: { type: string; [key: string]: unknown 
  *   - text: free-form LLM reasoning (future turn type)
  */
 export function isEvidenceTurn(turn: { type: string; [key: string]: unknown }): boolean {
-  return turn.type === 'tool_results' || turn.type === 'tool_calls';
+  if (turn.type === 'tool_results' || turn.type === 'tool_calls') return true;
+  if (turn[COMPACTION_PRESERVE_FLAG] === true) return true;
+  return false;
 }
 
 /**

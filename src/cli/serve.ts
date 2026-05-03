@@ -37,6 +37,11 @@ import { loadConfig } from '../config/index.ts';
 import { resolveProfile } from '../config/profile-resolver.ts';
 import { SessionStore } from '../db/session-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
+import { attachCodingCliBridge } from '../memory/wiki/coding-cli-bridge.ts';
+import { MemoryWiki } from '../memory/wiki/index.ts';
+import { attachSessionIngestionBridge } from '../memory/wiki/session-ingestion-bridge.ts';
+import { attachTraceBridge } from '../memory/wiki/trace-bridge.ts';
+import { startWikiScheduler, type WikiScheduler } from '../memory/wiki/wiki-scheduler.ts';
 import { createOrchestrator } from '../orchestrator/factory.ts';
 import { createTaskQueue } from '../orchestrator/task-queue.ts';
 import {
@@ -256,6 +261,70 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
   // ── Orchestrator + server wiring ────────────────────────────────
   const orchestrator = createOrchestrator({ workspace, sessionManager, db });
 
+  // ── Memory Wiki bundle (store + writer + retriever + ingestor + lint
+  //    + consolidation). Tables migrate with the rest of the schema
+  //    (memory_wiki_*), so wiring is unconditional — best-effort: a
+  //    vault scaffold failure is logged but does not block startup, the
+  //    DB remains authoritative.
+  //
+  //    The session-ingestion bridge subscribes to `session:archived` and
+  //    `session:compacted` so each settled session lands as an immutable
+  //    wiki source. Without it the wiki is wired but starves; with it,
+  //    the markdown vault grows organically as sessions accumulate.
+  let memoryWiki: ReturnType<typeof MemoryWiki.create> | undefined;
+  const memoryWikiTeardowns: Array<() => void> = [];
+  let memoryWikiScheduler: WikiScheduler | null = null;
+  try {
+    memoryWiki = MemoryWiki.create({ db: db.getDb(), workspace, bus: orchestrator.bus });
+    console.log(
+      `[vinyan] MemoryWiki.create — vault root=${memoryWiki.layout?.root ?? '(skipped)'}`,
+    );
+    const sessionBridge = attachSessionIngestionBridge({
+      bus: orchestrator.bus,
+      sessionStore,
+      ingestor: memoryWiki.ingestor,
+      defaultProfile: resolvedProfile.name,
+    });
+    memoryWikiTeardowns.push(sessionBridge.off);
+    const traceBridge = attachTraceBridge({
+      bus: orchestrator.bus,
+      ingestor: memoryWiki.ingestor,
+      defaultProfile: resolvedProfile.name,
+    });
+    memoryWikiTeardowns.push(traceBridge.off);
+    const codingCliBridge = attachCodingCliBridge({
+      bus: orchestrator.bus,
+      ingestor: memoryWiki.ingestor,
+      defaultProfile: resolvedProfile.name,
+    });
+    memoryWikiTeardowns.push(codingCliBridge.off);
+    console.log(
+      `[vinyan] memory-wiki bridges wired — session, trace (high-signal gate), coding-cli (terminal) → ingest (profile=${resolvedProfile.name})`,
+    );
+    memoryWikiScheduler = startWikiScheduler({
+      consolidation: memoryWiki.consolidation,
+      lint: memoryWiki.lint,
+      defaultProfile: resolvedProfile.name,
+      onConsolidation: (r) => {
+        console.log(
+          `[vinyan-wiki] consolidation tick — scanned=${r.scanned} promoted=${r.promotedToCanonical.length} demoted=${r.demotedToStale.length} archived=${r.archived.length} mirrored=${r.mirroredToProvider}`,
+        );
+      },
+      onLint: (r) => {
+        const errs = r.findings.filter((f) => f.severity === 'error').length;
+        const warns = r.findings.filter((f) => f.severity === 'warn').length;
+        console.log(
+          `[vinyan-wiki] lint tick — scanned=${r.scanned} findings=${r.findings.length} (errors=${errs} warnings=${warns})`,
+        );
+      },
+    });
+    console.log(
+      '[vinyan] memory-wiki scheduler started — NREM consolidation hourly, lint 6-hourly',
+    );
+  } catch (err) {
+    console.warn('[vinyan] memory-wiki wiring failed:', err);
+  }
+
   // Late-bind the TraceStore so `getConversationHistoryDetailed` can build
   // `traceSummary` (model + agent + routing-level chips) for every
   // historical assistant message. Without this hookup the chat UI shows
@@ -359,6 +428,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       skillProposalStore: orchestrator.skillProposalStore,
       skillAutogenStateStore: orchestrator.skillAutogenStateStore,
       parameterLedger: orchestrator.parameterLedger,
+      ...(memoryWiki ? { memoryWiki } : {}),
       workspace,
       defaultProfile: resolvedProfile.name,
     },
@@ -409,6 +479,18 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
       skillAutogenOff?.();
     } catch {
       /* best-effort */
+    }
+    try {
+      memoryWikiScheduler?.stop();
+    } catch {
+      /* best-effort */
+    }
+    for (const off of memoryWikiTeardowns) {
+      try {
+        off();
+      } catch {
+        /* best-effort */
+      }
     }
     try {
       sessionManager.suspendAll();

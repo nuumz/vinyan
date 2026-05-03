@@ -397,6 +397,13 @@ export interface WorkflowExecutorDeps {
    * deployments where coding-cli routing is disabled.
    */
   codingCliStrategy?: import('../external-coding-cli/external-coding-cli-workflow-strategy.ts').CodingCliWorkflowStrategy;
+  /**
+   * Adaptive parameter store. Threaded through from the orchestrator
+   * deps so the collaboration-block path can read runtime-tuned
+   * thresholds (e.g. `cot.reuse_max_staleness_ms`). Absent ⇒ consumers
+   * fall back to module-level defaults (A9).
+   */
+  parameterStore?: import('../adaptive-params/parameter-store.ts').ParameterStore;
   intentWorkflowPrompt?: string;
   /**
    * Multi-agent collaboration directive parsed deterministically by the
@@ -826,9 +833,18 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
   // emulation layer.
   if (plan.collaborationBlock && deps.executeTask) {
     const executeTaskFn = deps.executeTask;
+    // Adaptive A10 staleness — when the parameter store is wired,
+    // derive a getter so cot-injection reads the latest tuned value.
+    // Absent store falls through to the cot-injection module default
+    // (`DEFAULT_COT_REUSE_MAX_STALENESS_MS`).
+    const paramStore = deps.parameterStore;
+    const getCotStalenessMs = paramStore
+      ? () => paramStore.getDurationMs('cot.reuse_max_staleness_ms')
+      : undefined;
     const blockResult = await runCollaborationBlock(plan, plan.collaborationBlock, input, {
       executeTask: executeTaskFn,
       ...(deps.bus ? { bus: deps.bus } : {}),
+      ...(getCotStalenessMs ? { getCotStalenessMs } : {}),
     });
     totalTokens += blockResult.totalTokensConsumed;
     for (const [stepId, result] of blockResult.stepResults) {

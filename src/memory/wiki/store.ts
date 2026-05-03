@@ -200,6 +200,38 @@ export class MemoryWikiStore {
     );
   }
 
+  // ── transactional helper ─────────────────────────────────────────────
+
+  /**
+   * Run `fn` inside a SQLite transaction (BEGIN…COMMIT). All store
+   * mutations called from `fn` either commit together or roll back
+   * together. Used by the ingestor so a `persistSource` + `writeProposals`
+   * pair cannot leave an orphan source row when a downstream page write
+   * throws (verified live in L5 — the previous non-transactional path
+   * left source rows with no pages).
+   *
+   * Synchronous: `fn` MUST NOT return a Promise. bun:sqlite transactions
+   * are sync; mixing `await` inside corrupts the transaction.
+   */
+  transaction<T>(fn: () => T): T {
+    // bun:sqlite's `db.transaction` returns a function that takes the
+    // *args* of the original closure and returns its result. We pass
+    // a thunk so the wrapper function takes no args.
+    let captured: T | undefined;
+    let captureSet = false;
+    const wrapped = this.db.transaction(() => {
+      captured = fn();
+      captureSet = true;
+    });
+    wrapped();
+    if (!captureSet) {
+      // Should never happen — the callback ran synchronously inside
+      // the transaction. If we get here, bun:sqlite changed contract.
+      throw new Error('store.transaction: callback did not run');
+    }
+    return captured as T;
+  }
+
   // ── sources ──────────────────────────────────────────────────────────
 
   insertSourceRecord(source: WikiSource): { created: boolean } {

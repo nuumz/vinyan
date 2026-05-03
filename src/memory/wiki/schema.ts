@@ -50,8 +50,33 @@ export function derivePageId(type: WikiPageType, title: string): string {
   return `${type}-${slug}`;
 }
 
-export function deriveSourceId(kind: string, contentHash: string, createdAt: number): string {
-  return createHash('sha256').update(`${kind}|${contentHash}|${createdAt}`).digest('hex');
+/**
+ * Content-addressed source ID. PURE function of `(kind, contentHash)` —
+ * same content + same kind ⇒ same id, idempotent across re-ingestions.
+ *
+ * Earlier versions mixed `createdAt` into the hash so two emits at
+ * distinct microtask timestamps produced distinct ids even with byte-
+ * identical bodies (verified in the L1 live walkthrough — every HTTP
+ * archive yielded ~2 source rows because `session-manager.ts:467` and
+ * `server.ts:4850` both emitted, and each emit ran the bridge handler
+ * at a slightly different `Date.now()`). Removing `createdAt` from the
+ * id derivation makes content-identical re-ingest a no-op via
+ * `getSourceById` dedupe.
+ *
+ * `createdAt` migrates to a column for ordering only. Old rows with
+ * time-mixed ids stay in the DB (orphan from new-content lookups, but
+ * still queryable / surfaced by the consolidation idle-archive sweep).
+ *
+ * The `_legacyCreatedAt` parameter is kept as an optional positional so
+ * callers that haven't been migrated still type-check; new code must
+ * stop passing it.
+ */
+export function deriveSourceId(
+  kind: string,
+  contentHash: string,
+  _legacyCreatedAt?: number,
+): string {
+  return createHash('sha256').update(`${kind}|${contentHash}`).digest('hex');
 }
 
 export function computeBodyHash(body: string): string {

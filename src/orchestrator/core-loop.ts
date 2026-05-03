@@ -19,6 +19,7 @@ import type { VinyanBus } from '../core/bus.ts';
 import { LEVEL_CONFIG, withLevel } from '../gate/risk-router.ts';
 import { validateInput } from '../guardrails/index.ts';
 import type { AgentMemoryAPI } from './agent-memory/agent-memory-api.ts';
+import { formatTimeoutMessage } from './budget-clamp.ts';
 import { buildConversationalResult } from './conversational-result-builder.ts';
 import type { GoalEvaluator } from './goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
@@ -285,6 +286,31 @@ export interface OrchestratorDeps {
   skillHintsConfig?: import('./skill-hints.ts').SkillHintsConfig;
   /** A10 / T6: goal-and-time grounding policy (thresholds + extended actions). */
   goalGroundingPolicy?: import('./goal-grounding.ts').GoalGroundingPolicy;
+  /**
+   * Adaptive Parameter Store — runtime read of tunable ceiling parameters.
+   * Wired by `factory.ts` when a DB is available; absent in test harnesses
+   * that bypass the factory. Consumers MUST treat this as optional and fall
+   * back to module-level constants when absent (A9 graceful degradation).
+   *
+   * Today's consumers: workflow-executor → cot-injection (`cot.reuse_max_staleness_ms`),
+   * phase-verify → injected-prior discount (`verify.injected_prior_discount`).
+   */
+  parameterStore?: import('./adaptive-params/parameter-store.ts').ParameterStore;
+  /**
+   * Per-task durable event log. Wired by factory when DB is available.
+   * phase-verify uses it to discover cross-task `kind:'decision'`
+   * inject-decision rows on the parent taskId so verdict confidence
+   * for round-N+1 sub-tasks reflects A5 dependency on round-N.
+   */
+  taskEventStore?: import('../db/task-event-store.ts').TaskEventStore;
+  /**
+   * In-memory inject-dependency index. Bus-subscribed registry that
+   * sees `kind:'decision'` rows the moment they are emitted, sidesteps
+   * the task-event-recorder buffer race. Wired alongside other bus
+   * subscribers in `factory.ts`. Optional — when absent, phase-verify
+   * falls back to the durable event log.
+   */
+  injectDependencyRegistry?: import('./phases/inject-dependency-registry.ts').InjectDependencyRegistry;
   /**
    * Ecosystem: dispatch-scoped task facts registry. When present,
    * `executeTask` registers `goal/targetFiles/deadlineAt` for the task id at
@@ -2541,6 +2567,10 @@ async function executeTaskCore(
             // step branch returns the "external-coding-cli strategy not
             // wired" failure even when the controller exists upstream.
             codingCliStrategy: deps.codingCliStrategy,
+            // Adaptive parameter store — surfaces tuned ceilings (e.g.
+            // `cot.reuse_max_staleness_ms`) into the collaboration-block
+            // dispatch path. Absent ⇒ cot-injection uses module defaults.
+            ...(deps.parameterStore ? { parameterStore: deps.parameterStore } : {}),
           });
           // Map workflow status → ExecutionTrace.outcome. The DB schema's
           // CHECK constraint on outcome only permits 'success' | 'failure' |
@@ -2929,11 +2959,18 @@ async function executeTaskCore(
         status: 'failed',
         mutations: [],
         trace: timeoutTrace,
-        answer:
-          `Task timed out after ${Math.round(elapsedMs / 1000)}s ` +
-          `(budget: ${Math.round(input.budget.maxDurationMs / 1000)}s) at routing level L${routing.level}.` +
-          diagnosticsLine +
-          ' Try narrowing the request, or raise --max-duration if the task legitimately needs more time.',
+        // Single-source copy via formatTimeoutMessage: when elapsed > budget
+        // the message names the overshoot explicitly ("exceeded budget Ys by
+        // Ks"), so an operator reading the banner does not assume
+        // elapsed ≈ budget at the moment of timeout. The diagnostics tail
+        // (`stage`/`last phase`/`plan N/M`) is built locally above and
+        // appended verbatim so this site keeps owning the diagnostic shape.
+        answer: formatTimeoutMessage({
+          elapsedMs,
+          budgetMs: input.budget.maxDurationMs,
+          routingLevel: routing.level,
+          ...(diagnosticsParts.length > 0 ? { diagnostics: diagnosticsParts.join('; ') } : {}),
+        }),
       };
       deps.bus?.emit('task:complete', { result: timeoutResult });
       return timeoutResult;
@@ -2966,13 +3003,15 @@ async function executeTaskCore(
 
       // Inner loop: retry within current routing level
       for (let retry = 0; retry < input.budget.maxRetries + deliberationBonusRetries; retry++) {
-        // ── Wall-clock timeout check ──────────────────────────────────
-        // Two-tier check:
-        //  (a) Budget already exhausted → emit timeout immediately.
-        //  (b) Less than WALL_CLOCK_SAFETY_MS remaining → refuse to
-        //      start a new attempt; the attempt cannot finish in time
-        //      and would just produce a worker timeout that gets
-        //      mis-attributed to a later level after escalation.
+        // ── Wall-clock refuse-to-start check ──────────────────────────
+        // Refuse to start a new attempt when there is too little budget
+        // left to plausibly finish. The actual per-attempt clamp on
+        // `routing.latencyBudgetMs` happens at the dispatch site in
+        // `phase-generate.ts` via `clampRoutingToWallClock` — putting it
+        // here was stale by the time `worker:dispatch` fired (phases
+        // consume real time in between). The refuse-to-start check
+        // remains here because it operates on a different signal:
+        // "skip this iteration entirely" vs "size the worker budget".
         const elapsedMs = Date.now() - startTime;
         const remainingMs = input.budget.maxDurationMs - elapsedMs;
         if (remainingMs <= WALL_CLOCK_SAFETY_MS) {
@@ -2981,19 +3020,6 @@ async function executeTaskCore(
               ? `Wall-clock timeout exceeded: ${input.budget.maxDurationMs}ms`
               : `Wall-clock budget exhausted before next attempt could start (${Math.max(0, remainingMs)}ms remaining)`,
           );
-        }
-
-        // ── Per-attempt budget cap ────────────────────────────────────
-        // Cap routing.latencyBudgetMs to remaining wall-clock budget
-        // (minus safety margin) so the worker subprocess, agent contract,
-        // and LLM proxy timeouts all respect the user's budget. Without
-        // this, an L2 attempt with latencyBudgetMs=90s started 100s into
-        // a 180s budget would run for the full 90s, overshoot the 180s
-        // total, and the timeout would be reported at whatever level the
-        // escalation block jumped to next. See audit trace ccf700c2.
-        const usableMs = remainingMs - WALL_CLOCK_SAFETY_MS;
-        if (routing.latencyBudgetMs > usableMs) {
-          routing = { ...routing, latencyBudgetMs: Math.max(1_000, usableMs) };
         }
 
         // ── L0 Skill Shortcut (Phase 2.5) ──────────────────────────────

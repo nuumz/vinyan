@@ -4308,6 +4308,38 @@ export class VinyanAPIServer {
         // best-effort
       }
     }
+
+    // JSONL session probe — counts per-session `events.jsonl` files
+    // under the profile-resolved sessions dir so the doctor can compare
+    // the JSONL backing to SQLite when hybrid storage modes are active.
+    // Best-effort: a missing dir, permission error, or unresolvable
+    // profile returns null and the doctor falls back to "jsonl=not-
+    // introspected" rather than a hard fail.
+    probes.jsonlSessions = () => {
+      try {
+        const { resolveProfile } =
+          require('../config/profile-resolver.ts') as typeof import('../config/profile-resolver.ts');
+        const { readdirSync, existsSync, statSync } = require('node:fs') as typeof import('node:fs');
+        const { join } = require('node:path') as typeof import('node:path');
+        const profile = resolveProfile({ flag: this.deps.defaultProfile });
+        const dir = profile.paths.sessionsDir;
+        if (!existsSync(dir)) return { sessionsDir: dir, sessionCount: 0 };
+        let count = 0;
+        for (const entry of readdirSync(dir)) {
+          if (entry.startsWith('.')) continue;
+          const sessionDir = join(dir, entry);
+          try {
+            if (!statSync(sessionDir).isDirectory()) continue;
+          } catch {
+            continue;
+          }
+          if (existsSync(join(sessionDir, 'events.jsonl'))) count += 1;
+        }
+        return { sessionsDir: dir, sessionCount: count };
+      } catch {
+        return null;
+      }
+    };
     if (this.deps.llmRegistry) {
       const health = this.deps.llmRegistry.getHealthStore();
       if (health) {
@@ -4526,6 +4558,17 @@ export class VinyanAPIServer {
    * session endpoint's contract, since per-task seq is meaningless across
    * the tree.
    *
+   * Each event in the descendants response carries an additive
+   * `scope: 'parent' | 'descendant'` field — `'parent'` when
+   * `event.taskId === rootTaskId`, `'descendant'` otherwise. Consumers
+   * that reconstruct parent-only state (lifecycle banner, "plan N/M"
+   * derivation) MUST filter by `scope === 'parent'` before reducing —
+   * descendant terminal events (`task:timeout` from a sub-agent, etc.)
+   * would otherwise leak into the parent's surface and surface a
+   * sub-agent failure as the root task's status (see incident
+   * `b80c5c0d-3f0e-4f29-9d94-3a88b6b4f052`). The field is additive —
+   * pre-existing consumers that ignore it continue to work.
+   *
    * Returns 404 when no recorder is wired (no DB) — clients fall back to
    * showing only the trace summary in that case.
    */
@@ -4563,11 +4606,21 @@ export class VinyanAPIServer {
       since: sinceCursor,
       limit,
     });
+    // Annotate each row with `scope: 'parent' | 'descendant'`. Additive
+    // field — does not replace any existing key, does not change ordering,
+    // does not drop rows. UI consumers that filter parent-only state
+    // (lifecycle banner, "plan N/M") read this; consumers that don't
+    // care (raw timeline rendering) ignore it. See JSDoc above for the
+    // incident that motivated the discriminator.
+    const annotatedEvents = page.events.map((e) => ({
+      ...e,
+      scope: e.taskId === taskId ? ('parent' as const) : ('descendant' as const),
+    }));
     return jsonResponse({
       taskId,
       rootTaskId: taskId,
       taskIds,
-      events: page.events,
+      events: annotatedEvents,
       nextCursor: page.nextCursor,
       truncated,
     });
@@ -4729,8 +4782,7 @@ export class VinyanAPIServer {
       title: body.title ?? null,
       description: body.description ?? null,
     });
-    // G2: Emit session bus event
-    this.deps.bus.emit('session:created', { sessionId: session.id, source: body.source ?? 'api' });
+    // `session:created` emit lives in SessionManager.create (line 379).
     return jsonResponse({ session }, 201);
   }
 
@@ -4789,13 +4841,17 @@ export class VinyanAPIServer {
    * Without this, callers got a 200 even when nothing changed and bus
    * subscribers fired on phantom transitions.
    */
+  // Session lifecycle handlers — bus emit lives in `SessionManager`
+  // (session-manager.ts:467/481/495/509/553/579) under the `if (ok)`
+  // transition guard. The HTTP layer used to re-emit after every
+  // SessionManager call, which doubled every subscriber's work (verified
+  // live in L1 — one HTTP archive yielded 2 wiki source rows). Removed.
   private handleArchiveSession(sessionId: string): Response {
     const result = this.deps.sessionManager.archive(sessionId);
     if (result.reason === 'not_found') return jsonResponse({ error: 'Session not found' }, 404);
     if (result.reason === 'invalid_state') {
       return jsonResponse({ error: 'Session cannot be archived in its current state', session: result.session }, 409);
     }
-    this.deps.bus.emit('session:archived', { sessionId });
     return jsonResponse({ session: result.session });
   }
 
@@ -4805,7 +4861,6 @@ export class VinyanAPIServer {
     if (result.reason === 'invalid_state') {
       return jsonResponse({ error: 'Session is not archived', session: result.session }, 409);
     }
-    this.deps.bus.emit('session:unarchived', { sessionId });
     return jsonResponse({ session: result.session });
   }
 
@@ -4815,7 +4870,6 @@ export class VinyanAPIServer {
     if (result.reason === 'invalid_state') {
       return jsonResponse({ error: 'Session is already in trash', session: result.session }, 409);
     }
-    this.deps.bus.emit('session:deleted', { sessionId });
     return jsonResponse({ session: result.session });
   }
 
@@ -4825,7 +4879,6 @@ export class VinyanAPIServer {
     if (result.reason === 'invalid_state') {
       return jsonResponse({ error: 'Session is not in trash', session: result.session }, 409);
     }
-    this.deps.bus.emit('session:restored', { sessionId });
     return jsonResponse({ session: result.session });
   }
 
@@ -4849,7 +4902,7 @@ export class VinyanAPIServer {
         409,
       );
     }
-    this.deps.bus.emit('session:purged', { sessionId });
+    // `session:purged` emit lives in SessionManager.hardDelete (line 553).
     return jsonResponse({ deleted: true, sessionId });
   }
 
@@ -4857,16 +4910,12 @@ export class VinyanAPIServer {
    * POST /api/v1/sessions/_trash/empty
    *
    * Bulk hard-delete every currently-trashed session. Returns the count
-   * and the list of removed ids; emits one `session:purged` per session
-   * so SSE subscribers (Sessions list, Trash badge) can update precisely
-   * instead of polling. An empty trash returns 200 with `deleted: 0`.
+   * and the list of removed ids. SessionManager.emptyTrash emits one
+   * `session:purged` per session (line 579) so SSE subscribers can
+   * update precisely.
    */
   private handleEmptyTrash(): Response {
-    const result = this.deps.sessionManager.emptyTrash();
-    for (const sessionId of result.sessionIds) {
-      this.deps.bus.emit('session:purged', { sessionId });
-    }
-    return jsonResponse(result);
+    return jsonResponse(this.deps.sessionManager.emptyTrash());
   }
 
   private handleCompactSession(sessionId: string): Response {

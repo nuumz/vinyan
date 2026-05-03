@@ -24,8 +24,18 @@
  *     `enforceSubTaskLeafStrategy` so a primary cannot recursively re-enter
  *     this block.
  */
+import type { AuditEntry } from '../../core/audit.ts';
+import { emitAuditEntry } from '../../core/audit-emit.ts';
 import type { VinyanBus } from '../../core/bus.ts';
+import { hierarchyFromInput } from '../observability/audit-hierarchy.ts';
 import type { TaskInput, TaskResult } from '../types.ts';
+import {
+  type CapturedToolCall,
+  evaluateInjection,
+  formatInjectionForPrompt,
+  type InjectionDecision,
+  type ThoughtView,
+} from './cot-injection.ts';
 import type {
   CollaborationBlock,
   WorkflowPlan,
@@ -37,6 +47,12 @@ export interface CollaborationBlockDeps {
   executeTask: (input: TaskInput) => Promise<TaskResult>;
   bus?: VinyanBus;
   clock?: () => number;
+  /**
+   * Adaptive ceiling for CoT-injection staleness (A10). Tests pin this
+   * to keep determinism; production wires it from `ParameterStore`
+   * via `cot.reuse_max_staleness_ms`. Absent ⇒ module default.
+   */
+  getCotStalenessMs?: () => number;
 }
 
 export interface CollaborationBlockResult {
@@ -71,6 +87,40 @@ export async function runCollaborationBlock(
     return { stepResults: new Map(), totalTokensConsumed: 0 };
   }
 
+  // ── CoT continuity capture (L1) ─────────────────────────────────────
+  // Subscribe to `audit:entry` for the lifetime of this block so we can
+  // capture per-(stepId, round) thoughts and tool-calls in-process.
+  // Reading from event-store later would be racy when the worker runs
+  // in a subprocess (IPC delivery may lag executeTask resolution); the
+  // bus is FIFO sync (`src/core/bus.ts:2426-2442`) so capturing here
+  // means we get every entry the worker has actually emitted by the
+  // time `executeTask` returns. Empty captures degrade gracefully to
+  // "no inject" — the existing peer-transcript path is unaffected.
+  const capturedThoughtsBySubTaskId = new Map<string, ThoughtView[]>();
+  const capturedToolCallsBySubTaskId = new Map<string, CapturedToolCall[]>();
+  const auditCaptureHandler = deps.bus
+    ? (entry: AuditEntry) => {
+        if (entry.kind === 'thought') {
+          const list = capturedThoughtsBySubTaskId.get(entry.taskId) ?? [];
+          // Preserve `entry.id` so the inject decision audit row can
+          // reference each surviving thought via `evidenceRefs` (A5).
+          list.push({
+            id: entry.id,
+            content: entry.content,
+            ...(entry.trigger ? { trigger: entry.trigger } : {}),
+            ts: entry.ts,
+          });
+          capturedThoughtsBySubTaskId.set(entry.taskId, list);
+        } else if (entry.kind === 'tool_call') {
+          const list = capturedToolCallsBySubTaskId.get(entry.taskId) ?? [];
+          list.push({ toolId: entry.toolId, lifecycle: entry.lifecycle });
+          capturedToolCallsBySubTaskId.set(entry.taskId, list);
+        }
+      }
+    : null;
+  const unsubscribeAuditCapture =
+    deps.bus && auditCaptureHandler ? deps.bus.on('audit:entry', auditCaptureHandler) : null;
+
   // Per-(stepId, round) outputs. `roundOutputs.get(stepId)[r]` is the
   // primary's answer for round r. Used to build prior-round transcripts
   // for subsequent rounds (cross-step) AND to compute the final
@@ -104,6 +154,31 @@ export async function runCollaborationBlock(
       subTaskId: subTaskIdRound0,
       stepDescription: describePrimary(step, block.rounds),
     });
+    // A8 Phase 2.5: paired audit rows — one `subtask:spawn` (work-unit
+    // identity) + one `subagent:spawn` (persona identity). Same pattern as
+    // workflow-executor.ts:1712-1730 so the projection's
+    // `bySection.subAgents` populates for collaboration-block dispatches
+    // too. Without these the multi-agent debate parent surfaces only
+    // synthesized `subtask` rows and zero `subagent` rows.
+    emitAuditEntry({
+      bus: deps.bus,
+      taskId: parentInput.id,
+      ...hierarchyFromInput(parentInput),
+      actor: { type: 'orchestrator' },
+      variant: { kind: 'subtask', subTaskId: subTaskIdRound0, phase: 'spawn' },
+    });
+    emitAuditEntry({
+      bus: deps.bus,
+      taskId: parentInput.id,
+      ...hierarchyFromInput(parentInput),
+      actor: { type: 'orchestrator' },
+      variant: {
+        kind: 'subagent',
+        subAgentId: subTaskIdRound0,
+        phase: 'spawn',
+        ...(step.agentId ? { persona: step.agentId } : {}),
+      },
+    });
   }
 
   // Phase B: rounds loop.
@@ -112,13 +187,38 @@ export async function runCollaborationBlock(
   // intent. `Promise.allSettled` so one participant's failure does not
   // poison the rest of the batch.
   for (let round = 0; round < block.rounds; round++) {
+    const roundStartedAt = clock();
     const dispatchTargets = primarySteps.map((step) => {
       const transcript = round === 0
         ? null
         : block.sharedDiscussion
           ? buildSharedDiscussionContext(step, primarySteps, roundOutputs, roundStatuses, round, block)
           : null;
-      const augmentedGoal = composePrimaryGoal(step, parentInput.goal, transcript, round, block);
+      // CoT continuity (L1): on rebuttal rounds, build the prior-round
+      // own-thoughts block via `cot-injection.evaluateInjection` and
+      // emit a `kind:'decision'` audit row for A8 traceability.
+      // Skip silently on round 0 (no prior to read).
+      const cotBlock =
+        round === 0
+          ? null
+          : buildCotInjectionBlock(
+              step,
+              round,
+              parentInput,
+              capturedThoughtsBySubTaskId,
+              capturedToolCallsBySubTaskId,
+              roundStatuses,
+              clock(),
+              deps,
+            );
+      const augmentedGoal = composePrimaryGoal(
+        step,
+        parentInput.goal,
+        transcript,
+        round,
+        block,
+        cotBlock,
+      );
       const subInput: TaskInput = {
         ...parentInput,
         id: subTaskId(parentInput.id, step.id, round),
@@ -126,6 +226,13 @@ export async function runCollaborationBlock(
         ...(step.agentId ? { agentId: step.agentId } : {}),
         parentTaskId: parentInput.id,
         budget: deriveSubBudget(parentInput, step, block),
+        // L2 compaction-survival: surface the inject block as a
+        // structured payload so agent-loop can ALSO record it as a
+        // preserve-flagged transcript turn. The flag survives
+        // compaction (transcript-compactor.ts COMPACTION_PRESERVE_FLAG)
+        // and resumes via init.turns. Absent on round 0 (no cot
+        // block) and when the inject decision was a skip.
+        ...(cotBlock ? { cotInjectionPayload: cotBlock } : {}),
       };
       return { step, subInput };
     });
@@ -133,6 +240,7 @@ export async function runCollaborationBlock(
     const settled = await Promise.allSettled(
       dispatchTargets.map((t) => deps.executeTask(t.subInput)),
     );
+    const roundCompletedAt = clock();
 
     for (let i = 0; i < dispatchTargets.length; i++) {
       const { step } = dispatchTargets[i]!;
@@ -144,6 +252,22 @@ export async function runCollaborationBlock(
         roundOutputs.get(step.id)!.push(`[round ${round + 1} failed: ${errMsg}]`);
         roundStatuses.get(step.id)!.push('failed');
         roundTokens.get(step.id)!.push(0);
+        // Per-round telemetry: failure case. Emitted once per
+        // (step, round) so the projection can surface a round-by-round
+        // timeline without breaking the "one card per agent" cardinality
+        // contract that `multiAgentSubtasks` upholds.
+        deps.bus?.emit('workflow:collaboration_round', {
+          taskId: parentInput.id,
+          stepId: step.id,
+          subTaskId: subTaskId(parentInput.id, step.id, round),
+          ...(step.agentId ? { agentId: step.agentId } : {}),
+          round,
+          status: 'failed',
+          tokensConsumed: 0,
+          errorMessage: errMsg,
+          startedAt: roundStartedAt,
+          completedAt: roundCompletedAt,
+        });
         continue;
       }
       const result = settledI.value;
@@ -157,6 +281,20 @@ export async function runCollaborationBlock(
       roundOutputs.get(step.id)!.push(answer);
       roundStatuses.get(step.id)!.push(status);
       roundTokens.get(step.id)!.push(tokens);
+      // Per-round telemetry: completed (or domain-failed) case. The
+      // projection's `plan.collaborationRounds[]` folds exactly these.
+      deps.bus?.emit('workflow:collaboration_round', {
+        taskId: parentInput.id,
+        stepId: step.id,
+        subTaskId: subTaskId(parentInput.id, step.id, round),
+        ...(step.agentId ? { agentId: step.agentId } : {}),
+        round,
+        status,
+        tokensConsumed: tokens,
+        outputPreview: answer.slice(0, 2000),
+        startedAt: roundStartedAt,
+        completedAt: roundCompletedAt,
+      });
     }
   }
 
@@ -223,7 +361,110 @@ export async function runCollaborationBlock(
     });
   }
 
+  // Detach the bus subscription. Always runs — runCollaborationBlock
+  // returns by reaching here OR by throwing during a round. The
+  // try/finally pattern would be safer, but the existing function
+  // structure makes one clean return point and rejected-round handling
+  // already absorbs `executeTask` failures into status:'failed' rather
+  // than re-throwing. If a future refactor re-introduces throw paths,
+  // wrap the whole rounds + Phase C block in try/finally.
+  if (unsubscribeAuditCapture) unsubscribeAuditCapture();
+
   return { stepResults, totalTokensConsumed };
+}
+
+/**
+ * CoT-injection hook for round > 0. Pulls the prior round's captured
+ * thoughts + tool-calls, runs the deterministic gate set in
+ * `cot-injection.evaluateInjection`, emits a `kind:'decision'` audit
+ * row carrying the verdict (A8), and returns the formatted prompt
+ * block (or null when no inject happened).
+ *
+ * Returning null is the path "no thought to inject" / "all gated out"
+ * → caller appends nothing, A9 graceful degradation.
+ */
+function buildCotInjectionBlock(
+  step: WorkflowStep,
+  round: number,
+  parentInput: TaskInput,
+  capturedThoughts: Map<string, ThoughtView[]>,
+  capturedToolCalls: Map<string, CapturedToolCall[]>,
+  roundStatuses: Map<string, Array<'completed' | 'failed'>>,
+  now: number,
+  deps: CollaborationBlockDeps,
+): string | null {
+  const priorSubTaskId = subTaskId(parentInput.id, step.id, round - 1);
+  const priorStatuses = roundStatuses.get(step.id) ?? [];
+  const priorRoundCompleted = priorStatuses[round - 1] === 'completed';
+  const decision: InjectionDecision = evaluateInjection({
+    thoughts: capturedThoughts.get(priorSubTaskId) ?? [],
+    toolCalls: capturedToolCalls.get(priorSubTaskId) ?? [],
+    priorRoundCompleted,
+    now,
+    ...(deps.getCotStalenessMs ? { maxStalenessMs: deps.getCotStalenessMs() } : {}),
+  });
+
+  // A8: every inject decision (positive or negative) emits a decision
+  // audit row keyed by the same `ruleId` so replay can group / count
+  // injections per session. `verdict` carries the per-call shape and
+  // `rationale` carries the human-readable reason.
+  emitCotInjectionDecision(parentInput, step, round, priorSubTaskId, decision, deps);
+
+  if (decision.kind !== 'inject') return null;
+  return formatInjectionForPrompt(decision, round - 1);
+}
+
+function emitCotInjectionDecision(
+  parentInput: TaskInput,
+  step: WorkflowStep,
+  round: number,
+  priorSubTaskId: string,
+  decision: InjectionDecision,
+  deps: CollaborationBlockDeps,
+): void {
+  if (!deps.bus) return;
+  const verdict =
+    decision.kind === 'inject'
+      ? `cot-inject:${decision.thoughts.length}`
+      : `cot-skip:${decision.reason}`;
+  const rationale =
+    decision.kind === 'inject'
+      ? `Injected ${decision.thoughts.length} thought(s) from ${priorSubTaskId} into round ${round + 1} of step ${step.id}` +
+        ` (drops: stale=${decision.drops.stale}, jailbreak=${decision.drops.jailbreak}, truncated=${decision.drops.truncated})`
+      : `Skipped CoT inject from ${priorSubTaskId} into round ${round + 1} of step ${step.id}: ${decision.reason}` +
+        ` (drops: stale=${decision.drops.stale}, jailbreak=${decision.drops.jailbreak}, truncated=${decision.drops.truncated})`;
+  // A5 — structurally back-link each injected thought via `evidenceRefs`
+  // so a downstream verifier reading this decision row can walk to the
+  // exact source thought entries that informed round N+1's generation.
+  // `type: 'event'` references the original `audit:entry` event id (the
+  // wrapper.id we captured at thought emit time).
+  const evidenceRefs =
+    decision.kind === 'inject'
+      ? decision.thoughts.map((t) => ({ type: 'event' as const, eventId: t.id }))
+      : undefined;
+  // Wrapper.subTaskId points to the TARGET sub-task (the round-N+1 task
+  // that consumes the inject), so phase-verify of that sub-task can
+  // locate this decision row via a single query on the parent's audit
+  // log (`taskEventStore.listForTask(parentTaskId)` filtered by
+  // `subTaskId === currentTaskId`). The taskId stays on the parent
+  // because the orchestrator made the decision in parent's context.
+  const targetSubTaskId = subTaskId(parentInput.id, step.id, round);
+  emitAuditEntry({
+    bus: deps.bus,
+    taskId: parentInput.id,
+    ...hierarchyFromInput(parentInput),
+    subTaskId: targetSubTaskId,
+    ...(evidenceRefs && evidenceRefs.length > 0 ? { evidenceRefs } : {}),
+    actor: { type: 'orchestrator' },
+    variant: {
+      kind: 'decision',
+      decisionType: 'route',
+      verdict,
+      rationale,
+      ruleId: 'collab-cot-inject-v1',
+      tier: 'deterministic',
+    },
+  });
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -254,16 +495,28 @@ function composePrimaryGoal(
   transcript: string | null,
   round: number,
   block: CollaborationBlock,
+  cotBlock: string | null,
 ): string {
   const personaLabel = step.agentId ?? step.id;
   const baseGoal = parentGoal;
   if (round === 0) {
     return baseGoal;
   }
+  // Composition order on rebuttal rounds:
+  //   parent goal → peer transcript (if shared discussion) → own CoT (if inject)
+  // Peer transcript first because it primes "what others said"; own CoT
+  // second so it reads as "and here's how I argued, let me refine".
+  // The round-of-M scaffolding (when no shared transcript) sits between.
+  const sections: string[] = [baseGoal];
   if (transcript) {
-    return `${baseGoal}\n\n${transcript}`;
+    sections.push(transcript);
+  } else {
+    sections.push(
+      `## Round ${round + 1} of ${block.rounds}\nYou are **${personaLabel}**. Refine, deepen, or strengthen your prior answer — do NOT simply repeat your previous turn.`,
+    );
   }
-  return `${baseGoal}\n\n## Round ${round + 1} of ${block.rounds}\nYou are **${personaLabel}**. Refine, deepen, or strengthen your prior answer — do NOT simply repeat your previous turn.`;
+  if (cotBlock) sections.push(cotBlock);
+  return sections.join('\n\n');
 }
 
 /**

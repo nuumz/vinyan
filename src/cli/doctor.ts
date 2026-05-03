@@ -28,7 +28,12 @@ export interface DoctorCheck {
 }
 
 export interface DoctorOptions {
-  /** Include expensive checks (tsc) — off by default when called from a live server. */
+  /**
+   * Reserved flag for future expensive probes. Currently a no-op — the
+   * type-check probe was removed (project is Bun-first; `bun run check`
+   * is the canonical type-check path, the doctor's purpose is workspace
+   * runtime health).
+   */
   deep?: boolean;
   /**
    * Optional runtime probes injected by the HTTP handler so doctor can
@@ -51,8 +56,28 @@ export interface DoctorOptions {
     activeScheduleCount?: number;
     /** True when `simpleSkillRegistry` or `skillArtifactStore` is wired. */
     skillsActive?: boolean;
-    /** True when memory-wiki is wired. */
+    /**
+     * Memory-wiki wiring + vault state. Replaces the older boolean
+     * `memoryWikiActive`. Doctor merges this with the inline DB-count
+     * read so the operator sees one row covering: wiring (routes
+     * available?), vault scaffold (markdown projection on disk), and
+     * content (pages/sources/findings).
+     *
+     * `wired=false` → warn (routes return 503). `wired=true` with zero
+     * pages is still `ok` — empty wiki on a fresh install is valid.
+     */
     memoryWikiActive?: boolean;
+    /**
+     * JSONL-side session storage probe. Caller (HTTP server) walks the
+     * profile-resolved sessions dir and counts sessions that have an
+     * `events.jsonl` log. Used to surface drift vs SQLite when the
+     * hybrid storage modes are active. CLI invocations skip this and
+     * the doctor reports "jsonl=not-introspected" in that case.
+     */
+    jsonlSessions?: () => {
+      readonly sessionsDir: string;
+      readonly sessionCount: number;
+    } | null;
     /** Total in-flight tasks (zero is healthy). */
     inFlightTaskCount?: number;
     /** Number of orphaned tasks recovered at startup (large = degraded). */
@@ -100,16 +125,20 @@ export async function runDoctorChecks(
       : { name: 'Workspace', status: 'fail', detail: `Directory not found: ${workspace}` },
   );
 
-  // 2. Config
+  // 2. Config — lifted out of the try/catch scope so later checks
+  // (Sessions storage mode in particular) can read `loadedConfig.session.*`.
+  // `null` = config missing or invalid; downstream checks fall back to
+  // safe defaults rather than crashing.
   const configPath = join(workspace, 'vinyan.json');
+  let loadedConfig: import('../config/schema.ts').VinyanConfig | null = null;
   if (existsSync(configPath)) {
     try {
       const { loadConfig } = await import('../config/index.ts');
-      const config = loadConfig(workspace);
+      loadedConfig = loadConfig(workspace);
       checks.push({ name: 'Config', status: 'ok', detail: `vinyan.json loaded` });
 
       // 2a. Oracles
-      const oracles = config.oracles ?? {};
+      const oracles = loadedConfig.oracles ?? {};
       const enabledOracles = Object.entries(oracles).filter(([, v]) => (v as { enabled?: boolean })?.enabled);
       checks.push({
         name: 'Oracles',
@@ -120,7 +149,7 @@ export async function runDoctorChecks(
       });
 
       // 2b. Economy
-      const econ = config.economy;
+      const econ = loadedConfig.economy;
       checks.push({
         name: 'Economy',
         status: econ?.enabled ? 'ok' : 'warn',
@@ -130,7 +159,7 @@ export async function runDoctorChecks(
       });
 
       // 2c. Network/API
-      const api = config.network?.api;
+      const api = loadedConfig.network?.api;
       checks.push({
         name: 'API Server',
         status: api?.enabled !== false ? 'ok' : 'warn',
@@ -179,44 +208,93 @@ export async function runDoctorChecks(
     checks.push({ name: 'LLM Provider', status: 'fail', detail: 'No OPENROUTER_API_KEY or ANTHROPIC_API_KEY — set in .env' });
   }
 
-  // 6. TypeScript (tsc) — expensive, only when explicitly requested
-  if (options.deep) {
-    try {
-      const proc = Bun.spawn(['tsc', '--noEmit', '--pretty', 'false'], {
-        cwd: workspace,
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
-      const exitCode = await proc.exited;
-      checks.push(
-        exitCode === 0
-          ? { name: 'TypeScript', status: 'ok', detail: 'tsc --noEmit passes' }
-          : { name: 'TypeScript', status: 'warn', detail: `tsc --noEmit has errors (exit ${exitCode})` },
-      );
-    } catch {
-      checks.push({ name: 'TypeScript', status: 'warn', detail: 'tsc not available — skip type check' });
-    }
-  }
-
-  // 7. Sessions
+  // 6. Sessions — hybrid-aware. The architectural direction is per-
+  // session JSONL as the source of truth with SQLite as a derived
+  // index (`session.dualWrite.enabled`, `session.readFromJsonl.*`).
+  // The doctor reports BOTH which mode is currently active and the
+  // counts on each backing so an operator can spot drift. Reading
+  // only `session_store` (older behaviour) hid the JSONL side and
+  // misled when dualWrite was on.
   if (existsSync(dbPath)) {
     try {
       const { Database } = await import('bun:sqlite');
       const db = new Database(dbPath, { readonly: true });
-      const sessions = db.query("SELECT COUNT(*) as c FROM sessions WHERE status = 'active'").get() as { c: number } | null;
-      const suspended = db.query("SELECT COUNT(*) as c FROM sessions WHERE status = 'suspended'").get() as { c: number } | null;
+      // "active" / "suspended" mean LIVE in those lifecycle states —
+      // archived sessions retain `status='active'` (the lifecycle column
+      // tracks runtime state, archive is a visibility flag on its own
+      // column). The earlier query missed `archived_at IS NULL`, so
+      // archived sessions counted as active (verified live in L1).
+      const active = db
+        .query(
+          "SELECT COUNT(*) as c FROM session_store WHERE status = 'active' AND deleted_at IS NULL AND archived_at IS NULL",
+        )
+        .get() as { c: number } | null;
+      const suspended = db
+        .query(
+          "SELECT COUNT(*) as c FROM session_store WHERE status = 'suspended' AND deleted_at IS NULL AND archived_at IS NULL",
+        )
+        .get() as { c: number } | null;
+      const archived = db
+        .query('SELECT COUNT(*) as c FROM session_store WHERE archived_at IS NOT NULL AND deleted_at IS NULL')
+        .get() as { c: number } | null;
+      const total = db
+        .query('SELECT COUNT(*) as c FROM session_store WHERE deleted_at IS NULL')
+        .get() as { c: number } | null;
       db.close();
+
+      const sessionCfg = loadedConfig?.session;
+      const dualWrite = sessionCfg?.dualWrite?.enabled === true;
+      const readJsonl = sessionCfg?.readFromJsonl
+        ? Object.entries(sessionCfg.readFromJsonl).some(
+            ([k, v]) => k !== 'fallbackToSqlite' && v === true,
+          )
+        : false;
+      const mode: 'sqlite-only' | 'dual-write' | 'jsonl-primary' = readJsonl
+        ? 'jsonl-primary'
+        : dualWrite
+          ? 'dual-write'
+          : 'sqlite-only';
+
+      const sqliteActive = active?.c ?? 0;
+      const sqliteSuspended = suspended?.c ?? 0;
+      const sqliteArchived = archived?.c ?? 0;
+      const sqliteTotal = total?.c ?? 0;
+      let detail = `mode=${mode} · sqlite=${sqliteActive} active, ${sqliteSuspended} suspended, ${sqliteArchived} archived`;
+      let status: 'ok' | 'warn' = 'ok';
+      let remediation: string | undefined;
+
+      if (mode !== 'sqlite-only') {
+        const jsonlProbe = options.runtime?.jsonlSessions?.();
+        if (jsonlProbe) {
+          const drift = Math.abs(jsonlProbe.sessionCount - sqliteTotal);
+          detail += ` · jsonl=${jsonlProbe.sessionCount}`;
+          if (drift > 0) {
+            detail += ` · drift=${drift}`;
+            status = 'warn';
+            remediation =
+              'Run the JSONL-vs-SQLite consistency rebuild (`session.dualWrite.verify=true`) or inspect the divergent sessions before relying on either side.';
+          }
+        } else {
+          detail += ` · jsonl=not-introspected`;
+        }
+      }
+
       checks.push({
         name: 'Sessions',
-        status: 'ok',
-        detail: `${sessions?.c ?? 0} active, ${suspended?.c ?? 0} suspended`,
+        status,
+        detail,
+        ...(remediation ? { remediation } : {}),
       });
-    } catch {
-      checks.push({ name: 'Sessions', status: 'warn', detail: 'Sessions table not yet created' });
+    } catch (err) {
+      checks.push({
+        name: 'Sessions',
+        status: 'warn',
+        detail: `cannot read session_store: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   }
 
-  // 8. Migrations — surface schema drift early so an old DB doesn't
+  // 7. Migrations — surface schema drift early so an old DB doesn't
   // silently miss FTS5 / scheduler / proposal tables. Compares the
   // applied version recorded in `schema_migrations` against the highest
   // version in `ALL_MIGRATIONS`.
@@ -259,7 +337,7 @@ export async function runDoctorChecks(
     }
   }
 
-  // 9. Runtime probes — injected by the HTTP handler. Without them
+  // 8. Runtime probes — injected by the HTTP handler. Without them
   // doctor still works (warns where applicable) so the CLI path stays
   // identical to the original behaviour.
   const rt = options.runtime;
@@ -305,11 +383,69 @@ export async function runDoctorChecks(
       );
     }
     if (typeof rt.memoryWikiActive === 'boolean') {
-      checks.push(
-        rt.memoryWikiActive
-          ? { name: 'Memory Wiki', status: 'ok', detail: 'memoryWiki bundle wired' }
-          : { name: 'Memory Wiki', status: 'warn', detail: 'memoryWiki not configured' },
-      );
+      // Memory Wiki is the markdown-vault projection of the wiki DB
+      // (`.vinyan/wiki/` — pages, raw sources, MOC). The probe combines
+      // three signals so the operator sees ONE row covering: routes
+      // wired (HTTP 200 vs 503), vault scaffolded (markdown projection
+      // on disk), and content (page/source/lint counts pulled from the
+      // wiki tables). Empty content is OK on a fresh install — the
+      // wired+scaffolded signal is what determines `ok` vs `warn`.
+      const wired = rt.memoryWikiActive;
+      const wikiVaultRoot = join(workspace, '.vinyan', 'wiki');
+      const vaultScaffolded = existsSync(join(wikiVaultRoot, 'MEMORY_SCHEMA.md'));
+
+      let pageCount = 0;
+      let sourceCount = 0;
+      let openLint = 0;
+      let countsAvailable = false;
+      if (existsSync(dbPath)) {
+        try {
+          const { Database } = await import('bun:sqlite');
+          const db = new Database(dbPath, { readonly: true });
+          pageCount =
+            (db.query('SELECT COUNT(*) as c FROM memory_wiki_pages').get() as { c: number } | null)
+              ?.c ?? 0;
+          sourceCount =
+            (db.query('SELECT COUNT(*) as c FROM memory_wiki_sources').get() as
+              | { c: number }
+              | null)?.c ?? 0;
+          openLint =
+            (db
+              .query(
+                'SELECT COUNT(*) as c FROM memory_wiki_lint_findings WHERE resolved_at IS NULL',
+              )
+              .get() as { c: number } | null)?.c ?? 0;
+          db.close();
+          countsAvailable = true;
+        } catch {
+          /* tables may not exist yet on a pre-migration DB; counts stay 0 */
+        }
+      }
+
+      const parts: string[] = [];
+      parts.push(wired ? 'wired' : 'not wired');
+      parts.push(vaultScaffolded ? 'vault scaffolded' : 'vault missing');
+      if (countsAvailable) {
+        parts.push(`${pageCount} page${pageCount === 1 ? '' : 's'}`);
+        parts.push(`${sourceCount} source${sourceCount === 1 ? '' : 's'}`);
+        if (openLint > 0) parts.push(`${openLint} open finding${openLint === 1 ? '' : 's'}`);
+      }
+
+      const status: 'ok' | 'warn' = wired && vaultScaffolded ? 'ok' : 'warn';
+      const remediation = !wired
+        ? 'Wire `memoryWiki` in cli/serve.ts via `MemoryWiki.create({ db, workspace, bus })`.'
+        : !vaultScaffolded
+          ? 'Restart `vinyan serve` — the bundle scaffolds `<workspace>/.vinyan/wiki/` on construction.'
+          : sourceCount === 0
+            ? 'No sources yet — the auto-feed bridge ingests on `session:archived` / `session:compacted`. Archive a session or POST `/api/v1/memory-wiki/ingest` to seed manually.'
+            : undefined;
+
+      checks.push({
+        name: 'Memory Wiki',
+        status,
+        detail: parts.join(' · '),
+        ...(remediation ? { remediation } : {}),
+      });
     }
     if (rt.providerCooldowns) {
       try {

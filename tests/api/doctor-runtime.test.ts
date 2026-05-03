@@ -147,6 +147,105 @@ describe('runDoctorChecks — runtime probes', () => {
     expect(noOrphans.find((c) => c.name === 'Orphan Recovery')).toBeUndefined();
   });
 
+  test('Sessions check labels storage mode from config (sqlite-only by default)', async () => {
+    const checks = await runDoctorChecks(TEST_DIR);
+    const sessions = checks.find((c) => c.name === 'Sessions');
+    expect(sessions).toBeDefined();
+    expect(sessions?.status).toBe('ok');
+    expect(sessions?.detail).toContain('mode=sqlite-only');
+    expect(sessions?.detail).toContain('sqlite=');
+  });
+
+  test('Sessions check warns on JSONL/SQLite drift when hybrid mode is active', async () => {
+    // Carve out a fresh workspace so the config cache doesn't return the
+    // base TEST_DIR config (loadConfig caches per workspace path).
+    const driftDir = join(tmpdir(), `vinyan-doctor-drift-${Date.now()}`);
+    mkdirSync(join(driftDir, '.vinyan'), { recursive: true });
+    writeFileSync(
+      join(driftDir, 'vinyan.json'),
+      JSON.stringify({
+        oracles: { type: { enabled: true } },
+        network: { api: { enabled: true, port: 3927 } },
+        session: { dualWrite: { enabled: true } },
+      }),
+    );
+    const db = new Database(join(driftDir, '.vinyan', 'vinyan.db'));
+    db.exec('PRAGMA journal_mode = WAL');
+    new MigrationRunner().migrate(db, ALL_MIGRATIONS);
+    db.exec(
+      "INSERT INTO session_store (id, source, created_at, status, updated_at) VALUES ('s1','test',1,'active',1)",
+    );
+    db.close();
+
+    const checks = await runDoctorChecks(driftDir, {
+      runtime: {
+        jsonlSessions: () => ({ sessionsDir: '/tmp/x', sessionCount: 4 }),
+      },
+    });
+    const sessions = checks.find((c) => c.name === 'Sessions')!;
+    expect(sessions.status).toBe('warn');
+    expect(sessions.detail).toContain('mode=dual-write');
+    expect(sessions.detail).toContain('drift=3');
+    expect(sessions.remediation).toBeDefined();
+  });
+
+  test('Memory Wiki check reports vault scaffold + content counts and flags empty wiki', async () => {
+    const checks = await runDoctorChecks(TEST_DIR, {
+      runtime: { memoryWikiActive: true },
+    });
+    const wiki = checks.find((c) => c.name === 'Memory Wiki')!;
+    expect(wiki.status).toBe('warn'); // vault not scaffolded in test fixture
+    expect(wiki.detail).toContain('wired');
+    expect(wiki.detail).toContain('vault missing');
+    expect(wiki.detail).toContain('0 pages');
+    expect(wiki.detail).toContain('0 sources');
+    expect(wiki.remediation).toBeDefined();
+  });
+
+  // L6 drift guard — pin the operator-facing copy. The five canonical
+  // shapes the dashboard renders are:
+  //   "wired · vault scaffolded · N pages · M sources"               (healthy)
+  //   "wired · vault scaffolded · N pages · M sources · K open …"    (lint)
+  //   "wired · vault missing · …"                                    (no scaffold)
+  //   "not wired · vault scaffolded · …"                             (no deps)
+  //   "not wired · vault missing · …"                                (cold start)
+  // A later refactor must update this test alongside the format
+  // change so the operator's signal isn't silently broken.
+  test('Memory Wiki detail format snapshot — pinned for dashboard parsers', async () => {
+    // Healthy path: scaffold + counts. Build a minimal vault marker
+    // file so the inline `existsSync` for MEMORY_SCHEMA.md succeeds,
+    // then exercise the formatter against the real DB schema.
+    const wikiDir = join(TEST_DIR, '.vinyan', 'wiki');
+    mkdirSync(wikiDir, { recursive: true });
+    writeFileSync(join(wikiDir, 'MEMORY_SCHEMA.md'), '# fixture\n');
+    try {
+      const checks = await runDoctorChecks(TEST_DIR, {
+        runtime: { memoryWikiActive: true },
+      });
+      const wiki = checks.find((c) => c.name === 'Memory Wiki')!;
+      // Exact-shape snapshot. Order matters: wired → scaffold → pages → sources.
+      // Singular/plural noun toggling is part of the contract.
+      expect(wiki.detail).toMatch(
+        /^wired · vault scaffolded · \d+ pages? · \d+ sources?( · \d+ open findings?)?$/,
+      );
+      expect(wiki.status).toBe('ok');
+    } finally {
+      // Leave the marker — siblings tests don't depend on its absence.
+    }
+  });
+
+  // L4 — Sessions storage-mode label snapshot. Pin the three forms.
+  test('Sessions detail format snapshot — pinned for the three storage modes', async () => {
+    const checks = await runDoctorChecks(TEST_DIR);
+    const sessions = checks.find((c) => c.name === 'Sessions')!;
+    // sqlite-only is the default in TEST_DIR's vinyan.json (no session config block).
+    // archived count was added so operators can see the archive lane
+    // without filtering.
+    expect(sessions.detail).toMatch(
+      /^mode=sqlite-only · sqlite=\d+ active, \d+ suspended, \d+ archived$/,
+    );
+  });
+
   test('summarizeChecks returns critical when any fail-status check exists', async () => {
     const checks = await runDoctorChecks(TEST_DIR, {
       runtime: { recorderActive: true },

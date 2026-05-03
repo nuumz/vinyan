@@ -430,6 +430,15 @@ export interface Orchestrator {
    * change for the autogenerator policy with provenance (R1).
    */
   parameterLedger?: import('./adaptive-params/parameter-ledger.ts').ParameterLedger;
+  /**
+   * Adaptive parameter store — runtime read/write surface for ceiling
+   * parameters (e.g. `cot.reuse_max_staleness_ms`). Constructed when a
+   * DB-backed ledger is available so adaptations survive restart;
+   * absent only when construction failed (a single warn-level log
+   * fires) or no DB is wired (test harness). Consumers fall back to
+   * registry defaults when absent (A9).
+   */
+  parameterStore?: import('./adaptive-params/parameter-store.ts').ParameterStore;
   getSessionCount(): number;
   /**
    * Release all resources held by the orchestrator. Awaits truly async
@@ -1900,6 +1909,47 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   }
   const specialistRegistry = createSpecialistRegistry(specialistConfigEntries);
 
+  // A5 inject-dependency registry — bus-subscribed in-memory index.
+  // Built early (before the deps literal) so phase-verify can read
+  // through OrchestratorDeps without a forward-reference. Built
+  // unconditionally because the recorder buffer race exists
+  // independent of whether a DB is wired (in-memory tests still
+  // need the synchronous lookup path).
+  const { createInjectDependencyRegistry } =
+    require('./phases/inject-dependency-registry.ts') as typeof import('./phases/inject-dependency-registry.ts');
+  const injectDependencyRegistry = createInjectDependencyRegistry(bus);
+
+  // Adaptive parameter substrate — instantiated BEFORE `deps` so both the
+  // ledger and store can be injected. The ledger persists every adaptation
+  // for replay (mig 030); the store reads the latest applied value with
+  // override → ledger → registry-default precedence.
+  //
+  // Construction is wrapped in try/catch + a single warn log so a
+  // misbehaving sqlite handle does not block factory startup. On failure
+  // both fields stay undefined and consumers fall back to the registry
+  // default constants (A9 graceful degradation). Tests that bypass the
+  // factory pass `parameterStore: new ParameterStore({...})` directly.
+  let parameterLedger: import('./adaptive-params/parameter-ledger.ts').ParameterLedger | undefined;
+  let parameterStore: import('./adaptive-params/parameter-store.ts').ParameterStore | undefined;
+  if (db) {
+    try {
+      const { ParameterLedger: ParameterLedgerCtor } =
+        require('./adaptive-params/parameter-ledger.ts') as typeof import('./adaptive-params/parameter-ledger.ts');
+      const { ParameterStore: ParameterStoreCtor } =
+        require('./adaptive-params/parameter-store.ts') as typeof import('./adaptive-params/parameter-store.ts');
+      parameterLedger = new ParameterLedgerCtor(db.getDb());
+      parameterStore = new ParameterStoreCtor({ ledger: parameterLedger, bus });
+    } catch (err) {
+      console.warn(
+        `[vinyan] adaptive-params: ParameterStore construction failed — falling back to registry defaults: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      parameterLedger = undefined;
+      parameterStore = undefined;
+    }
+  }
+
   // GAP#1 — instantiate comprehension calibrator + LLM stage-2 engine
   // BEFORE `deps` construction so both can be injected.
   // Without these, the P2.C hybrid pipeline in core-loop is unreachable
@@ -1974,6 +2024,16 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     skillOutcomeStore,
     // Phase-6: runtime skill acquirer (LocalHubAcquirer / NullSkillAcquirer)
     skillAcquirer,
+    // Adaptive parameter store — runtime-tunable ceilings (A10 freshness, etc.).
+    // See `parameter-registry.ts` for the catalog. Falls back to defaults
+    // when undefined.
+    parameterStore,
+    // Durable per-task event log. phase-verify uses it for cross-task
+    // audit lookups (e.g. A5 inject-dependency verdict discount).
+    taskEventStore,
+    // In-memory inject-dependency index — read by phase-verify to
+    // detect A5 dependency without paying the recorder buffer race.
+    injectDependencyRegistry,
     // Economy Operating System
     costLedger,
     budgetEnforcer,
@@ -2781,14 +2841,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           return new AutogenStoreCtor(db.getDb());
         })()
       : undefined,
-    parameterLedger: db
-      ? (() => {
-          const {
-            ParameterLedger: ParameterLedgerCtor,
-          } = require('./adaptive-params/parameter-ledger.ts') as typeof import('./adaptive-params/parameter-ledger.ts');
-          return new ParameterLedgerCtor(db.getDb());
-        })()
-      : undefined,
+    parameterLedger,
+    parameterStore,
     // W2: optional plugin subsystem — populated when
     // `config.plugins.enabled` is true. pluginRegistry / messagingLifecycle
     // / pluginWarnings are filled in asynchronously by the init promise,
@@ -2820,6 +2874,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       comprehensionTraceHandle.detach();
       detachAudit();
       detachAccuracy?.();
+      try {
+        injectDependencyRegistry.detach();
+      } catch {
+        /* best-effort */
+      }
       taskEventRecorderHandle?.detach();
       for (const unsub of factoryBusUnsubs.splice(0)) {
         try {

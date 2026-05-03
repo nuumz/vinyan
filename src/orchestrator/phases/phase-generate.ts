@@ -8,6 +8,7 @@
 
 import { createContract } from '../../core/agent-contract.ts';
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
+import { clampRoutingToWallClock } from '../budget-clamp.ts';
 import type { DAGExecutionResult, NodeDispatcher } from '../dag-executor.ts';
 import { executeDAG } from '../dag-executor.ts';
 import { applyRoutingGovernance } from '../governance-provenance.ts';
@@ -52,7 +53,18 @@ export async function executeGeneratePhase(
   gi: GenerateInput,
 ): Promise<PhaseContinue<GenerateResult> | PhaseReturn | PhaseRetry | PhaseThrow> {
   const { input, deps, startTime, workingMemory, explorationFlag } = ctx;
-  const { routing, perception, understanding, plan, workerSelection, lastWorkerSelection, retry, matchedSkill } = gi;
+  const { perception, understanding, plan, workerSelection, lastWorkerSelection, retry, matchedSkill } = gi;
+  // Wall-clock budget clamp — single source of truth for the worker's
+  // per-attempt budget. The legacy clamp lived at the routing-loop top in
+  // `core-loop.ts`; phases (perceive/comprehend/plan/approval-gate) consume
+  // real wall-clock time between that point and this dispatch, so the
+  // loop-top value is stale by the time `worker:dispatch` fires. See
+  // `budget-clamp.ts` for the incident write-up (`b80c5c0d-...-architect-r1`).
+  const routing = clampRoutingToWallClock({
+    routing: gi.routing,
+    startTime,
+    maxDurationMs: input.budget.maxDurationMs,
+  });
   let { totalTokensConsumed } = gi;
   const turns = ctx.turns;
 
@@ -325,22 +337,25 @@ export async function executeGeneratePhase(
     // ── Non-retryable error fast-exit ────────────────────────────
     if (workerResult.nonRetryableError) {
       console.error(`[vinyan] Non-retryable error — aborting: ${workerResult.nonRetryableError}`);
-      const failTrace: ExecutionTrace = applyRoutingGovernance({
-        id: `trace-${input.id}-non-retryable`,
-        taskId: input.id,
-        workerId: routing.workerId ?? routing.model ?? 'unknown',
-        agentId: input.agentId,
-        timestamp: Date.now(),
-        routingLevel: routing.level,
-        approach: 'non-retryable-error',
-        oracleVerdicts: {},
-        modelUsed: routing.model ?? 'none',
-        tokensConsumed: workerResult.tokensConsumed,
-        durationMs: Date.now() - startTime,
-        outcome: 'failure',
-        failureReason: workerResult.nonRetryableError,
-        affectedFiles: input.targetFiles ?? [],
-      }, routing);
+      const failTrace: ExecutionTrace = applyRoutingGovernance(
+        {
+          id: `trace-${input.id}-non-retryable`,
+          taskId: input.id,
+          workerId: routing.workerId ?? routing.model ?? 'unknown',
+          agentId: input.agentId,
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: 'non-retryable-error',
+          oracleVerdicts: {},
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: workerResult.tokensConsumed,
+          durationMs: Date.now() - startTime,
+          outcome: 'failure',
+          failureReason: workerResult.nonRetryableError,
+          affectedFiles: input.targetFiles ?? [],
+        },
+        routing,
+      );
       await deps.traceCollector.record(failTrace);
       deps.bus?.emit('trace:record', { trace: failTrace });
       const failResult: TaskResult = {
@@ -436,23 +451,26 @@ export async function executeGeneratePhase(
     totalTokensConsumed += workerResult.tokensConsumed;
     const globalBudgetCap = input.budget.maxTokens * gi.budgetCapMultiplier;
     if (totalTokensConsumed > globalBudgetCap) {
-      const budgetTrace: ExecutionTrace = applyRoutingGovernance({
-        id: `trace-${input.id}-budget-exceeded`,
-        taskId: input.id,
-        workerId: routing.workerId ?? routing.model ?? 'unknown',
-        agentId: input.agentId,
-        timestamp: Date.now(),
-        routingLevel: routing.level,
-        approach: 'global-budget-exceeded',
-        oracleVerdicts: {},
-        modelUsed: routing.model ?? 'none',
-        tokensConsumed: totalTokensConsumed,
-        durationMs: Date.now() - startTime,
-        outcome: 'failure',
-        failureReason: `Global token budget exceeded: ${totalTokensConsumed} > ${globalBudgetCap}`,
-        affectedFiles: input.targetFiles ?? [],
-        workerSelectionAudit: workerSelection ?? lastWorkerSelection,
-      }, routing);
+      const budgetTrace: ExecutionTrace = applyRoutingGovernance(
+        {
+          id: `trace-${input.id}-budget-exceeded`,
+          taskId: input.id,
+          workerId: routing.workerId ?? routing.model ?? 'unknown',
+          agentId: input.agentId,
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: 'global-budget-exceeded',
+          oracleVerdicts: {},
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: totalTokensConsumed,
+          durationMs: Date.now() - startTime,
+          outcome: 'failure',
+          failureReason: `Global token budget exceeded: ${totalTokensConsumed} > ${globalBudgetCap}`,
+          affectedFiles: input.targetFiles ?? [],
+          workerSelectionAudit: workerSelection ?? lastWorkerSelection,
+        },
+        routing,
+      );
       await deps.traceCollector.record(budgetTrace);
       deps.bus?.emit('trace:record', { trace: budgetTrace });
       deps.bus?.emit('task:budget-exceeded', {
@@ -475,24 +493,27 @@ export async function executeGeneratePhase(
       error: String(dispatchErr),
       routing,
     });
-    const dispatchFailTrace: ExecutionTrace = applyRoutingGovernance({
-      id: `trace-${input.id}-dispatch-error-${routing.level}-${retry}`,
-      taskId: input.id,
-      workerId: routing.workerId ?? routing.model ?? 'unknown',
-      agentId: input.agentId,
-      timestamp: Date.now(),
-      routingLevel: routing.level,
-      approach: 'dispatch-error',
-      oracleVerdicts: {},
-      modelUsed: routing.model ?? 'none',
-      tokensConsumed: 0,
-      durationMs: Date.now() - startTime,
-      outcome: 'failure',
-      failureReason: `Worker dispatch failed: ${String(dispatchErr)}`,
-      affectedFiles: input.targetFiles ?? [],
-      workerSelectionAudit: workerSelection ?? lastWorkerSelection,
-      exploration: explorationFlag || undefined,
-    }, routing);
+    const dispatchFailTrace: ExecutionTrace = applyRoutingGovernance(
+      {
+        id: `trace-${input.id}-dispatch-error-${routing.level}-${retry}`,
+        taskId: input.id,
+        workerId: routing.workerId ?? routing.model ?? 'unknown',
+        agentId: input.agentId,
+        timestamp: Date.now(),
+        routingLevel: routing.level,
+        approach: 'dispatch-error',
+        oracleVerdicts: {},
+        modelUsed: routing.model ?? 'none',
+        tokensConsumed: 0,
+        durationMs: Date.now() - startTime,
+        outcome: 'failure',
+        failureReason: `Worker dispatch failed: ${String(dispatchErr)}`,
+        affectedFiles: input.targetFiles ?? [],
+        workerSelectionAudit: workerSelection ?? lastWorkerSelection,
+        exploration: explorationFlag || undefined,
+      },
+      routing,
+    );
     await deps.traceCollector.record(dispatchFailTrace);
     deps.bus?.emit('trace:record', { trace: dispatchFailTrace });
     return Phase.throw(dispatchErr);

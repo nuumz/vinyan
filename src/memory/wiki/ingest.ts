@@ -30,6 +30,7 @@ import {
   extractFromSession,
   extractFromTrace,
   extractSourceSummary,
+  gateProposals,
 } from './extractor.ts';
 import type { PageWriter } from './page-writer.ts';
 import { deriveSourceId } from './schema.ts';
@@ -119,14 +120,16 @@ export class MemoryWikiIngestor {
 
   ingestSource(input: SourceIngestInput): IngestResult {
     const parsed = SourceIngestInputSchema.parse(input);
-    const source = this.persistSource(parsed);
-    const ctx: ExtractContext = {
-      profile: source.provenance.profile,
-      actor: this.defaultActor,
-      now: this.clock(),
-    };
-    const proposals = extractSourceSummary(source, ctx).proposals;
-    return this.writeProposals(source, proposals);
+    return this.store.transaction(() => {
+      const source = this.persistSource(parsed);
+      const ctx: ExtractContext = {
+        profile: source.provenance.profile,
+        actor: this.defaultActor,
+        now: this.clock(),
+      };
+      const proposals = gateProposals(extractSourceSummary(source, ctx).proposals);
+      return this.writeProposals(source, proposals);
+    });
   }
 
   ingestSession(input: SessionSummaryInput): IngestResult {
@@ -136,19 +139,21 @@ export class MemoryWikiIngestor {
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.agentId ? { agentId: input.agentId } : {}),
     };
-    const source = this.persistSource({
-      kind: 'session',
-      body: input.summaryMarkdown,
-      provenance,
-      metadata: input.metadata,
+    return this.store.transaction(() => {
+      const source = this.persistSource({
+        kind: 'session',
+        body: input.summaryMarkdown,
+        provenance,
+        metadata: input.metadata,
+      });
+      const ctx: ExtractContext = {
+        profile: input.profile,
+        actor: this.defaultActor,
+        now: this.clock(),
+      };
+      const proposals = gateProposals(extractFromSession(source, ctx).proposals);
+      return this.writeProposals(source, proposals);
     });
-    const ctx: ExtractContext = {
-      profile: input.profile,
-      actor: this.defaultActor,
-      now: this.clock(),
-    };
-    const proposals = extractFromSession(source, ctx).proposals;
-    return this.writeProposals(source, proposals);
   }
 
   ingestTrace(input: TraceIngestInput): IngestResult {
@@ -165,19 +170,21 @@ export class MemoryWikiIngestor {
       profile: input.profile,
       taskId: input.trace.taskId,
     };
-    const source = this.persistSource({
-      kind: 'trace',
-      body: traceJson,
-      provenance,
-      metadata: { routingLevel: input.trace.routingLevel },
+    return this.store.transaction(() => {
+      const source = this.persistSource({
+        kind: 'trace',
+        body: traceJson,
+        provenance,
+        metadata: { routingLevel: input.trace.routingLevel },
+      });
+      const ctx: ExtractContext = {
+        profile: input.profile,
+        actor: this.defaultActor,
+        now: this.clock(),
+      };
+      const proposals = gateProposals(extractFromTrace(source, ctx).proposals);
+      return this.writeProposals(source, proposals);
     });
-    const ctx: ExtractContext = {
-      profile: input.profile,
-      actor: this.defaultActor,
-      now: this.clock(),
-    };
-    const proposals = extractFromTrace(source, ctx).proposals;
-    return this.writeProposals(source, proposals);
   }
 
   ingestExternalCodingCliRun(input: CodingCliRunInput): IngestResult {
@@ -186,23 +193,25 @@ export class MemoryWikiIngestor {
       taskId: input.taskId,
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     };
-    const source = this.persistSource({
-      kind: 'coding-cli-run',
-      body: input.transcriptMarkdown,
-      provenance,
-      metadata: {
-        ...(input.verdict ? { verdict: input.verdict } : {}),
-        ...(input.verdictConfidence !== undefined ? { verdictConfidence: input.verdictConfidence } : {}),
-        ...(input.metadata ?? {}),
-      },
+    return this.store.transaction(() => {
+      const source = this.persistSource({
+        kind: 'coding-cli-run',
+        body: input.transcriptMarkdown,
+        provenance,
+        metadata: {
+          ...(input.verdict ? { verdict: input.verdict } : {}),
+          ...(input.verdictConfidence !== undefined ? { verdictConfidence: input.verdictConfidence } : {}),
+          ...(input.metadata ?? {}),
+        },
+      });
+      const ctx: ExtractContext = {
+        profile: input.profile,
+        actor: this.defaultActor,
+        now: this.clock(),
+      };
+      const proposals = gateProposals(extractFromCodingCliRun(source, ctx).proposals);
+      return this.writeProposals(source, proposals);
     });
-    const ctx: ExtractContext = {
-      profile: input.profile,
-      actor: this.defaultActor,
-      now: this.clock(),
-    };
-    const proposals = extractFromCodingCliRun(source, ctx).proposals;
-    return this.writeProposals(source, proposals);
   }
 
   ingestFailurePattern(input: FailureIngestInput): IngestResult {
@@ -212,27 +221,31 @@ export class MemoryWikiIngestor {
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     };
     const body = `${input.title}\n\n${input.body}`;
-    const source = this.persistSource({
-      kind: 'verification',
-      body,
-      provenance,
-      metadata: { kind: 'failure-pattern' },
+    return this.store.transaction(() => {
+      const source = this.persistSource({
+        kind: 'verification',
+        body,
+        provenance,
+        metadata: { kind: 'failure-pattern' },
+      });
+      const ctx: ExtractContext = {
+        profile: input.profile,
+        actor: this.defaultActor,
+        now: this.clock(),
+      };
+      const proposals = gateProposals(
+        extractFromFailure(
+          source,
+          {
+            title: input.title,
+            body: input.body,
+            ...(input.tags ? { tags: input.tags } : {}),
+          },
+          ctx,
+        ).proposals,
+      );
+      return this.writeProposals(source, proposals);
     });
-    const ctx: ExtractContext = {
-      profile: input.profile,
-      actor: this.defaultActor,
-      now: this.clock(),
-    };
-    const proposals = extractFromFailure(
-      source,
-      {
-        title: input.title,
-        body: input.body,
-        ...(input.tags ? { tags: input.tags } : {}),
-      },
-      ctx,
-    ).proposals;
-    return this.writeProposals(source, proposals);
   }
 
   ingestUserNote(input: UserNoteInput): IngestResult {
@@ -240,19 +253,21 @@ export class MemoryWikiIngestor {
       profile: input.profile,
       ...(input.user ? { user: input.user } : {}),
     };
-    const source = this.persistSource({
-      kind: 'user-note',
-      body: input.markdown,
-      provenance,
-      metadata: input.tags ? { tags: [...input.tags] } : undefined,
+    return this.store.transaction(() => {
+      const source = this.persistSource({
+        kind: 'user-note',
+        body: input.markdown,
+        provenance,
+        metadata: input.tags ? { tags: [...input.tags] } : undefined,
+      });
+      const ctx: ExtractContext = {
+        profile: input.profile,
+        actor: input.user ? `user:${input.user}` : this.defaultActor,
+        now: this.clock(),
+      };
+      const proposals = gateProposals(extractSourceSummary(source, ctx).proposals);
+      return this.writeProposals(source, proposals);
     });
-    const ctx: ExtractContext = {
-      profile: input.profile,
-      actor: input.user ? `user:${input.user}` : this.defaultActor,
-      now: this.clock(),
-    };
-    const proposals = extractSourceSummary(source, ctx).proposals;
-    return this.writeProposals(source, proposals);
   }
 
   // ── internals ────────────────────────────────────────────────────────
@@ -260,7 +275,10 @@ export class MemoryWikiIngestor {
   private persistSource(input: SourceIngestInput): WikiSource {
     const createdAt = input.createdAt ?? this.clock();
     const contentHash = createHash('sha256').update(input.body).digest('hex');
-    const id = deriveSourceId(input.kind, contentHash, createdAt);
+    // Pure content-addressed id (kind + body hash). Earlier signatures
+    // mixed `createdAt` so a re-emit produced a new row every time —
+    // see `schema.ts:deriveSourceId` doc comment for the L1 evidence.
+    const id = deriveSourceId(input.kind, contentHash);
 
     const existing = this.store.getSourceById(id);
     if (existing) {

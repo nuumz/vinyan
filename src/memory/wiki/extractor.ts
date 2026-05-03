@@ -19,6 +19,49 @@
  */
 import type { WikiPageProposal, WikiSource, WikiSourceRef } from './types.ts';
 
+/**
+ * Title patterns that signal the proposal came from a section-heading
+ * dump rather than substantive extraction. Verified live in L2: a
+ * session source produced both `decision-turns-4` and
+ * `failure-pattern-turns-4` pages whose bodies were the verbatim turn
+ * transcript — the regex `/decision|chose|adopted/` matched the turn
+ * section header rather than the actual decision content. Until the
+ * extractor is replaced with a hybrid rule + LLM proposer (Phase γ in
+ * the design proposal), gate these out so the wiki doesn't fill with
+ * label-only-different duplicates.
+ */
+const LOW_QUALITY_TITLE_PATTERNS: readonly RegExp[] = [
+  /^Turns?\s*\(\d+\)$/i,
+  /^Tasks?\s*\(\d+\)$/i,
+  /^Recent\s+Turns?\b/i,
+  /^Working\s+Memory$/i,
+  /^Session\s+[a-f0-9-]{8,}$/i, // bare session id stub
+];
+
+/**
+ * Filter pass run after extraction. Rejects:
+ *   - low-quality auto-titles (section-header artefacts);
+ *   - byte-identical bodies emitted as different page types — the
+ *     dump-extractor would label the same transcript as both `decision`
+ *     and `failure-pattern`, which clutters retrieval. First wins.
+ *
+ * Phase γ replaces the extractor with structured rules + an LLM
+ * proposer; this gate becomes a no-op once proposals carry distilled
+ * one-concept-per-page bodies (Zettelkasten shape).
+ */
+export function gateProposals(proposals: readonly WikiPageProposal[]): readonly WikiPageProposal[] {
+  const seenBodies = new Set<string>();
+  const out: WikiPageProposal[] = [];
+  for (const p of proposals) {
+    if (LOW_QUALITY_TITLE_PATTERNS.some((re) => re.test(p.title))) continue;
+    const bodyKey = p.body.trim();
+    if (seenBodies.has(bodyKey)) continue;
+    seenBodies.add(bodyKey);
+    out.push(p);
+  }
+  return out;
+}
+
 export interface ExtractContext {
   readonly profile: string;
   readonly actor: string;

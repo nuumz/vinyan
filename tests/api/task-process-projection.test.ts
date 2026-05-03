@@ -272,7 +272,7 @@ describe('TaskProcessProjectionService.build — plan', () => {
     expect(st1.agentId).toBe('researcher');
   });
 
-  test('todo list folds created → updated transitions', () => {
+  test('todo list folds created → updated transitions (legacy `todos` payload)', () => {
     plantTaskRow('task-todos');
     append(
       'task-todos',
@@ -290,6 +290,209 @@ describe('TaskProcessProjectionService.build — plan', () => {
     expect(plan.todoList).toHaveLength(1);
     expect(plan.todoList[0]!.status).toBe('completed');
     expect(plan.todoList[0]!.content).toBe('Step 1');
+  });
+
+  test('todo list accepts the runtime `todoList` payload shape', () => {
+    // The workflow executor emits `workflow:todo_created` with the field
+    // `todoList` (workflow-executor.ts:559-564). Older fixtures used `todos`;
+    // both must fold so live runs and replays behave the same.
+    plantTaskRow('task-todos-real');
+    append(
+      'task-todos-real',
+      'workflow:todo_created',
+      {
+        todoList: [
+          { id: 'tdo-1', content: 'Researcher answers', status: 'pending', sourceStepId: 'p-researcher' },
+          { id: 'tdo-2', content: 'Mentor answers', status: 'pending', sourceStepId: 'p-mentor' },
+        ],
+      },
+      1500,
+    );
+    const plan = makeService().build('task-todos-real')!.plan;
+    expect(plan.todoList).toHaveLength(2);
+    expect(plan.todoList.map((t) => t.id)).toEqual(['tdo-1', 'tdo-2']);
+    expect(plan.todoList[0]!.content).toBe('Researcher answers');
+  });
+
+  test('collaborationRounds fold per-(stepId, round) telemetry, sorted by stepId then round', () => {
+    plantTaskRow('task-collab-rounds');
+    // 2 agents × 2 rounds = 4 rows. Emit out of order to test sort.
+    append(
+      'task-collab-rounds',
+      'workflow:collaboration_round',
+      {
+        stepId: 'p-mentor',
+        subTaskId: 'task-collab-rounds-delegate-p-mentor-r0',
+        agentId: 'mentor',
+        round: 0,
+        status: 'completed',
+        tokensConsumed: 120,
+        outputPreview: 'mentor r0 output',
+        startedAt: 1000,
+        completedAt: 1100,
+      },
+      1100,
+    );
+    append(
+      'task-collab-rounds',
+      'workflow:collaboration_round',
+      {
+        stepId: 'p-architect',
+        subTaskId: 'task-collab-rounds-delegate-p-architect-r0',
+        agentId: 'architect',
+        round: 0,
+        status: 'completed',
+        tokensConsumed: 90,
+        outputPreview: 'architect r0 output',
+        startedAt: 1000,
+        completedAt: 1100,
+      },
+      1100,
+    );
+    append(
+      'task-collab-rounds',
+      'workflow:collaboration_round',
+      {
+        stepId: 'p-architect',
+        subTaskId: 'task-collab-rounds-delegate-p-architect-r1',
+        agentId: 'architect',
+        round: 1,
+        status: 'failed',
+        tokensConsumed: 0,
+        errorMessage: 'mock err',
+        startedAt: 1200,
+        completedAt: 1300,
+      },
+      1300,
+    );
+    append(
+      'task-collab-rounds',
+      'workflow:collaboration_round',
+      {
+        stepId: 'p-mentor',
+        subTaskId: 'task-collab-rounds-delegate-p-mentor-r1',
+        agentId: 'mentor',
+        round: 1,
+        status: 'completed',
+        tokensConsumed: 110,
+        outputPreview: 'mentor r1 output',
+        startedAt: 1200,
+        completedAt: 1300,
+      },
+      1300,
+    );
+    const plan = makeService().build('task-collab-rounds')!.plan;
+    expect(plan.collaborationRounds).toBeDefined();
+    expect(plan.collaborationRounds!).toHaveLength(4);
+    // Sorted by stepId then round; architect's two rounds first, then mentor's.
+    const ordered = plan.collaborationRounds!.map((r) => `${r.stepId}-r${r.round}`);
+    expect(ordered).toEqual([
+      'p-architect-r0',
+      'p-architect-r1',
+      'p-mentor-r0',
+      'p-mentor-r1',
+    ]);
+    const archR1 = plan.collaborationRounds!.find(
+      (r) => r.stepId === 'p-architect' && r.round === 1,
+    )!;
+    expect(archR1.status).toBe('failed');
+    expect(archR1.tokensConsumed).toBe(0);
+    const mentorR1 = plan.collaborationRounds!.find(
+      (r) => r.stepId === 'p-mentor' && r.round === 1,
+    )!;
+    expect(mentorR1.outputPreview).toBe('mentor r1 output');
+    expect(mentorR1.agentId).toBe('mentor');
+  });
+
+  test('multiAgentSubtasks cardinality preserved when collaborationRounds populated', () => {
+    // The "one card per agent" cardinality contract for multiAgentSubtasks
+    // (collaboration-block.ts:12-16) must hold even when round-level data
+    // exists. Round telemetry lives on a separate field; the agent-roster
+    // card stays at 1 row per agent.
+    plantTaskRow('task-card-cardinality');
+    append(
+      'task-card-cardinality',
+      'workflow:subtasks_planned',
+      {
+        groupMode: 'debate',
+        subtasks: [
+          { subtaskId: 'st-1', stepId: 's1', status: 'planned', agentId: 'researcher' },
+          { subtaskId: 'st-2', stepId: 's2', status: 'planned', agentId: 'mentor' },
+        ],
+      },
+      1500,
+    );
+    // Two rounds per agent.
+    for (const round of [0, 1]) {
+      for (const [stepId, agentId] of [['s1', 'researcher'], ['s2', 'mentor']] as const) {
+        append(
+          'task-card-cardinality',
+          'workflow:collaboration_round',
+          {
+            stepId,
+            subTaskId: `task-card-cardinality-delegate-${stepId}-r${round}`,
+            agentId,
+            round,
+            status: 'completed',
+            tokensConsumed: 50,
+            outputPreview: `${agentId} r${round}`,
+            startedAt: 1000 + round * 100,
+            completedAt: 1050 + round * 100,
+          },
+          1050 + round * 100,
+        );
+      }
+    }
+    const plan = makeService().build('task-card-cardinality')!.plan;
+    // Cardinality contract: one row per agent, regardless of round count.
+    expect(plan.multiAgentSubtasks).toHaveLength(2);
+    // Round timeline holds 4 entries (2 agents × 2 rounds).
+    expect(plan.collaborationRounds).toHaveLength(4);
+  });
+
+  test('plan steps fold descriptions from workflow:plan_ready', () => {
+    // `workflow:plan_ready` is the authoritative source for step
+    // descriptions. Without folding it the projection emits steps with
+    // empty `description`, which the UI then renders blank.
+    plantTaskRow('task-plan-ready');
+    append(
+      'task-plan-ready',
+      'workflow:decision_recorded',
+      { decision: { stage: 'classified' } },
+      1500,
+    );
+    append(
+      'task-plan-ready',
+      'workflow:plan_ready',
+      {
+        goal: 'multi-agent debate',
+        awaitingApproval: false,
+        steps: [
+          {
+            id: 'p-researcher',
+            description: 'researcher answers · 2 rounds',
+            strategy: 'delegate-sub-agent',
+            agentId: 'researcher',
+            dependencies: [],
+          },
+          {
+            id: 'synth-coordinator',
+            description: 'coordinator synthesizes the final answer.',
+            strategy: 'llm-reasoning',
+            dependencies: ['p-researcher'],
+          },
+        ],
+      },
+      1600,
+    );
+    const plan = makeService().build('task-plan-ready')!.plan;
+    expect(plan.steps).toHaveLength(2);
+    const researcher = plan.steps.find((s) => s.id === 'p-researcher')!;
+    expect(researcher.description).toBe('researcher answers · 2 rounds');
+    expect(researcher.strategy).toBe('delegate-sub-agent');
+    expect(researcher.agentId).toBe('researcher');
+    const coord = plan.steps.find((s) => s.id === 'synth-coordinator')!;
+    expect(coord.description).toBe('coordinator synthesizes the final answer.');
   });
 });
 
@@ -413,6 +616,48 @@ describe('TaskProcessProjectionService.build — coding-cli + diagnostics + hist
     expect(diag.escalations).toHaveLength(1);
     expect(diag.escalations[0]!.fromLevel).toBe(1);
     expect(diag.routingLevel).toBe(1);
+  });
+
+  test('diagnostics fold workflow lifecycle events as `workflow:<stage>` phases', () => {
+    // Tasks orchestrated through the workflow executor never emit the
+    // core-loop `phase:*` events, so without folding the workflow
+    // lifecycle the operator sees an empty diagnostics list. Each
+    // workflow stage maps to a phase row whose name is unambiguous
+    // (`workflow:` prefix) and whose durations come from start/complete
+    // pairs when the executor emitted them.
+    plantTaskRow('task-wf-diag');
+    append('task-wf-diag', 'workflow:decision_recorded', { decision: { stage: 'classified' } }, 1500);
+    append(
+      'task-wf-diag',
+      'workflow:plan_ready',
+      { goal: 'g', awaitingApproval: false, steps: [{ id: 's1', description: 'd', dependencies: [] }] },
+      1600,
+    );
+    append('task-wf-diag', 'workflow:step_start', { stepId: 's1', startedAt: 1700 }, 1700);
+    append(
+      'task-wf-diag',
+      'workflow:delegate_dispatched',
+      { stepId: 's1', subTaskId: 'task-wf-diag-delegate-s1-r0' },
+      1750,
+    );
+    append('task-wf-diag', 'workflow:delegate_completed', { stepId: 's1', status: 'completed' }, 2700);
+    append(
+      'task-wf-diag',
+      'workflow:step_complete',
+      { stepId: 's1', strategy: 'delegate-sub-agent', status: 'completed', durationMs: 1100 },
+      2800,
+    );
+    const diag = makeService().build('task-wf-diag')!.diagnostics;
+    const names = diag.phases.map((p) => p.name).sort();
+    expect(names).toContain('workflow:decision_recorded');
+    expect(names).toContain('workflow:plan_ready');
+    expect(names).toContain('workflow:step:s1');
+    expect(names).toContain('workflow:delegate:s1');
+    const stepPhase = diag.phases.find((p) => p.name === 'workflow:step:s1')!;
+    expect(stepPhase.status).toBe('completed');
+    expect(stepPhase.durationMs).toBe(1100);
+    const delegatePhase = diag.phases.find((p) => p.name === 'workflow:delegate:s1')!;
+    expect(delegatePhase.status).toBe('completed');
   });
 
   test('history.descendantTaskIds reads from delegate_dispatched payloads', () => {

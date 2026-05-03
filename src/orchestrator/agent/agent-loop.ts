@@ -47,7 +47,11 @@ import { AgentBudgetTracker } from './agent-budget.ts';
 import type { IAgentSession } from './agent-session.ts';
 import { AgentSession, type SubprocessHandle } from './agent-session.ts';
 import { type ProposedMutation, SessionOverlay } from './session-overlay.ts';
+import { buildThoughtEvidenceRefs, READ_FILE_TOOL_IDS } from './thought-evidence-refs.ts';
 import { buildCompactedTranscript, partitionTranscript } from './transcript-compactor.ts';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
 
 // ── Exported interfaces ──────────────────────────────────────────────
 
@@ -973,6 +977,15 @@ export async function runAgentLoop(
   let contractViolations = 0;
   let session: IAgentSession | null = null;
   const progress = new SessionProgress();
+  // A4 live evidence accumulator: as the worker reads files via
+  // Read-classified tool calls, we hash the file ON DISK at the
+  // moment of read and store (path → sha256) here. Subsequent
+  // `kind:'thought'` emits include these in `evidenceRefs` ON TOP OF
+  // perception's snapshot, so a thought emitted AFTER the worker
+  // discovers a new file references the verifiable hash. Last-write-
+  // wins on the same path so re-reads after a mutation surface the
+  // new hash.
+  const liveFileHashes = new Map<string, string>();
 
   // Book-integration Wave 1.1: worker-level silence watchdog. Instantiate
   // per-session so state is naturally bounded by the agent loop's lifetime.
@@ -1249,6 +1262,32 @@ export async function runAgentLoop(
     };
     await session.send(initTurn);
 
+    // L2 compaction-survival: if the orchestrator (collaboration-block)
+    // attached a cot-injection payload, record it as a synthetic
+    // preserve-flagged transcript turn BEFORE the worker emits its
+    // first turn. The flag (see `transcript-compactor.ts:COMPACTION_PRESERVE_FLAG`)
+    // makes `partitionTranscript` classify it as evidence so
+    // `buildCompactedTranscript` keeps the inject content verbatim
+    // even when narrative turns are summarized away.
+    //
+    // Why this lives here (not in collaboration-block): the transcript
+    // var is local to runAgentLoop; pushing here is the only honest
+    // path that surfaces the inject in `WorkerLoopResult.transcript`.
+    // Negative path: when `input.cotInjectionPayload` is undefined
+    // (round 0, non-collaboration tasks), no marker is pushed and the
+    // existing compaction behavior is unchanged.
+    if (input.cotInjectionPayload) {
+      (transcript as Array<
+        WorkerTurn
+        | { type: 'cot_inject_marker'; turnId: string; content: string; __preserveOnCompaction: true }
+      >).push({
+        type: 'cot_inject_marker',
+        turnId: '__cot_inject_marker',
+        content: input.cotInjectionPayload,
+        __preserveOnCompaction: true,
+      });
+    }
+
     deps.bus?.emit('worker:dispatch', { taskId: input.id, routing });
     deps.bus?.emit('agent:session_start', {
       taskId: input.id,
@@ -1308,12 +1347,19 @@ export async function runAgentLoop(
           // A8: thought-block boundary. The model just stopped thinking
           // and is about to act (tool_calls turn). One audit entry per
           // logical block — replay-deterministic, no token-pause heuristic.
+          // A4: evidenceRefs binds the thought to the file hashes already
+          // verified at perception time so cot-injection / verifiers can
+          // detect "files this thought reasoned about have changed since".
+          // Empty array (not undefined) when no evidence is in scope —
+          // honest readers distinguish "no evidence captured" from
+          // "field absent on legacy row".
           emitAuditEntry({
             bus: deps.bus,
             taskId: input.id,
             ...hierarchyFromInput(input),
             turn: turn.turnId,
             actor: { type: 'worker', id: routing.workerId ?? 'agent-loop' },
+            evidenceRefs: buildThoughtEvidenceRefs(perception, liveFileHashes),
             variant: {
               kind: 'thought',
               content: turn.rationale,
@@ -1548,6 +1594,38 @@ export async function runAgentLoop(
 
           results.push(result);
           const toolLatencyMs = Math.round(performance.now() - toolStart);
+          // A4 live evidence: when a Read-classified tool succeeds,
+          // hash the file ON DISK at observation time and stash it on
+          // `liveFileHashes` so subsequent thought emits carry verifiable
+          // evidence beyond perception's pre-loop snapshot. Best-effort:
+          // any read/hash failure (path traversal, permissions, race)
+          // silently skips — A9 graceful degradation.
+          if (result.status === 'success' && READ_FILE_TOOL_IDS.has(call.tool)) {
+            const params = (call.parameters ?? {}) as Record<string, unknown>;
+            const rawPath =
+              typeof params.path === 'string'
+                ? params.path
+                : typeof params.filePath === 'string'
+                  ? params.filePath
+                  : typeof params.file === 'string'
+                    ? params.file
+                    : undefined;
+            if (rawPath) {
+              try {
+                const absolute = isAbsolute(rawPath) ? rawPath : resolve(deps.workspace, rawPath);
+                const bytes = readFileSync(absolute);
+                const sha = createHash('sha256').update(bytes).digest('hex');
+                // Store under the original (relative-or-absolute) path
+                // string the worker referenced. This mirrors what
+                // perception.verifiedFacts uses (relative paths from
+                // workspace) so the merge dedups correctly when the
+                // same file is in both sources.
+                liveFileHashes.set(rawPath, sha);
+              } catch {
+                /* best-effort — never fail the loop on a hash miss */
+              }
+            }
+          }
           deps.bus?.emit('agent:tool_executed', {
             taskId: input.id,
             turnId: turn.turnId,
@@ -1713,6 +1791,8 @@ export async function runAgentLoop(
         // that's the closest analogue to a thought block on a non-tool turn.
         // Emit one audit entry so the audit log never misses a worker's
         // final reasoning when the loop ends without a tool_calls turn.
+        // A4: same evidenceRefs contract as the pre-tool emit — bind
+        // reflective uncertainty to the file hashes that were in scope.
         if (turn.reason) {
           emitAuditEntry({
             bus: deps.bus,
@@ -1720,6 +1800,7 @@ export async function runAgentLoop(
             ...hierarchyFromInput(input),
             turn: turn.turnId,
             actor: { type: 'worker', id: routing.workerId ?? 'agent-loop' },
+            evidenceRefs: buildThoughtEvidenceRefs(perception, liveFileHashes),
             variant: {
               kind: 'thought',
               content: turn.reason,

@@ -228,6 +228,21 @@ export async function executeVerifyPhase(
         toLevel,
         reason: `Contradiction: ${passedOracles.join(',')} passed but ${failedOracles.join(',')} failed`,
       });
+      emitAuditEntry({
+        bus: deps.bus,
+        taskId: input.id,
+        ...hierarchyFromInput(input),
+        actor: { type: 'orchestrator' },
+        evidenceRefs: [],
+        variant: {
+          kind: 'decision',
+          decisionType: 'escalate',
+          verdict: `L${fromLevel} → L${toLevel}`,
+          rationale: `Contradiction: ${passedOracles.join(',')} passed but ${failedOracles.join(',')} failed`,
+          ruleId: 'k1.1-auto-escalate-on-contradiction',
+          tier: 'deterministic',
+        },
+      });
       return Phase.escalate(withLevel(routing, toLevel));
     }
 

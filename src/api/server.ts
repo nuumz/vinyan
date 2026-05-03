@@ -32,6 +32,10 @@ import { createAuthMiddleware, requiresAuth } from '../security/auth.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import { handleCodingCliRoute } from './coding-cli-routes.ts';
 import { handleMemoryWikiRoute, type MemoryWikiRouteDeps } from './memory-wiki-routes.ts';
+import {
+  type SessionProcessProjection,
+  SessionProcessProjectionService,
+} from './projections/session-process-projection.ts';
 import { type TaskProcessProjection, TaskProcessProjectionService } from './projections/task-process-projection.ts';
 import { classifyEndpoint, RateLimiter } from './rate-limiter.ts';
 import type { Session, SessionManager } from './session-manager.ts';
@@ -566,6 +570,14 @@ export class VinyanAPIServer {
     if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/event-history$/)) {
       const sessionId = path.split('/')[4]!;
       return this.handleSessionEventHistory(sessionId, req);
+    }
+
+    // Session-scoped process projection — backs the A8 audit redesign's
+    // `/audit/sessions/:sid` UI route. Mirrors the per-task contract at
+    // `/api/v1/tasks/:id/process-state` (404 envelope, auth, json shape).
+    if (method === 'GET' && path.match(/^\/api\/v1\/sessions\/[^/]+\/process-state$/)) {
+      const sessionId = path.split('/')[4]!;
+      return this.handleSessionProcessState(sessionId);
     }
 
     // Agent Conversation: conversational message endpoints.
@@ -4582,6 +4594,24 @@ export class VinyanAPIServer {
   }
 
   /**
+   * GET /api/v1/sessions/:sid/process-state — A8 audit redesign session
+   * scope. Thin pass-through to {@link SessionProcessProjectionService}
+   * mirroring the contract of {@link handleTaskProcessState}: 404 with
+   * the same `{ error, sessionId }` envelope when the session row is
+   * unknown; 200 + `SessionProcessProjection` body otherwise. Auth +
+   * rate-limit handled upstream by the same middleware as the task
+   * variant (see `requiresAuth` allowlist).
+   */
+  private handleSessionProcessState(sessionId: string): Response {
+    const service = this.getSessionProcessProjectionService();
+    const projection = service.build(sessionId);
+    if (!projection) {
+      return jsonResponse({ error: 'Session not found', sessionId }, 404);
+    }
+    return jsonResponse(projection satisfies SessionProcessProjection);
+  }
+
+  /**
    * Cached factory for the projection service. The service is stateless
    * (closes over store handles only), so a single instance per server
    * is sufficient and lets tests assert behaviour without re-wiring deps.
@@ -4605,6 +4635,20 @@ export class VinyanAPIServer {
       inFlightTaskIds: () => new Set(this.inFlightTasks.keys()),
     });
     return this.processProjectionService;
+  }
+
+  /**
+   * Cached factory for the session-scoped projection service. Mirrors
+   * the lazy-singleton pattern of {@link getProcessProjectionService}.
+   * The service reads from `SessionStore` via the SessionManager handle.
+   */
+  private sessionProcessProjectionService: SessionProcessProjectionService | null = null;
+  private getSessionProcessProjectionService(): SessionProcessProjectionService {
+    if (this.sessionProcessProjectionService) return this.sessionProcessProjectionService;
+    this.sessionProcessProjectionService = new SessionProcessProjectionService({
+      sessionStore: this.deps.sessionManager.getSessionStore(),
+    });
+    return this.sessionProcessProjectionService;
   }
 
   /**

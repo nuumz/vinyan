@@ -5,6 +5,7 @@
  * auto-escalation to the next routing level (A1 compliance).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import type { AuditEntry } from '../../src/core/audit.ts';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import type { OracleVerdict } from '../../src/core/types.ts';
 import { executeTask, type OrchestratorDeps } from '../../src/orchestrator/core-loop.ts';
@@ -47,8 +48,10 @@ function makeDeps(args: {
   routingLevel: RoutingDecision['level'];
   verdicts: Record<string, OracleVerdict>;
   recordedTraces?: ExecutionTrace[];
+  bus?: VinyanBus;
 }): OrchestratorDeps {
   return {
+    ...(args.bus ? { bus: args.bus } : {}),
     perception: { assemble: async () => minimalPerception },
     riskRouter: {
       assessInitialLevel: async () => ({
@@ -198,6 +201,46 @@ describe('Contradiction Escalation Events', () => {
         }),
       ]),
     );
+  });
+
+  test('K1.1 contradiction escalate emits exactly one decision/escalate audit entry with fromLevel→toLevel and stable ruleId', async () => {
+    const auditEntries: AuditEntry[] = [];
+    bus.on('audit:entry', (entry) => {
+      auditEntries.push(entry);
+    });
+
+    const recordedTraces: ExecutionTrace[] = [];
+    await executeTask(
+      makeInput({ id: 't-escalate-audit' }),
+      makeDeps({
+        routingLevel: 2,
+        verdicts: {
+          ast: makeVerdict('ast', true),
+          type: makeVerdict('type', false),
+        },
+        recordedTraces,
+        bus,
+      }),
+    );
+
+    const escalateDecisions = auditEntries.filter(
+      (e) => e.kind === 'decision' && e.decisionType === 'escalate',
+    );
+    expect(escalateDecisions).toHaveLength(1);
+
+    const decision = escalateDecisions[0]!;
+    expect(decision.kind).toBe('decision');
+    if (decision.kind !== 'decision') throw new Error('narrowed above');
+    expect(decision.decisionType).toBe('escalate');
+    expect(decision.verdict).toBe('L2 → L3');
+    expect(decision.ruleId).toBe('k1.1-auto-escalate-on-contradiction');
+    expect(decision.tier).toBe('deterministic');
+    expect(decision.rationale).toContain('passed');
+    expect(decision.rationale).toContain('failed');
+    expect(decision.rationale).toContain('ast');
+    expect(decision.rationale).toContain('type');
+    expect(decision.taskId).toBe('t-escalate-audit');
+    expect(decision.actor.type).toBe('orchestrator');
   });
 
   test('L0-pinned oracle rejection records constraint source in provenance', async () => {

@@ -273,6 +273,10 @@ export type AuditSection =
   | 'verdicts'
   | 'planSteps'
   | 'delegates'
+  | 'subTasks'
+  | 'subAgents'
+  | 'workflowEvents'
+  | 'sessionEvents'
   | 'gates'
   | 'finals';
 
@@ -283,8 +287,28 @@ export interface TaskProcessAuditBySection {
   verdicts: AuditEntry[];
   planSteps: AuditEntry[];
   delegates: AuditEntry[];
+  /** Phase 2.7: kind:'subtask' rows — work-unit lifecycle scoped to delegate / wf / coding-cli children. */
+  subTasks: AuditEntry[];
+  /** Phase 2.7: kind:'subagent' rows — persona/worker lifecycle for delegates. */
+  subAgents: AuditEntry[];
+  /** Phase 2.7: kind:'workflow' rows — plan/start/pause/resume/complete lifecycle of the implicit workflow. */
+  workflowEvents: AuditEntry[];
+  /** Phase 2.7: kind:'session' rows — chat-container lifecycle when surfaced via SessionProcessProjectionService. */
+  sessionEvents: AuditEntry[];
   gates: AuditEntry[];
   finals: AuditEntry[];
+}
+
+/**
+ * Phase 2.7: id rollup so the UI can navigate the entity hierarchy without
+ * re-walking auditLog. Computed from the wrapper fields on every entry.
+ */
+export interface TaskProcessByEntity {
+  sessionId?: string;
+  workflowId?: string;
+  taskId: string;
+  subTaskIds: string[];
+  subAgentIds: string[];
 }
 
 export interface TaskProcessProvenance {
@@ -292,6 +316,8 @@ export interface TaskProcessProvenance {
   modelIds: string[];
   oracleIds: string[];
   promptHashes: string[];
+  /** Phase 2.7: capability-token ids surfaced on tool_call / subagent rows. */
+  capabilityTokenIds: string[];
 }
 
 export type TaskProcessSectionCompletenessKind = 'complete' | 'partial' | 'unclassifiable';
@@ -321,7 +347,9 @@ export interface TaskProcessProjection {
   auditLog?: AuditEntry[];
   /** Per-section grouping for fast UI consumption. Mirrors `auditLog` content. */
   bySection?: TaskProcessAuditBySection;
-  /** Provenance roll-up across the audit log (policy versions, model ids, oracle ids, prompt hashes seen). */
+  /** Phase 2.7: id rollup for hierarchy navigation (sessionId, taskId, subTaskIds[], subAgentIds[]). */
+  byEntity?: TaskProcessByEntity;
+  /** Provenance roll-up across the audit log (policy versions, model ids, oracle ids, prompt hashes, capability tokens). */
   provenance?: TaskProcessProvenance;
   /** Per-section completeness — honest signal per kind, never overclaiming. */
   completenessBySection?: TaskProcessSectionCompleteness[];
@@ -530,6 +558,7 @@ export class TaskProcessProjectionService {
       history,
       auditLog: audit.entries,
       bySection: audit.bySection,
+      byEntity: audit.byEntity,
       provenance: audit.provenance,
       completenessBySection: audit.completenessBySection,
     };
@@ -1140,11 +1169,12 @@ export class TaskProcessProjectionService {
    * removed in the release after every emit site has shipped.
    */
   private buildAuditLog(
-    _taskId: string,
+    taskId: string,
     events: readonly PersistedTaskEvent[],
   ): {
     entries: AuditEntry[];
     bySection: TaskProcessAuditBySection;
+    byEntity: TaskProcessByEntity;
     provenance: TaskProcessProvenance;
     completenessBySection: TaskProcessSectionCompleteness[];
   } {
@@ -1173,6 +1203,7 @@ export class TaskProcessProjectionService {
     return {
       entries,
       bySection: groupAuditBySection(entries),
+      byEntity: computeAuditByEntity(taskId, entries),
       provenance: computeAuditProvenance(entries),
       completenessBySection: computeAuditCompleteness(entries, events),
     };
@@ -1533,6 +1564,73 @@ function synthesizeAuditEntry(
         decision: 'answer',
       };
     }
+    // Phase 2.7: synthesize workflow lifecycle from legacy events.
+    case 'workflow:plan_ready': {
+      if (realKinds.has('workflow')) return undefined;
+      return {
+        ...wrapper,
+        actor: { type: 'orchestrator' },
+        kind: 'workflow',
+        phase: 'planned',
+      };
+    }
+    case 'workflow:complete': {
+      if (realKinds.has('workflow')) return undefined;
+      const status = typeof p.status === 'string' ? p.status : undefined;
+      return {
+        ...wrapper,
+        actor: { type: 'orchestrator' },
+        kind: 'workflow',
+        phase: status === 'failed' ? 'failed' : 'completed',
+      };
+    }
+    // Phase 2.7: synthesize sub-task / sub-agent rows from legacy delegate events.
+    case 'workflow:delegate_dispatched': {
+      const subTaskId = typeof p.subTaskId === 'string' ? p.subTaskId : undefined;
+      if (!subTaskId) return undefined;
+      if (realKinds.has('subtask') || realKinds.has('subagent')) return undefined;
+      // Pick `subtask` as the canonical synth kind for delegate dispatch;
+      // a corresponding subagent row would duplicate today (1:1 mapping).
+      // Real emit sites already produce both, so the realKinds gate above
+      // is what suppresses synthesis once the new emits land.
+      return {
+        ...wrapper,
+        actor: { type: 'orchestrator' },
+        subTaskId,
+        subAgentId: subTaskId,
+        kind: 'subtask',
+        phase: 'spawn',
+      };
+    }
+    // Phase 2.7: synthesize session lifecycle (folded by SessionProcessProjectionService).
+    case 'session:created': {
+      if (realKinds.has('session')) return undefined;
+      return { ...wrapper, actor: { type: 'user' }, kind: 'session', phase: 'created' };
+    }
+    case 'session:archived': {
+      if (realKinds.has('session')) return undefined;
+      return { ...wrapper, actor: { type: 'user' }, kind: 'session', phase: 'archived' };
+    }
+    case 'session:unarchived': {
+      if (realKinds.has('session')) return undefined;
+      return { ...wrapper, actor: { type: 'user' }, kind: 'session', phase: 'unarchived' };
+    }
+    case 'session:deleted': {
+      if (realKinds.has('session')) return undefined;
+      return { ...wrapper, actor: { type: 'user' }, kind: 'session', phase: 'deleted' };
+    }
+    case 'session:restored': {
+      if (realKinds.has('session')) return undefined;
+      return { ...wrapper, actor: { type: 'user' }, kind: 'session', phase: 'restored' };
+    }
+    case 'session:purged': {
+      if (realKinds.has('session')) return undefined;
+      return { ...wrapper, actor: { type: 'user' }, kind: 'session', phase: 'purged' };
+    }
+    case 'session:compacted': {
+      if (realKinds.has('session')) return undefined;
+      return { ...wrapper, actor: { type: 'orchestrator' }, kind: 'session', phase: 'compacted' };
+    }
     default:
       return undefined;
   }
@@ -1546,6 +1644,10 @@ function groupAuditBySection(entries: readonly AuditEntry[]): TaskProcessAuditBy
     verdicts: [],
     planSteps: [],
     delegates: [],
+    subTasks: [],
+    subAgents: [],
+    workflowEvents: [],
+    sessionEvents: [],
     gates: [],
     finals: [],
   };
@@ -1567,7 +1669,20 @@ function groupAuditBySection(entries: readonly AuditEntry[]): TaskProcessAuditBy
         out.planSteps.push(e);
         break;
       case 'delegate':
+        // Legacy back-compat reader path. New code emits `subagent`; folded in next case.
         out.delegates.push(e);
+        break;
+      case 'subtask':
+        out.subTasks.push(e);
+        break;
+      case 'subagent':
+        out.subAgents.push(e);
+        break;
+      case 'workflow':
+        out.workflowEvents.push(e);
+        break;
+      case 'session':
+        out.sessionEvents.push(e);
         break;
       case 'gate':
         out.gates.push(e);
@@ -1580,22 +1695,57 @@ function groupAuditBySection(entries: readonly AuditEntry[]): TaskProcessAuditBy
   return out;
 }
 
+/**
+ * Phase 2.7: id rollup. Walks the audit log once and collects the unique
+ * sub-task and sub-agent ids discovered on wrapper fields. sessionId
+ * comes from the first wrapper carrying it (all entries should share
+ * the same sessionId for one task; we trust the first non-empty value).
+ * workflowId === taskId by today's invariant.
+ */
+function computeAuditByEntity(taskId: string, entries: readonly AuditEntry[]): TaskProcessByEntity {
+  const subTaskIds = new Set<string>();
+  const subAgentIds = new Set<string>();
+  let sessionId: string | undefined;
+  for (const e of entries) {
+    if (!sessionId && e.sessionId) sessionId = e.sessionId;
+    if (e.subTaskId) subTaskIds.add(e.subTaskId);
+    if (e.subAgentId) subAgentIds.add(e.subAgentId);
+    // Variants that carry their own subTaskId / subAgentId in the body
+    // (e.g. `kind:'subtask'`) — surface those too. Safer than relying on
+    // the wrapper alone, which an emitter could legitimately omit.
+    if (e.kind === 'subtask' && e.subTaskId) subTaskIds.add(e.subTaskId);
+    if ((e.kind === 'subagent' || e.kind === 'delegate') && e.subAgentId) subAgentIds.add(e.subAgentId);
+    if (e.kind === 'plan_step' && e.subAgentId) subAgentIds.add(e.subAgentId);
+  }
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    workflowId: taskId, // alias by invariant
+    taskId,
+    subTaskIds: [...subTaskIds].sort(),
+    subAgentIds: [...subAgentIds].sort(),
+  };
+}
+
 function computeAuditProvenance(entries: readonly AuditEntry[]): TaskProcessProvenance {
   const policyVersions = new Set<string>();
   const modelIds = new Set<string>();
   const oracleIds = new Set<string>();
   const promptHashes = new Set<string>();
+  const capabilityTokenIds = new Set<string>();
   for (const e of entries) {
     policyVersions.add(e.policyVersion);
     if (e.kind === 'decision' && e.modelId) modelIds.add(e.modelId);
     if (e.kind === 'verdict' && e.oracleId) oracleIds.add(e.oracleId);
     if (e.actor.type === 'oracle' && e.actor.id) oracleIds.add(e.actor.id);
+    if (e.kind === 'tool_call' && e.capabilityTokenId) capabilityTokenIds.add(e.capabilityTokenId);
+    if (e.kind === 'subagent' && e.capabilityTokenId) capabilityTokenIds.add(e.capabilityTokenId);
   }
   return {
     policyVersions: [...policyVersions].sort(),
     modelIds: [...modelIds].sort(),
     oracleIds: [...oracleIds].sort(),
     promptHashes: [...promptHashes].sort(),
+    capabilityTokenIds: [...capabilityTokenIds].sort(),
   };
 }
 
@@ -1618,6 +1768,10 @@ function computeAuditCompleteness(
     verdicts: 0,
     planSteps: 0,
     delegates: 0,
+    subTasks: 0,
+    subAgents: 0,
+    workflowEvents: 0,
+    sessionEvents: 0,
     gates: 0,
     finals: 0,
   };
@@ -1640,6 +1794,18 @@ function computeAuditCompleteness(
         break;
       case 'delegate':
         counts.delegates += 1;
+        break;
+      case 'subtask':
+        counts.subTasks += 1;
+        break;
+      case 'subagent':
+        counts.subAgents += 1;
+        break;
+      case 'workflow':
+        counts.workflowEvents += 1;
+        break;
+      case 'session':
+        counts.sessionEvents += 1;
         break;
       case 'gate':
         counts.gates += 1;
@@ -1678,7 +1844,18 @@ function computeAuditCompleteness(
     count: counts.toolCalls,
     ...(orphanStarted > 0 ? { reason: `${orphanStarted} tool_started without tool_executed` } : {}),
   });
-  for (const section of ['decisions', 'verdicts', 'planSteps', 'delegates', 'gates', 'finals'] as const) {
+  for (const section of [
+    'decisions',
+    'verdicts',
+    'planSteps',
+    'delegates',
+    'subTasks',
+    'subAgents',
+    'workflowEvents',
+    'sessionEvents',
+    'gates',
+    'finals',
+  ] as const) {
     result.push({ section, kind: 'complete', count: counts[section] });
   }
   return result;

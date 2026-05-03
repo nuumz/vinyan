@@ -629,6 +629,16 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
     soulContent: z.string().optional(),
     /** Multi-agent: pre-resolved episodic context (identity + episodes + skills). */
     agentContext: AgentContextSchema.optional(),
+    /**
+     * Phase 2.8: sub-agent identity injected by the parent orchestrator on
+     * delegate dispatch. The sub-process echoes this on every audit:entry
+     * it emits so the parent's audit log can scope CoT, tool calls, and
+     * decisions to the correct sub-agent (instead of the parent's
+     * `routing.workerId`). When absent (older orchestrator or root task),
+     * the sub-process falls back to its prior behavior with a warning +
+     * counter — never crashes.
+     */
+    subAgentId: z.string().optional(),
   }),
   z.object({
     type: z.literal('tool_results'),

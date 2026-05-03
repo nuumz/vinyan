@@ -24,6 +24,11 @@
 declare const PersonaIdBrand: unique symbol;
 declare const WorkerIdBrand: unique symbol;
 declare const PeerInstanceIdBrand: unique symbol;
+declare const SessionIdBrand: unique symbol;
+declare const TaskIdBrand: unique symbol;
+declare const SubTaskIdBrand: unique symbol;
+declare const StepIdBrand: unique symbol;
+declare const SubAgentIdBrand: unique symbol;
 
 /** #1 — Vinyan internal persona / specialist (developer, reviewer, coordinator, ...). */
 export type PersonaId = string & { readonly [PersonaIdBrand]: never };
@@ -37,6 +42,64 @@ export type CliDelegateProviderId = 'claude-code' | 'github-copilot';
 /** #5 — A2A peer Vinyan instance identifier. */
 export type PeerInstanceId = string & { readonly [PeerInstanceIdBrand]: never };
 
+// ── Hierarchy ids (Phase 2 audit redesign) ─────────────────────────────
+
+/**
+ * Session id — chat-container identifier created by SessionManager. UUID-shape
+ * by convention but not enforced; treat as opaque. Used to scope all
+ * `session_*` table rows and to populate the `task_events.session_id` column.
+ */
+export type SessionId = string & { readonly [SessionIdBrand]: never };
+
+/**
+ * Task id. Two shapes coexist:
+ *   - root tasks: opaque (UUID-shaped in practice).
+ *   - sub-tasks: deterministic `${parentTaskId}-{delegate|wf|coding-cli|child}-{stepId}[-r{round}]`,
+ *     constructed at `src/orchestrator/workflow/stage-manifest.ts` and the
+ *     workflow-executor delegate path. Sub-task ids are also `TaskId`s — they
+ *     own their own `task_events` rows. The branded type is permissive on
+ *     shape so existing emitters that already pass `string` keep working.
+ */
+export type TaskId = string & { readonly [TaskIdBrand]: never };
+
+/**
+ * Sub-task id — load-bearing alias of TaskId carved out so call sites that
+ * specifically address the *child* task in a delegate / collaboration / wf /
+ * coding-cli relationship can express that intent at the type level.
+ * Equality with TaskId is intentional: every SubTaskId IS a TaskId in the
+ * persistence layer. The brand exists only to flag the audit-shape role.
+ */
+export type SubTaskId = string & { readonly [SubTaskIdBrand]: never };
+
+/**
+ * Workflow id — DOCUMENTATION ALIAS for `TaskId`. Vinyan does not maintain
+ * a separate workflow identity; one workflow is implicit per task. The
+ * branded type exists so the audit shape reads honestly: a `workflowId`
+ * field on the wrapper conveys "this row pertains to the workflow plan
+ * scoped to this task" without forking a real id. Treat
+ * `workflowId === taskId` as an invariant. Re-plans surface via
+ * `kind:'workflow'` audit entries carrying `planHash`.
+ */
+export type WorkflowId = TaskId;
+
+/**
+ * Step id — workflow-step identifier (`step1`, `step2`, …). Format is
+ * `^step\d+$` per the planner system prompt; we do NOT enforce the regex
+ * on the brand because legacy emitters use bare `string` and we want
+ * branding to be incremental.
+ */
+export type StepId = string & { readonly [StepIdBrand]: never };
+
+/**
+ * Sub-Agent id — distinct identity for a delegate spawned via
+ * `delegate-sub-agent`. Equal to the spawned sub-task id by convention
+ * (the sub-task IS the sub-agent's identity); we keep a separate brand
+ * so audit-emit sites express intent ("this is the sub-agent dimension")
+ * and so future moves to a non-1:1 scheme do not require renaming every
+ * call site. Today: `subAgentId === subTaskId` for every delegate.
+ */
+export type SubAgentId = string & { readonly [SubAgentIdBrand]: never };
+
 // ── Constructors ────────────────────────────────────────────────────────
 
 /** Validate + brand a persona id. Lowercase ASCII slug, 1-64 chars. */
@@ -45,6 +108,98 @@ export function asPersonaId(value: string): PersonaId {
     throw new Error(`agent-vocabulary: invalid PersonaId "${value}" (expected /^[a-z][a-z0-9-]{0,63}$/)`);
   }
   return value as PersonaId;
+}
+
+/**
+ * Brand a non-empty string as a SessionId. Permissive — the SessionManager
+ * mints UUIDs but consumers (CLI / API) may pass through legacy shapes; we
+ * trust the source and only reject empty strings.
+ */
+export function asSessionId(value: string): SessionId {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('agent-vocabulary: SessionId must be a non-empty string');
+  }
+  return value as SessionId;
+}
+
+export function tryAsSessionId(value: string | null | undefined): SessionId | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return value as SessionId;
+}
+
+/**
+ * Brand a non-empty string as a TaskId. Both root and sub-task ids land
+ * here — the SubTaskId brand is the intent marker, not a shape-stricter
+ * sibling.
+ */
+export function asTaskId(value: string): TaskId {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('agent-vocabulary: TaskId must be a non-empty string');
+  }
+  return value as TaskId;
+}
+
+export function tryAsTaskId(value: string | null | undefined): TaskId | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return value as TaskId;
+}
+
+export function asSubTaskId(value: string): SubTaskId {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('agent-vocabulary: SubTaskId must be a non-empty string');
+  }
+  return value as SubTaskId;
+}
+
+export function tryAsSubTaskId(value: string | null | undefined): SubTaskId | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return value as SubTaskId;
+}
+
+/**
+ * Brand a non-empty string as a StepId. The planner emits `step\d+` shapes
+ * but we do not enforce — emitters with non-canonical step ids would
+ * otherwise fail at the audit-emit boundary, hiding the upstream bug.
+ */
+export function asStepId(value: string): StepId {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('agent-vocabulary: StepId must be a non-empty string');
+  }
+  return value as StepId;
+}
+
+export function tryAsStepId(value: string | null | undefined): StepId | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return value as StepId;
+}
+
+export function asSubAgentId(value: string): SubAgentId {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('agent-vocabulary: SubAgentId must be a non-empty string');
+  }
+  return value as SubAgentId;
+}
+
+export function tryAsSubAgentId(value: string | null | undefined): SubAgentId | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return value as SubAgentId;
+}
+
+/**
+ * Today's invariant: a sub-agent's identity equals the sub-task it owns
+ * (one-delegate-step → one-sub-task → one-sub-agent). Centralised so a
+ * future move to non-1:1 is one edit.
+ */
+export function subAgentIdFromSubTask(subTaskId: SubTaskId): SubAgentId {
+  return subTaskId as unknown as SubAgentId;
+}
+
+/**
+ * Companion to `subAgentIdFromSubTask` — recover the sub-task id when an
+ * audit row is keyed by SubAgentId. Symmetric with the above by design.
+ */
+export function subTaskIdFromSubAgent(subAgentId: SubAgentId): SubTaskId {
+  return subAgentId as unknown as SubTaskId;
 }
 
 /**
@@ -106,10 +261,7 @@ export function isPeerInstanceIdShape(value: string): boolean {
  * means appending here AND adding the adapter under
  * `src/orchestrator/external-coding-cli/providers/`.
  */
-export const CLI_DELEGATE_PROVIDER_IDS: readonly CliDelegateProviderId[] = [
-  'claude-code',
-  'github-copilot',
-] as const;
+export const CLI_DELEGATE_PROVIDER_IDS: readonly CliDelegateProviderId[] = ['claude-code', 'github-copilot'] as const;
 
 // ── Trust-tier mapping ──────────────────────────────────────────────────
 
@@ -125,10 +277,7 @@ export const CLI_DELEGATE_PROVIDER_IDS: readonly CliDelegateProviderId[] = [
  *
  * #4 (Host CLI) has no runtime trust because it has no runtime presence.
  */
-export type AgentTrustTier =
-  | 'internal-trusted'
-  | 'zero-trust'
-  | 'earned';
+export type AgentTrustTier = 'internal-trusted' | 'zero-trust' | 'earned';
 
 export const PERSONA_DEFAULT_TRUST: AgentTrustTier = 'internal-trusted';
 export const WORKER_DEFAULT_TRUST: AgentTrustTier = 'zero-trust';

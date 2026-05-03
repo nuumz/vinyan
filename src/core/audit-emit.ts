@@ -51,6 +51,20 @@ export interface EmitAuditEntryOptions {
   parentEntryId?: string;
   /** The kind-specific payload. Already source-redacted; this helper redacts again as a safety net. */
   variant: AuditEntryVariant;
+  // ── Hierarchy ids (Phase 2) ──────────────────────────────────────────
+  /** Owning chat session. Absent → backfill cache fills it later for persistence; live UI sees null. */
+  sessionId?: string;
+  /**
+   * Workflow id. Documentation alias for `taskId`. The helper enforces
+   * `workflowId === taskId` by overriding any caller-supplied value with
+   * taskId — this prevents a bad emit site from forking a parallel id
+   * that wouldn't survive `task_events` round-trips.
+   */
+  workflowId?: string;
+  /** Sub-task id when this row is scoped to a delegate / wf / coding-cli child task. */
+  subTaskId?: string;
+  /** Sub-agent id when this row originated inside a delegate's worker context. */
+  subAgentId?: string;
 }
 
 let droppedCount = 0;
@@ -100,6 +114,10 @@ export function emitAuditEntry(opts: EmitAuditEntryOptions): AuditEntry | undefi
   if (!opts.bus) return undefined;
   const policy = opts.redactionPolicy ?? BUILT_IN_POLICY;
   const safeVariant = redactSelectedFields(opts.variant, policy);
+  // workflowId === taskId invariant. The caller can pass workflowId for
+  // documentation but we override with taskId; this prevents a forked id
+  // from sneaking through and breaking projection rollup.
+  const workflowId = opts.taskId;
   const candidate: AuditEntry = {
     id: randomUUID(),
     taskId: opts.taskId,
@@ -108,9 +126,13 @@ export function emitAuditEntry(opts: EmitAuditEntryOptions): AuditEntry | undefi
     policyVersion: opts.policyVersion ?? DEFAULT_AUDIT_POLICY_VERSION,
     actor: opts.actor,
     redactionPolicyHash: hashPolicy(policy),
+    workflowId,
     ...(opts.parentEntryId ? { parentEntryId: opts.parentEntryId } : {}),
     ...(opts.turn !== undefined ? { turn: opts.turn } : {}),
     ...(opts.evidenceRefs ? { evidenceRefs: opts.evidenceRefs } : {}),
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+    ...(opts.subTaskId ? { subTaskId: opts.subTaskId } : {}),
+    ...(opts.subAgentId ? { subAgentId: opts.subAgentId } : {}),
     ...safeVariant,
   } as AuditEntry;
 

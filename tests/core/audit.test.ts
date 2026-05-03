@@ -217,13 +217,22 @@ describe('AuditEntrySchema — wrapper enforcement', () => {
     expect(result.success).toBe(false);
   });
 
-  test('rejects wrong schemaVersion', () => {
+  test('rejects out-of-range schemaVersion (back-compat reader accepts 1 and 2 only)', () => {
     const result = AuditEntrySchema.safeParse({
-      ...wrapper({ schemaVersion: 2 }),
+      ...wrapper({ schemaVersion: 99 }),
       kind: 'thought',
       content: 'x',
     });
     expect(result.success).toBe(false);
+  });
+
+  test('accepts legacy schemaVersion=1 entries (back-compat reader)', () => {
+    const result = AuditEntrySchema.safeParse({
+      ...wrapper({ schemaVersion: 1 }),
+      kind: 'thought',
+      content: 'legacy v1 row',
+    });
+    expect(result.success).toBe(true);
   });
 
   test('accepts every canonical actor type', () => {
@@ -371,5 +380,183 @@ describe('redactAuditPayload', () => {
     const out = redactAuditPayload(input, BUILT_IN_POLICY);
     expect(input.path).toBe('/Users/me/x.ts');
     expect(out).not.toBe(input);
+  });
+});
+
+describe('AuditEntrySchema — Phase 2 hierarchy variants', () => {
+  test('subtask variant accepts spawn/progress/return/cancel phases', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    for (const phase of ['spawn', 'progress', 'return', 'cancel'] as const) {
+      const e = AuditEntrySchema.parse({
+        ...wrapper(),
+        kind: 'subtask',
+        subTaskId: 'task-1-delegate-step1',
+        phase,
+      });
+      expect(e.kind).toBe('subtask');
+    }
+  });
+
+  test('subagent variant requires subAgentId + persona/capabilityTokenId optional', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    const e = AuditEntrySchema.parse({
+      ...wrapper(),
+      kind: 'subagent',
+      subAgentId: 'task-1-delegate-step1',
+      phase: 'spawn',
+      persona: 'researcher',
+      capabilityTokenId: 'cap-tok-abc',
+      budgetMs: 60_000,
+    });
+    expect(e.kind).toBe('subagent');
+    if (e.kind === 'subagent') {
+      expect(e.persona).toBe('researcher');
+      expect(e.capabilityTokenId).toBe('cap-tok-abc');
+    }
+  });
+
+  test('workflow variant accepts planHash + every phase', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    const e = AuditEntrySchema.parse({
+      ...wrapper(),
+      kind: 'workflow',
+      phase: 'planned',
+      planHash: 'a'.repeat(64),
+    });
+    expect(e.kind).toBe('workflow');
+    if (e.kind === 'workflow') expect(e.planHash).toMatch(/^a+$/);
+  });
+
+  test('session variant covers full lifecycle', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    for (const phase of [
+      'created',
+      'message',
+      'archived',
+      'unarchived',
+      'deleted',
+      'compacted',
+      'restored',
+      'purged',
+    ] as const) {
+      const e = AuditEntrySchema.parse({ ...wrapper(), kind: 'session', phase });
+      expect(e.kind).toBe('session');
+    }
+  });
+
+  test('legacy delegate variant still parses (back-compat reader)', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    const e = AuditEntrySchema.parse({
+      ...wrapper(),
+      kind: 'delegate',
+      subAgentId: 'sub-1',
+      phase: 'spawn',
+    });
+    expect(e.kind).toBe('delegate');
+  });
+
+  test('tool_call lifecycle accepts all 6 states (Phase 2 expanded)', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    for (const lifecycle of ['proposed', 'authorized', 'denied', 'executed', 'failed', 'retried'] as const) {
+      const e = AuditEntrySchema.parse({
+        ...wrapper(),
+        kind: 'tool_call',
+        lifecycle,
+        toolId: 'Read',
+        argsHash: 'a'.repeat(64),
+      });
+      expect(e.kind).toBe('tool_call');
+    }
+  });
+
+  test('tool_call carries denyReason + capabilityTokenId on a denial', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    const e = AuditEntrySchema.parse({
+      ...wrapper(),
+      kind: 'tool_call',
+      lifecycle: 'denied',
+      toolId: 'shell_exec',
+      argsHash: 'a'.repeat(64),
+      denyReason: 'capability not granted at L1',
+      capabilityTokenId: 'cap-deny-1',
+    });
+    if (e.kind !== 'tool_call') throw new Error('expected tool_call');
+    expect(e.denyReason).toContain('not granted');
+  });
+
+  test('thought trigger accepts compaction', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    const e = AuditEntrySchema.parse({
+      ...wrapper(),
+      kind: 'thought',
+      content: 'compacting transcript',
+      trigger: 'compaction',
+    });
+    if (e.kind !== 'thought') throw new Error('expected thought');
+    expect(e.trigger).toBe('compaction');
+  });
+
+  test('evidenceRefs accepts subagent_output ref', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    const e = AuditEntrySchema.parse({
+      ...wrapper({
+        evidenceRefs: [{ type: 'subagent_output', subAgentId: 'sub-1', outputHash: 'b'.repeat(64) }],
+      }),
+      kind: 'thought',
+      content: 'derived from sub-agent output',
+    });
+    expect(e.evidenceRefs?.[0]?.type).toBe('subagent_output');
+  });
+});
+
+describe('AuditEntrySchema — wrapper hierarchy ids', () => {
+  test('wrapper accepts sessionId / workflowId / subTaskId / subAgentId — all optional', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    const e = AuditEntrySchema.parse({
+      ...wrapper(),
+      sessionId: 'sess-1',
+      workflowId: 'task-1',
+      subTaskId: 'task-1-delegate-step1',
+      subAgentId: 'task-1-delegate-step1',
+      kind: 'thought',
+      content: 'hi',
+    });
+    expect(e.sessionId).toBe('sess-1');
+    expect(e.workflowId).toBe('task-1');
+    expect(e.subTaskId).toBe('task-1-delegate-step1');
+    expect(e.subAgentId).toBe('task-1-delegate-step1');
+  });
+
+  test('wrapper rejects empty-string hierarchy ids', async () => {
+    const { AuditEntrySchema } = await import('../../src/core/audit.ts');
+    const result = AuditEntrySchema.safeParse({
+      ...wrapper(),
+      sessionId: '',
+      kind: 'thought',
+      content: 'hi',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('emitAuditEntry — workflowId === taskId invariant', () => {
+  test('emit always stamps workflowId equal to taskId, ignoring caller override', async () => {
+    const { emitAuditEntry } = await import('../../src/core/audit-emit.ts');
+    const { createBus } = await import('../../src/core/bus.ts');
+    const bus = createBus();
+    let captured: import('../../src/core/audit.ts').AuditEntry | undefined;
+    bus.on('audit:entry', (e) => {
+      captured = e;
+    });
+    emitAuditEntry({
+      bus,
+      taskId: 'task-real',
+      // Caller tries to fork workflowId — emitter must override.
+      workflowId: 'task-FAKE',
+      actor: { type: 'orchestrator' },
+      variant: { kind: 'thought', content: 'x' },
+    });
+    expect(captured?.workflowId).toBe('task-real');
+    expect(captured?.workflowId).toBe(captured?.taskId);
   });
 });

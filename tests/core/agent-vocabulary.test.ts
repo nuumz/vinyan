@@ -77,3 +77,65 @@ describe('shape predicates', () => {
     expect(isWorkerIdShape('Worker')).toBe(false);
   });
 });
+
+describe('hierarchy ids — Phase 2 audit redesign', () => {
+  test('asSessionId / tryAsSessionId — opaque non-empty string', async () => {
+    const { asSessionId, tryAsSessionId } = await import('../../src/core/agent-vocabulary.ts');
+    expect(asSessionId('sess-abc')).toBe('sess-abc' as ReturnType<typeof asSessionId>);
+    expect(() => asSessionId('')).toThrow();
+    expect(tryAsSessionId('sess-abc')).toBe('sess-abc' as ReturnType<typeof asSessionId>);
+    expect(tryAsSessionId('')).toBeUndefined();
+    expect(tryAsSessionId(null)).toBeUndefined();
+    expect(tryAsSessionId(undefined)).toBeUndefined();
+  });
+
+  test('asTaskId / tryAsTaskId — opaque non-empty string', async () => {
+    const { asTaskId, tryAsTaskId } = await import('../../src/core/agent-vocabulary.ts');
+    expect(asTaskId('task-1')).toBe('task-1' as ReturnType<typeof asTaskId>);
+    expect(() => asTaskId('')).toThrow();
+    expect(tryAsTaskId('task-1')).toBe('task-1' as ReturnType<typeof asTaskId>);
+    expect(tryAsTaskId(null)).toBeUndefined();
+  });
+
+  test('asSubTaskId — accepts canonical delegate-shape and any non-empty string', async () => {
+    const { asSubTaskId } = await import('../../src/core/agent-vocabulary.ts');
+    expect(asSubTaskId('task-1-delegate-step1')).toBeTruthy();
+    expect(asSubTaskId('task-1-delegate-step1-r2')).toBeTruthy();
+    expect(asSubTaskId('task-1-wf-step1')).toBeTruthy();
+    expect(() => asSubTaskId('')).toThrow();
+  });
+
+  test('asStepId — accepts step\\d+ shapes (no enforcement, but typical)', async () => {
+    const { asStepId } = await import('../../src/core/agent-vocabulary.ts');
+    expect(asStepId('step1')).toBeTruthy();
+    expect(asStepId('step42')).toBeTruthy();
+    expect(() => asStepId('')).toThrow();
+  });
+
+  test('asSubAgentId — opaque non-empty string', async () => {
+    const { asSubAgentId } = await import('../../src/core/agent-vocabulary.ts');
+    expect(asSubAgentId('task-1-delegate-step1')).toBeTruthy();
+    expect(() => asSubAgentId('')).toThrow();
+  });
+
+  test('subAgentIdFromSubTask + subTaskIdFromSubAgent — round-trip identity', async () => {
+    const { asSubTaskId, subAgentIdFromSubTask, subTaskIdFromSubAgent } = await import(
+      '../../src/core/agent-vocabulary.ts'
+    );
+    const st = asSubTaskId('task-1-delegate-step1');
+    const sa = subAgentIdFromSubTask(st);
+    const back = subTaskIdFromSubAgent(sa);
+    expect(back).toBe(st as unknown as typeof back);
+  });
+
+  test('WorkflowId is type-level alias of TaskId — invariant: workflowId === taskId', async () => {
+    // No runtime check possible (type aliases erase). The invariant lives in
+    // emit sites (an audit:entry's `workflowId` MUST equal its `taskId`); a
+    // contract test below in P2.2 enforces it on emitted entries.
+    const { asTaskId } = await import('../../src/core/agent-vocabulary.ts');
+    const tid = asTaskId('task-1');
+    // Use as WorkflowId — compiles (alias), runs (string equality).
+    const wid: import('../../src/core/agent-vocabulary.ts').WorkflowId = tid;
+    expect(wid).toBe(tid);
+  });
+});

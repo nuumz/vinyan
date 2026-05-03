@@ -37,6 +37,14 @@ interface TaskEventRow {
 export interface AppendOptions {
   taskId: string;
   sessionId?: string;
+  /**
+   * Phase 2.6: parent task id for sub-task events. Persisted in the new
+   * `parent_task_id` column added by migration 039 so `listChildTaskIds`
+   * is an O(index) lookup instead of a payload-parse scan. Optional —
+   * root tasks omit it; the recorder fills it via the parentByTask cache
+   * seeded from `task:start.input.parentTaskId`.
+   */
+  parentTaskId?: string;
   eventType: string;
   payload: unknown;
   ts: number;
@@ -123,8 +131,8 @@ export class TaskEventStore {
   constructor(db: Database) {
     this.db = db;
     this.insertStmt = db.prepare(
-      `INSERT INTO task_events (id, task_id, session_id, seq, event_type, payload_json, ts)
-       VALUES ($id, $task_id, $session_id, $seq, $event_type, $payload_json, $ts)`,
+      `INSERT INTO task_events (id, task_id, session_id, parent_task_id, seq, event_type, payload_json, ts)
+       VALUES ($id, $task_id, $session_id, $parent_task_id, $seq, $event_type, $payload_json, $ts)`,
     );
     this.listStmt = db.prepare(
       `SELECT id, task_id, session_id, seq, event_type, payload_json, ts
@@ -188,6 +196,7 @@ export class TaskEventStore {
       $id: id,
       $task_id: opts.taskId,
       $session_id: opts.sessionId ?? null,
+      $parent_task_id: opts.parentTaskId ?? null,
       $seq: seq,
       $event_type: opts.eventType,
       $payload_json: payloadJson,
@@ -273,29 +282,34 @@ export class TaskEventStore {
    * client asks for descendant events. Duplicates are removed.
    */
   listChildTaskIds(taskId: string): string[] {
+    // Phase 2.6: primary read is the structured `parent_task_id` column
+    // added by migration 039 + populated by the recorder going forward.
+    // The legacy `json_extract(payload, '$.subTaskId')` path stays as a
+    // one-version fallback, UNIONed in to catch:
+    //   (a) rows whose parent_task_id was not backfilled because the
+    //       migration ran in a chunk window that skipped them, or
+    //   (b) tests that bypass the recorder and insert raw rows without
+    //       populating the column.
+    // This fallback is intentionally temporary — the tail commit of the
+    // same PR removes it once the migration's reach has been verified
+    // against operator data. Until then, parity is preserved by UNION.
     const rows = this.db
-      .query<{ payload_json: string }, [string]>(
-        `SELECT payload_json FROM task_events
-          WHERE task_id = ? AND event_type = 'workflow:delegate_dispatched'
-          ORDER BY seq ASC`,
+      .query<{ child_task_id: string }, [string, string]>(
+        `SELECT DISTINCT child_task_id FROM (
+            SELECT task_id AS child_task_id
+              FROM task_events
+             WHERE parent_task_id = ?1
+          UNION
+            SELECT json_extract(payload_json, '$.subTaskId') AS child_task_id
+              FROM task_events
+             WHERE task_id = ?2
+               AND event_type = 'workflow:delegate_dispatched'
+               AND json_extract(payload_json, '$.subTaskId') IS NOT NULL
+         )
+         ORDER BY child_task_id`,
       )
-      .all(taskId);
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const row of rows) {
-      try {
-        const parsed = JSON.parse(row.payload_json) as { subTaskId?: unknown };
-        if (typeof parsed.subTaskId === 'string' && parsed.subTaskId.length > 0 && !seen.has(parsed.subTaskId)) {
-          seen.add(parsed.subTaskId);
-          out.push(parsed.subTaskId);
-        }
-      } catch {
-        // A corrupt payload row is skipped — the tree query stays correct
-        // for the rest of the dispatch records, and the recorder never
-        // produces malformed JSON in normal operation.
-      }
-    }
-    return out;
+      .all(taskId, taskId);
+    return rows.map((r) => r.child_task_id);
   }
 
   /**
@@ -344,14 +358,7 @@ export class TaskEventStore {
                 AND (ts > ? OR (ts = ? AND id > ?))
               ORDER BY ts ASC, id ASC
               LIMIT ?`;
-      params = [
-        ...ids,
-        ...(opts.rootSessionId ? [opts.rootSessionId] : []),
-        cursor.ts,
-        cursor.ts,
-        cursor.id,
-        limit,
-      ];
+      params = [...ids, ...(opts.rootSessionId ? [opts.rootSessionId] : []), cursor.ts, cursor.ts, cursor.id, limit];
     } else {
       sql = `SELECT id, task_id, session_id, seq, event_type, payload_json, ts
                FROM task_events
@@ -386,11 +393,7 @@ export class TaskEventStore {
    * derived from `result.status === 'partial'`, which over-fires on
    * already-resolved partial results.
    */
-  listOpenGates(
-    taskIds: string[],
-    needed: string,
-    provided: string,
-  ): Set<string> {
+  listOpenGates(taskIds: string[], needed: string, provided: string): Set<string> {
     if (taskIds.length === 0) return new Set();
     const ids = taskIds.slice(0, 500);
     const placeholders = ids.map(() => '?').join(',');

@@ -367,3 +367,153 @@ describe('buildAuditLog — chronological ordering', () => {
     expect(log[1]?.ts).toBe(2000);
   });
 });
+
+describe('buildAuditLog — Phase 2.7 byEntity rollup', () => {
+  test('byEntity collects subTaskIds and subAgentIds from wrapper + variant fields', async () => {
+    plantTaskRow('task-1');
+    append(
+      'task-1',
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: 'st-1',
+        kind: 'subtask',
+        actor: { type: 'orchestrator' },
+        ts: 100,
+        subTaskId: 'task-1-delegate-step1',
+        subAgentId: 'task-1-delegate-step1',
+        phase: 'spawn',
+      } as Partial<AuditEntry> & { kind: 'subtask' }),
+      100,
+    );
+    append(
+      'task-1',
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: 'sa-1',
+        kind: 'subagent',
+        actor: { type: 'orchestrator' },
+        ts: 110,
+        subTaskId: 'task-1-delegate-step1',
+        subAgentId: 'task-1-delegate-step1',
+        phase: 'spawn',
+        persona: 'researcher',
+      } as Partial<AuditEntry> & { kind: 'subagent' }),
+      110,
+    );
+
+    const proj = makeService().build('task-1');
+    expect(proj?.byEntity?.taskId).toBe('task-1');
+    expect(proj?.byEntity?.workflowId).toBe('task-1'); // alias invariant
+    expect(proj?.byEntity?.subTaskIds).toEqual(['task-1-delegate-step1']);
+    expect(proj?.byEntity?.subAgentIds).toEqual(['task-1-delegate-step1']);
+  });
+
+  test('byEntity surfaces sessionId from the first wrapper that carries it', async () => {
+    plantTaskRow('task-1');
+    append(
+      'task-1',
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: 'th-1',
+        kind: 'thought',
+        actor: { type: 'worker', id: 'w-1' },
+        ts: 100,
+        sessionId: 'sess-Z',
+        content: 'thinking',
+      } as Partial<AuditEntry> & { kind: 'thought' }),
+      100,
+    );
+
+    const proj = makeService().build('task-1');
+    expect(proj?.byEntity?.sessionId).toBe('sess-Z');
+  });
+});
+
+describe('buildAuditLog — Phase 2.7 new sections', () => {
+  test('subTasks section folds kind:"subtask" rows', async () => {
+    plantTaskRow('task-1');
+    append(
+      'task-1',
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: 'st-1',
+        kind: 'subtask',
+        actor: { type: 'orchestrator' },
+        ts: 100,
+        subTaskId: 'task-1-delegate-step1',
+        phase: 'return',
+        outputHash: 'a'.repeat(64),
+      } as Partial<AuditEntry> & { kind: 'subtask' }),
+      100,
+    );
+    const proj = makeService().build('task-1');
+    expect(proj?.bySection?.subTasks.length).toBe(1);
+    expect(proj?.bySection?.subAgents.length).toBe(0);
+  });
+
+  test('workflowEvents section folds kind:"workflow" rows', async () => {
+    plantTaskRow('task-1');
+    append(
+      'task-1',
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: 'wf-1',
+        kind: 'workflow',
+        actor: { type: 'orchestrator' },
+        ts: 100,
+        phase: 'planned',
+        planHash: 'b'.repeat(64),
+      } as Partial<AuditEntry> & { kind: 'workflow' }),
+      100,
+    );
+    const proj = makeService().build('task-1');
+    expect(proj?.bySection?.workflowEvents.length).toBe(1);
+  });
+
+  test('synthesis: workflow:plan_ready legacy event becomes a kind:"workflow" row when no real ones exist', () => {
+    plantTaskRow('task-1');
+    append('task-1', 'workflow:plan_ready', { taskId: 'task-1', steps: [] }, 1000);
+    const proj = makeService().build('task-1');
+    const wf = proj?.bySection?.workflowEvents ?? [];
+    expect(wf.length).toBe(1);
+    if (wf[0]?.kind !== 'workflow') throw new Error('expected workflow');
+    expect(wf[0].phase).toBe('planned');
+  });
+});
+
+describe('buildAuditLog — Phase 2.7 provenance.capabilityTokenIds', () => {
+  test('collects capabilityTokenId from tool_call + subagent rows', async () => {
+    plantTaskRow('task-1');
+    append(
+      'task-1',
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: 'tc-1',
+        kind: 'tool_call',
+        actor: { type: 'worker', id: 'w' },
+        ts: 100,
+        lifecycle: 'denied',
+        toolId: 'shell_exec',
+        argsHash: 'a'.repeat(64),
+        capabilityTokenId: 'cap-tok-A',
+      } as Partial<AuditEntry> & { kind: 'tool_call' }),
+      100,
+    );
+    append(
+      'task-1',
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: 'sa-1',
+        kind: 'subagent',
+        actor: { type: 'orchestrator' },
+        ts: 110,
+        subAgentId: 'task-1-d-1',
+        phase: 'spawn',
+        capabilityTokenId: 'cap-tok-B',
+      } as Partial<AuditEntry> & { kind: 'subagent' }),
+      110,
+    );
+    const proj = makeService().build('task-1');
+    expect(proj?.provenance?.capabilityTokenIds).toEqual(['cap-tok-A', 'cap-tok-B']);
+  });
+});

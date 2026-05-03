@@ -263,6 +263,12 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
   if (orchestrator.traceStore) {
     sessionManager.attachTraceStore(orchestrator.traceStore);
   }
+  // Phase 2.4: wire the bus so SessionManager lifecycle hooks (create /
+  // archive / softDelete / restore / hardDelete / updateMetadata) emit
+  // session:* events that flow to SSE consumers (Sessions list, Trash
+  // badge). Persistence stays JSONL-only — see manifest entries
+  // (record:false, scope:'session').
+  sessionManager.attachBus(orchestrator.bus);
 
   // Sweep tasks left in `pending` / `running` from the previous run.
   // The in-memory inFlightTasks Map is reset on every start, so without

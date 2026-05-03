@@ -73,7 +73,7 @@ function makeInput(): TaskInput {
     goal: 'thoughts boundary smoke',
     targetFiles: ['src/foo.ts'],
     budget: { maxTokens: 10_000, maxDurationMs: 30_000, maxRetries: 1 },
-  } as TaskInput;
+  } as unknown as TaskInput;
 }
 
 function makeRouting(): RoutingDecision {

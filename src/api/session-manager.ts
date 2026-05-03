@@ -7,6 +7,7 @@
  * Source of truth: spec/tdd.md §22.3, §22.4
  */
 
+import type { VinyanBus } from '../core/bus.ts';
 import type { AppendResult, JsonlAppender } from '../db/session-jsonl/appender.ts';
 import type { SessionDirLayout } from '../db/session-jsonl/paths.ts';
 import type { JsonlReadAdapter, SessionReadAdapter } from '../db/session-jsonl/read-adapter.ts';
@@ -320,6 +321,24 @@ export class SessionManager {
     return this.retriever;
   }
 
+  // ── A8 audit redesign: bus wire (Phase 2.4) ─────────────────────────
+
+  /**
+   * Optional bus for session-lifecycle events. Wired post-construction
+   * because the SessionManager is built before the bus exists in the
+   * factory order. When set, every public lifecycle mutator (create,
+   * archive, unarchive, softDelete, restore, hardDelete, updateMetadata,
+   * compact) emits a `session:*` bus event for SSE consumers. Persistence
+   * of session-scoped audit rows is intentionally deferred — see Phase
+   * 2.7 SessionProcessProjectionService for the read-path that joins
+   * session_store rows + descendant task_events.
+   */
+  private bus?: VinyanBus;
+
+  attachBus(bus: VinyanBus): void {
+    this.bus = bus;
+  }
+
   /**
    * Factory-wiring hook for the P3 USER.md dialectic. Called once after
    * construction by the coordinator pass (intentionally NOT a constructor
@@ -357,6 +376,7 @@ export class SessionManager {
       deleted_at: null,
     });
     this.applyJsonlCursor(id, jsonl);
+    this.bus?.emit('session:created', { sessionId: id, source });
 
     return rowToSession(
       {
@@ -424,6 +444,8 @@ export class SessionManager {
     const ok = this.sessionStore.updateSessionMetadata(sessionId, normalized);
     if (!ok) return undefined;
     this.applyJsonlCursor(sessionId, jsonl);
+    const fields = Object.keys(normalized) as Array<'title' | 'description'>;
+    this.bus?.emit('session:updated', { sessionId, fields });
     return this.get(sessionId);
   }
 
@@ -442,6 +464,7 @@ export class SessionManager {
     const jsonl = this.appendJsonl(sessionId, 'session.archived', {}, { kind: 'user' });
     const ok = this.sessionStore.archiveSession(sessionId);
     this.applyJsonlCursor(sessionId, jsonl);
+    if (ok) this.bus?.emit('session:archived', { sessionId });
     return { applied: ok, session: this.get(sessionId)! };
   }
 
@@ -455,6 +478,7 @@ export class SessionManager {
     const jsonl = this.appendJsonl(sessionId, 'session.unarchived', {}, { kind: 'user' });
     const ok = this.sessionStore.unarchiveSession(sessionId);
     this.applyJsonlCursor(sessionId, jsonl);
+    if (ok) this.bus?.emit('session:unarchived', { sessionId });
     return { applied: ok, session: this.get(sessionId)! };
   }
 
@@ -468,6 +492,7 @@ export class SessionManager {
     const jsonl = this.appendJsonl(sessionId, 'session.deleted', {}, { kind: 'user' });
     const ok = this.sessionStore.softDeleteSession(sessionId);
     this.applyJsonlCursor(sessionId, jsonl);
+    if (ok) this.bus?.emit('session:deleted', { sessionId });
     return { applied: ok, session: this.get(sessionId)! };
   }
 
@@ -481,6 +506,7 @@ export class SessionManager {
     const jsonl = this.appendJsonl(sessionId, 'session.restored', {}, { kind: 'user' });
     const ok = this.sessionStore.restoreSession(sessionId);
     this.applyJsonlCursor(sessionId, jsonl);
+    if (ok) this.bus?.emit('session:restored', { sessionId });
     return { applied: ok, session: this.get(sessionId)! };
   }
 
@@ -524,6 +550,7 @@ export class SessionManager {
         );
       }
     }
+    if (ok) this.bus?.emit('session:purged', { sessionId });
     return { applied: ok, session: null };
   }
 
@@ -545,7 +572,12 @@ export class SessionManager {
     const ids = this.sessionStore.listTrashedSessionIds();
     const removed: string[] = [];
     for (const id of ids) {
-      if (this.sessionStore.hardDeleteSession(id)) removed.push(id);
+      if (this.sessionStore.hardDeleteSession(id)) {
+        removed.push(id);
+        // One bus event per session — UI subscribers (Sessions list, Trash badge)
+        // get a precise removal stream rather than a single "trash emptied" broadcast.
+        this.bus?.emit('session:purged', { sessionId: id });
+      }
     }
     return { deleted: removed.length, sessionIds: removed };
   }

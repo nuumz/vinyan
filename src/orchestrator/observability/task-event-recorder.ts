@@ -46,6 +46,7 @@ export interface TaskEventRecorderOptions {
 interface BufferedEvent {
   taskId: string;
   sessionId?: string;
+  parentTaskId?: string;
   eventType: string;
   payload: unknown;
   ts: number;
@@ -107,6 +108,12 @@ export function attachTaskEventRecorder(
   // for a task is always `task:start` whose `input.sessionId` populates
   // the cache, so subsequent events for the same task get backfilled.
   const sessionByTask = new Map<string, string>();
+  // Phase 2.6: taskId → parentTaskId cache mirroring the sessionByTask
+  // pattern. Seeded by `task:start.input.parentTaskId` for sub-tasks
+  // (root tasks have no parent). Subsequent events for the sub-task
+  // inherit the parent id, populating the new `parent_task_id` column
+  // that backs the O(index) `listChildTaskIds`.
+  const parentByTask = new Map<string, string>();
 
   const flush = () => {
     if (buffer.length === 0) return;
@@ -117,6 +124,7 @@ export function attachTaskEventRecorder(
         batch.map((e) => ({
           taskId: e.taskId,
           sessionId: e.sessionId,
+          parentTaskId: e.parentTaskId,
           eventType: e.eventType,
           payload: e.payload,
           ts: e.ts,
@@ -160,6 +168,17 @@ export function attachTaskEventRecorder(
         } else {
           sessionId = sessionByTask.get(ids.taskId);
         }
+        // Phase 2.6: parentTaskId backfill — same LRU pattern as sessionId.
+        let parentTaskId = ids.parentTaskId;
+        if (parentTaskId) {
+          if (parentByTask.size >= SESSION_CACHE_LIMIT && !parentByTask.has(ids.taskId)) {
+            const oldest = parentByTask.keys().next().value;
+            if (oldest !== undefined) parentByTask.delete(oldest);
+          }
+          parentByTask.set(ids.taskId, parentTaskId);
+        } else {
+          parentTaskId = parentByTask.get(ids.taskId);
+        }
         const payload = truncatePayload(rawPayload, maxStringChars);
         if (buffer.length >= bufferLimit) {
           // Overflow: drop the oldest LOW-priority (token-level / streaming)
@@ -185,6 +204,7 @@ export function attachTaskEventRecorder(
         buffer.push({
           taskId: ids.taskId,
           sessionId,
+          parentTaskId,
           eventType: eventName,
           payload,
           ts: Date.now(),
@@ -226,6 +246,16 @@ export function attachTaskEventRecorder(
             }
             sessionByTask.set(subTaskId, sessionId);
           }
+          // Phase 2.6: pre-seed parentByTask so the sub-task's first event
+          // (which may arrive before its own task:start) lands with the
+          // correct parent_task_id. Mirrors the sessionByTask seeding above.
+          if (subTaskId && subTaskId.length > 0 && !parentByTask.has(subTaskId)) {
+            if (parentByTask.size >= SESSION_CACHE_LIMIT) {
+              const oldest = parentByTask.keys().next().value;
+              if (oldest !== undefined) parentByTask.delete(oldest);
+            }
+            parentByTask.set(subTaskId, ids.taskId);
+          }
         }
       }),
     );
@@ -249,7 +279,7 @@ export function attachTaskEventRecorder(
   };
 }
 
-function extractIds(payload: unknown): { taskId?: string; sessionId?: string } {
+function extractIds(payload: unknown): { taskId?: string; sessionId?: string; parentTaskId?: string } {
   if (!payload || typeof payload !== 'object') return {};
   const p = payload as Record<string, unknown>;
   const taskIdDirect = typeof p.taskId === 'string' ? p.taskId : undefined;
@@ -264,7 +294,17 @@ function extractIds(payload: unknown): { taskId?: string; sessionId?: string } {
   const sessionId =
     (typeof p.sessionId === 'string' ? p.sessionId : undefined) ??
     (typeof input?.sessionId === 'string' ? input.sessionId : undefined);
-  return { taskId, sessionId };
+  // Phase 2.6: surface parentTaskId for the parent_task_id column. Only
+  // task:start carries it (on `input.parentTaskId`); subsequent events
+  // for the same task inherit via the parentByTask cache populated at
+  // recorder boundary. `parentTaskId` may also live at the top level
+  // (workflow:delegate_dispatched payload threads parent's taskId on
+  // `taskId` and the child's id on `subTaskId`; it's NOT what fills the
+  // child's parent_task_id — the child's task:start does that via input).
+  const parentTaskId =
+    (typeof input?.parentTaskId === 'string' ? input.parentTaskId : undefined) ??
+    (typeof p.parentTaskId === 'string' ? p.parentTaskId : undefined);
+  return { taskId, sessionId, parentTaskId };
 }
 
 /**

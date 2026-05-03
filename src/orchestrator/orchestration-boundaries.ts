@@ -16,6 +16,7 @@ import {
   buildGoalGroundingProvenance,
   evaluateGoalGrounding,
 } from './goal-grounding.ts';
+import { hierarchyFromInput } from './observability/audit-hierarchy.ts';
 import type { PhaseContext } from './phases/types.ts';
 import type {
   ExecutionTrace,
@@ -58,6 +59,7 @@ export async function enforceGoalGroundingBoundary(
   emitAuditEntry({
     bus: ctx.deps.bus,
     taskId: ctx.input.id,
+    ...hierarchyFromInput(ctx.input),
     policyVersion: check.policyVersion,
     actor: { type: 'orchestrator' },
     variant: {
@@ -89,6 +91,7 @@ export async function enforceGoalGroundingBoundary(
   emitAuditEntry({
     bus: ctx.deps.bus,
     taskId: ctx.input.id,
+    ...hierarchyFromInput(ctx.input),
     policyVersion: check.policyVersion,
     actor: { type: 'orchestrator' },
     variant: {

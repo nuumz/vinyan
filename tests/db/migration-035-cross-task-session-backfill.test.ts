@@ -16,6 +16,7 @@ import { describe, expect, test } from 'bun:test';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { migration025 } from '../../src/db/migrations/025_task_events_session_backfill.ts';
 import { migration035 } from '../../src/db/migrations/035_task_events_cross_task_session_backfill.ts';
+import { migration039 } from '../../src/db/migrations/039_task_events_parent_task_id.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 
 function setupDb(): Database {
@@ -262,6 +263,12 @@ describe('Migration 035 — cross-task session_id backfill via parent dispatch',
     // Post-035 the rows surface in the result.
     const { TaskEventStore } = await import('../../src/db/task-event-store.ts');
     const db = setupDb();
+    // Phase 2.6: TaskEventStore now writes the parent_task_id column added
+    // by migration 039. Apply that migration here so the integration test's
+    // post-mig035 store construction does not fail with "no such column".
+    // The test's pre-mig035 assertions still hold because they use the raw
+    // `insertEvent` helper, not the store.
+    migration039.up(db);
 
     insertEvent(db, {
       id: 'p-start',

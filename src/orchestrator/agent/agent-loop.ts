@@ -21,6 +21,7 @@ import { loadInstructionMemoryForTask } from '../llm/instruction-loader.ts';
 import { computeEnvironmentInfo } from '../llm/shared-prompt-sections.ts';
 import { wrapReminder } from '../llm/vinyan-reminder.ts';
 import { countPendingProposals } from '../memory/memory-proposals.ts';
+import { hierarchyFromInput } from '../observability/audit-hierarchy.ts';
 import { evaluatePermission } from '../permissions/permission-checker.ts';
 import type { PermissionConfig } from '../permissions/permission-schema.ts';
 import { computeTaskSignature } from '../prediction/self-model.ts';
@@ -1232,6 +1233,17 @@ export async function runAgentLoop(
       // Phase 7c-1: forward typed subagent role so the child worker can
       // render its role preamble. Omitted for root tasks (undefined).
       ...(input.subagentType ? { subagentType: input.subagentType } : {}),
+      // Phase 2.8 (audit redesign): inject subAgentId into the init turn
+      // when this worker is running a delegate. The subprocess stamps it
+      // on every audit:entry it emits so the parent's audit log can
+      // distinguish sub-agent CoT / tool calls / decisions from the
+      // parent worker's. Today's invariant: subAgentId === sub-task id
+      // === input.id when input.parentTaskId is set. Older subprocesses
+      // (no echo wired) silently degrade — the orchestrator's own
+      // hierarchyFromInput emits already cover the gap on the parent
+      // side, so a missing subAgentId on the wire is a signal-loss for
+      // events that originate WITHIN the subprocess only.
+      ...(input.parentTaskId ? { subAgentId: input.id } : {}),
       // Phase 2: realtime streaming opt-in (config-gated).
       ...(deps.streamingAssistantDelta ? { stream: true } : {}),
     };
@@ -1299,6 +1311,7 @@ export async function runAgentLoop(
           emitAuditEntry({
             bus: deps.bus,
             taskId: input.id,
+            ...hierarchyFromInput(input),
             turn: turn.turnId,
             actor: { type: 'worker', id: routing.workerId ?? 'agent-loop' },
             variant: {
@@ -1380,6 +1393,7 @@ export async function runAgentLoop(
               emitAuditEntry({
                 bus: deps.bus,
                 taskId: input.id,
+                ...hierarchyFromInput(input),
                 turn: turn.turnId,
                 actor: { type: 'orchestrator' },
                 variant: {
@@ -1428,6 +1442,7 @@ export async function runAgentLoop(
               emitAuditEntry({
                 bus: deps.bus,
                 taskId: input.id,
+                ...hierarchyFromInput(input),
                 turn: turn.turnId,
                 actor: { type: 'orchestrator' },
                 variant: {
@@ -1473,6 +1488,7 @@ export async function runAgentLoop(
               emitAuditEntry({
                 bus: deps.bus,
                 taskId: input.id,
+                ...hierarchyFromInput(input),
                 turn: turn.turnId,
                 actor: { type: 'orchestrator' },
                 variant: {
@@ -1544,6 +1560,7 @@ export async function runAgentLoop(
           emitAuditEntry({
             bus: deps.bus,
             taskId: input.id,
+            ...hierarchyFromInput(input),
             turn: turn.turnId,
             actor: { type: 'worker', id: routing.workerId ?? 'agent-loop' },
             variant: {
@@ -1700,6 +1717,7 @@ export async function runAgentLoop(
           emitAuditEntry({
             bus: deps.bus,
             taskId: input.id,
+            ...hierarchyFromInput(input),
             turn: turn.turnId,
             actor: { type: 'worker', id: routing.workerId ?? 'agent-loop' },
             variant: {

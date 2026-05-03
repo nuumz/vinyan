@@ -621,3 +621,89 @@ describe('Empty Trash (bulk hard-delete)', () => {
     expect(manager.get(archived.id)?.lifecycleState).toBe('archived');
   });
 });
+
+describe('SessionManager — bus emits (Phase 2.4 audit redesign)', () => {
+  test('attachBus is optional; create() does not throw when bus is absent', () => {
+    // Smoke: covers the no-bus path so production callers that haven't
+    // wired the bus yet keep working.
+    expect(() => manager.create('cli')).not.toThrow();
+  });
+
+  test('create() emits session:created with sessionId + source when bus is attached', async () => {
+    const { createBus } = await import('../../src/core/bus.ts');
+    const bus = createBus();
+    const events: Array<{ name: string; payload: unknown }> = [];
+    bus.on('session:created', (p) => events.push({ name: 'session:created', payload: p }));
+    manager.attachBus(bus);
+
+    const session = manager.create('cli', { title: 'hello' });
+
+    expect(events.length).toBe(1);
+    expect(events[0]?.payload).toEqual({ sessionId: session.id, source: 'cli' });
+  });
+
+  test('archive / unarchive / softDelete / restore each emit one matching bus event', async () => {
+    const { createBus } = await import('../../src/core/bus.ts');
+    const bus = createBus();
+    const seen: string[] = [];
+    for (const name of [
+      'session:archived',
+      'session:unarchived',
+      'session:deleted',
+      'session:restored',
+      'session:purged',
+    ]) {
+      bus.on(name as 'session:archived', () => seen.push(name));
+    }
+    manager.attachBus(bus);
+
+    const session = manager.create('cli');
+    manager.archive(session.id);
+    manager.unarchive(session.id);
+    manager.softDelete(session.id);
+    manager.restore(session.id);
+    manager.softDelete(session.id);
+    manager.hardDelete(session.id);
+
+    expect(seen).toEqual([
+      'session:archived',
+      'session:unarchived',
+      'session:deleted',
+      'session:restored',
+      'session:deleted',
+      'session:purged',
+    ]);
+  });
+
+  test('updateMetadata emits session:updated with the changed fields only', async () => {
+    const { createBus } = await import('../../src/core/bus.ts');
+    const bus = createBus();
+    const captured: Array<{ sessionId: string; fields: string[] }> = [];
+    bus.on('session:updated', (p) => captured.push(p));
+    manager.attachBus(bus);
+
+    const session = manager.create('cli');
+    manager.updateMetadata(session.id, { title: 'renamed' });
+    manager.updateMetadata(session.id, { description: 'new description' });
+
+    expect(captured).toEqual([
+      { sessionId: session.id, fields: ['title'] },
+      { sessionId: session.id, fields: ['description'] },
+    ]);
+  });
+
+  test('invalid-state lifecycle attempts do NOT emit a bus event', async () => {
+    const { createBus } = await import('../../src/core/bus.ts');
+    const bus = createBus();
+    const seen: string[] = [];
+    bus.on('session:archived', () => seen.push('session:archived'));
+    manager.attachBus(bus);
+
+    const session = manager.create('cli');
+    manager.archive(session.id);
+    // Already archived → invalid_state, no bus event.
+    const r = manager.archive(session.id);
+    expect(r.applied).toBe(false);
+    expect(seen).toEqual(['session:archived']); // single emit from the first archive
+  });
+});

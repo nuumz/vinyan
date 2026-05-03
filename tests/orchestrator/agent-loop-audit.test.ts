@@ -18,7 +18,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentContract } from '../../src/core/agent-contract.ts';
-import type { AuditEntry } from '../../src/core/audit.ts';
+import { AUDIT_SCHEMA_VERSION, type AuditEntry } from '../../src/core/audit.ts';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { type AgentLoopDeps, runAgentLoop } from '../../src/orchestrator/agent/agent-loop.ts';
 import type { IAgentSession, SessionState } from '../../src/orchestrator/agent/agent-session.ts';
@@ -80,14 +80,15 @@ class MockAgentSession implements IAgentSession {
 
 // ── Test fixtures ────────────────────────────────────────────────────
 
-function makeInput(): TaskInput {
+function makeInput(over: Partial<TaskInput> = {}): TaskInput {
   return {
     id: 'task-audit-1',
     source: 'test',
     goal: 'audit emit smoke',
     targetFiles: ['src/foo.ts'],
     budget: { maxTokens: 10_000, maxDurationMs: 30_000, maxRetries: 1 },
-  } as TaskInput;
+    ...over,
+  } as unknown as TaskInput;
 }
 
 function makeRouting(): RoutingDecision {
@@ -386,7 +387,7 @@ describe('agent-loop audit emits — denials', () => {
 });
 
 describe('agent-loop audit emits — wrapper invariants', () => {
-  it('every entry carries policyVersion, schemaVersion=1, redactionPolicyHash', async () => {
+  it('every entry carries policyVersion, current schemaVersion, redactionPolicyHash', async () => {
     const turns: WorkerTurn[] = [
       {
         type: 'tool_calls',
@@ -406,11 +407,155 @@ describe('agent-loop audit emits — wrapper invariants', () => {
 
     expect(audits.length).toBeGreaterThan(0);
     for (const entry of audits) {
-      expect(entry.schemaVersion).toBe(1);
+      // schemaVersion bumped to 2 for the Phase-2 hierarchy expansion. The
+      // back-compat reader still accepts v1, so this assertion only pins
+      // the EMITTED version — historical rows from before the bump remain
+      // parseable.
+      expect(entry.schemaVersion).toBe(AUDIT_SCHEMA_VERSION);
       expect(entry.policyVersion).toBe('audit-v1');
       expect(entry.redactionPolicyHash).toMatch(/^[0-9a-f]{64}$/);
       expect(entry.id.length).toBeGreaterThan(0);
       expect(entry.ts).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('agent-loop audit emits — Phase 2 hierarchy id propagation', () => {
+  it('root task: audit entries carry sessionId, no subTaskId/subAgentId', async () => {
+    const turns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't-root-1',
+        calls: [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } }],
+        rationale: 'reading',
+        tokensConsumed: 30,
+      },
+      { type: 'done', turnId: 't-root-2', tokensConsumed: 10 },
+    ];
+    const session = new MockAgentSession(turns);
+    const bus = createBus();
+    const audits = captureAuditEntries(bus);
+    const deps = makeDeps(session, bus);
+    const input = makeInput({ sessionId: 'sess-A' });
+
+    await runAgentLoop(input, makePerception(), makeMemory(), undefined, makeRouting(), deps);
+
+    expect(audits.length).toBeGreaterThan(0);
+    for (const e of audits) {
+      expect(e.sessionId).toBe('sess-A');
+      expect(e.workflowId).toBe(input.id); // alias of taskId
+      expect(e.subTaskId).toBeUndefined();
+      expect(e.subAgentId).toBeUndefined();
+    }
+  });
+
+  it('sub-task: input.parentTaskId set → entries carry subTaskId and subAgentId equal to input.id', async () => {
+    const turns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't-sub-1',
+        calls: [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } }],
+        rationale: 'reading',
+        tokensConsumed: 30,
+      },
+      { type: 'done', turnId: 't-sub-2', tokensConsumed: 10 },
+    ];
+    const session = new MockAgentSession(turns);
+    const bus = createBus();
+    const audits = captureAuditEntries(bus);
+    const deps = makeDeps(session, bus);
+    const input = makeInput({
+      id: 'task-parent-1-delegate-step1',
+      sessionId: 'sess-B',
+      parentTaskId: 'task-parent-1',
+    });
+
+    await runAgentLoop(input, makePerception(), makeMemory(), undefined, makeRouting(), deps);
+
+    expect(audits.length).toBeGreaterThan(0);
+    for (const e of audits) {
+      expect(e.sessionId).toBe('sess-B');
+      expect(e.subTaskId).toBe(input.id);
+      expect(e.subAgentId).toBe(input.id);
+      // workflowId alias still equals THIS input's id (the sub-task's id) — the
+      // audit entry pertains to the sub-workflow scoped to this input, not the
+      // grandparent's workflow.
+      expect(e.workflowId).toBe(input.id);
+    }
+  });
+});
+
+describe('agent-loop audit emits — Phase 2 hierarchyFromInput coverage across deny + reflect paths', () => {
+  it('sub-task: contract-deny audit entry carries subTaskId/subAgentId from hierarchyFromInput', async () => {
+    const turns: WorkerTurn[] = [
+      {
+        type: 'tool_calls',
+        turnId: 't-cdeny-sub',
+        calls: [{ id: 'c1', tool: 'file_write', parameters: { path: 'src/foo.ts', content: 'x' } }],
+        rationale: 'attempting prohibited write under sub-task',
+        tokensConsumed: 50,
+      },
+      { type: 'done', turnId: 't-cdeny-sub-2', tokensConsumed: 10 },
+    ];
+    const session = new MockAgentSession(turns);
+    const bus = createBus();
+    const audits = captureAuditEntries(bus);
+    const input = makeInput({
+      id: 'parent-X-delegate-step1',
+      parentTaskId: 'parent-X',
+      sessionId: 'sess-X',
+    });
+    const routing = makeRouting();
+    const deps = makeDeps(session, bus);
+    const contract = makeReadOnlyContract(input, routing);
+
+    await runAgentLoop(input, makePerception(), makeMemory(), undefined, routing, deps, undefined, contract);
+
+    expect(audits.length).toBeGreaterThan(0);
+    // Mechanism guarantee: hierarchyFromInput stamps subTaskId/subAgentId on
+    // every audit entry the orchestrator emits when input.parentTaskId is
+    // set. That means the deny rows MUST carry the same chain as the
+    // thought/tool rows.
+    for (const e of audits) {
+      expect(e.sessionId).toBe('sess-X');
+      expect(e.subTaskId).toBe(input.id);
+      expect(e.subAgentId).toBe(input.id);
+      expect(e.workflowId).toBe(input.id);
+    }
+    // And specifically the deny path's decision row is present.
+    const denyRow = audits.find((e) => e.kind === 'decision' && e.decisionType === 'tool_deny');
+    expect(denyRow).toBeDefined();
+  });
+
+  it('sub-task: uncertain-reflect thought entry carries the full id chain', async () => {
+    const turns: WorkerTurn[] = [
+      {
+        type: 'uncertain',
+        turnId: 't-unc-sub',
+        reason: 'cannot finish without external context — reflecting under sub-task',
+        uncertainties: ['missing-input'],
+        tokensConsumed: 30,
+      },
+    ];
+    const session = new MockAgentSession(turns);
+    const bus = createBus();
+    const audits = captureAuditEntries(bus);
+    const input = makeInput({
+      id: 'parent-Y-delegate-step1',
+      parentTaskId: 'parent-Y',
+      sessionId: 'sess-Y',
+    });
+    const deps = makeDeps(session, bus);
+
+    await runAgentLoop(input, makePerception(), makeMemory(), undefined, makeRouting(), deps);
+
+    const reflectThoughts = audits.filter((e) => e.kind === 'thought' && e.trigger === 'reflect');
+    expect(reflectThoughts.length).toBe(1);
+    const r = reflectThoughts[0];
+    if (r?.kind !== 'thought') throw new Error('expected thought');
+    expect(r.sessionId).toBe('sess-Y');
+    expect(r.subTaskId).toBe(input.id);
+    expect(r.subAgentId).toBe(input.id);
+    expect(r.workflowId).toBe(input.id);
   });
 });

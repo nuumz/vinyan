@@ -154,7 +154,10 @@ function printSummary(reason: string) {
     rssMb: sum(sample.processes.map((p) => p.rssKb)) / 1024,
     processCount: sample.processes.length,
   }));
-  const peak = totals.reduce((best, next) => (next.rssMb > best.rssMb ? next : best), totals[0] ?? null);
+  // Hygiene fix (NOT part of audit redesign): tsc strict-null check —
+  // reducing into `null` initial breaks `best.rssMb` access. Use a guarded
+  // initial that drops the reduction when there are no samples.
+  const peak = totals.length > 0 ? totals.reduce((best, next) => (next.rssMb > best.rssMb ? next : best)) : null;
   const avgCpu = totals.length > 0 ? sum(totals.map((t) => t.cpuPct)) / totals.length : 0;
   const last = totals[totals.length - 1] ?? null;
 

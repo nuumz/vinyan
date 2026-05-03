@@ -14,6 +14,7 @@ import type { DAGExecutionResult } from '../dag-executor.ts';
 import { classifyAllFailures } from '../failure-classifier.ts';
 import type { OutcomePrediction } from '../forward-predictor-types.ts';
 import { buildShortCircuitProvenance } from '../governance-provenance.ts';
+import { hierarchyFromInput } from '../observability/audit-hierarchy.ts';
 import { deriveOracleIndependenceAudit } from '../oracle-independence.ts';
 import {
   type ConfidenceDecision,
@@ -186,6 +187,7 @@ export async function executeVerifyPhase(
     emitAuditEntry({
       bus: deps.bus,
       taskId: input.id,
+      ...hierarchyFromInput(input),
       actor: { type: 'oracle', id: oracleName },
       variant: {
         kind: 'verdict',

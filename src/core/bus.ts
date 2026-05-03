@@ -1614,6 +1614,8 @@ export interface VinyanBusEvents {
     taskId: string;
     stepId: string;
     agentId: string | null;
+    /** Phase 2.5: sub-task id of the timed-out delegate — closes the audit/UI gap where the row could not be linked back to its sub-task. */
+    subTaskId: string;
     timeoutMs: number;
   };
 

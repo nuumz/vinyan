@@ -6,12 +6,14 @@
  * A6: each step gets a scoped budget (budgetFraction of parent).
  * A7: step failures trigger fallback; partial results are returned honestly.
  */
+import { emitAuditEntry, sha256OfJson } from '../../core/audit-emit.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import type { WorldGraph } from '../../world-graph/world-graph.ts';
 import type { AgentMemoryAPI } from '../agent-memory/agent-memory-api.ts';
 import { selectVerifierForDelegation } from '../agents/a1-verifier-router.ts';
 import { frozenSystemTier } from '../llm/prompt-assembler.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
+import { hierarchyFromInput } from '../observability/audit-hierarchy.ts';
 import type { TaskInput, TaskResult } from '../types.ts';
 import {
   approvalTimeoutMs,
@@ -625,6 +627,16 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
       timeoutMs,
       autoDecisionAllowed,
     });
+    // A8 Phase 2.5: workflow audit row — `planned` phase carries planHash
+    // so re-plans within one task can be distinguished without forking a
+    // separate workflowId.
+    emitAuditEntry({
+      bus,
+      taskId: input.id,
+      ...hierarchyFromInput(input),
+      actor: { type: 'orchestrator' },
+      variant: { kind: 'workflow', phase: 'planned', planHash: sha256OfJson(plan) },
+    });
     const decision = await decisionPromise;
     if (decision === 'rejected') {
       bus.emit('workflow:complete', {
@@ -711,6 +723,13 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
       goal: plan.goal,
       steps: stepsForEvent,
       awaitingApproval: false,
+    });
+    emitAuditEntry({
+      bus: deps.bus,
+      taskId: input.id,
+      ...hierarchyFromInput(input),
+      actor: { type: 'orchestrator' },
+      variant: { kind: 'workflow', phase: 'planned', planHash: sha256OfJson(plan) },
     });
   }
 
@@ -1686,6 +1705,29 @@ async function dispatchStrategy(
           subTaskId: subInput.id,
           stepDescription: step.description,
         });
+        // A8 Phase 2.5: paired audit rows — one `subtask:spawn` (work-unit
+        // identity) and one `subagent:spawn` (persona identity). They
+        // coincide today (1:1 mapping) but the schema separates them so a
+        // future move to many-to-one doesn't require a wire change.
+        emitAuditEntry({
+          bus: deps.bus,
+          taskId: input.id,
+          ...hierarchyFromInput(input),
+          actor: { type: 'orchestrator' },
+          variant: { kind: 'subtask', subTaskId: subInput.id, phase: 'spawn' },
+        });
+        emitAuditEntry({
+          bus: deps.bus,
+          taskId: input.id,
+          ...hierarchyFromInput(input),
+          actor: { type: 'orchestrator' },
+          variant: {
+            kind: 'subagent',
+            subAgentId: subInput.id,
+            phase: 'spawn',
+            ...(resolvedAgentId ? { persona: resolvedAgentId } : {}),
+          },
+        });
         // Stage manifest mirror — subtask transitions planned → dispatched
         // → running. The `dispatched` payload pins the resolved agent id
         // so reload/replay shows "Agent N: <agentId>" instead of "agent?"
@@ -1708,7 +1750,28 @@ async function dispatchStrategy(
             taskId: input.id,
             stepId: step.id,
             agentId: resolvedAgentId ?? null,
+            subTaskId: subInput.id,
             timeoutMs: timeoutKind === 'ceiling' ? HARD_CEILING_MS : subTaskTimeoutMs,
+          });
+          // A8: cancel pair — sub-task's work cancelled; sub-agent's run cancelled.
+          emitAuditEntry({
+            bus: deps.bus,
+            taskId: input.id,
+            ...hierarchyFromInput(input),
+            actor: { type: 'orchestrator' },
+            variant: { kind: 'subtask', subTaskId: subInput.id, phase: 'cancel' },
+          });
+          emitAuditEntry({
+            bus: deps.bus,
+            taskId: input.id,
+            ...hierarchyFromInput(input),
+            actor: { type: 'orchestrator' },
+            variant: {
+              kind: 'subagent',
+              subAgentId: subInput.id,
+              phase: 'cancel',
+              ...(resolvedAgentId ? { persona: resolvedAgentId } : {}),
+            },
           });
           const errMessage = err instanceof Error ? err.message : String(err);
           // R1: durable terminal failure event so audit replay shows
@@ -1794,6 +1857,31 @@ async function dispatchStrategy(
           status: finalStatus,
           outputPreview,
           tokensUsed: taskResult.trace?.tokensConsumed ?? 0,
+        });
+        // A8: return pair — sub-task returned, sub-agent returned. outputHash
+        // hashes the bounded preview (full output is on the WorkflowStepResult);
+        // a follow-up can switch to hashing the full content once we have a
+        // canonical full-output column.
+        const outputHash = sha256OfJson(outputPreview);
+        emitAuditEntry({
+          bus: deps.bus,
+          taskId: input.id,
+          ...hierarchyFromInput(input),
+          actor: { type: 'orchestrator' },
+          variant: { kind: 'subtask', subTaskId: subInput.id, phase: 'return', outputHash },
+        });
+        emitAuditEntry({
+          bus: deps.bus,
+          taskId: input.id,
+          ...hierarchyFromInput(input),
+          actor: { type: 'orchestrator' },
+          variant: {
+            kind: 'subagent',
+            subAgentId: subInput.id,
+            phase: 'return',
+            ...(resolvedAgentId ? { persona: resolvedAgentId } : {}),
+            outputHash,
+          },
         });
         // Stage manifest mirror — subtask done/failed with an honest
         // shape. When the sub-task itself failed without throwing (e.g.

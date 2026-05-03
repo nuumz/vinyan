@@ -25,6 +25,7 @@ import { executeWithGoalLoop } from './goal-satisfaction/outer-loop.ts';
 import { applyRoutingGovernance, buildShortCircuitProvenance } from './governance-provenance.ts';
 import { enforceSubTaskLeafStrategy } from './intent/strategy.ts';
 import { runWithLLMTrace } from './llm/llm-trace-context.ts';
+import { hierarchyFromInput } from './observability/audit-hierarchy.ts';
 import { enforceGoalGroundingBoundary } from './orchestration-boundaries.ts';
 import { executeBrainstormPhase } from './phases/phase-brainstorm.ts';
 import { executeGeneratePhase } from './phases/phase-generate.ts';
@@ -3561,6 +3562,7 @@ async function executeTaskCore(
               emitAuditEntry({
                 bus: deps.bus,
                 taskId: input.id,
+                ...hierarchyFromInput(input),
                 actor: { type: 'critic' },
                 variant: {
                   kind: 'verdict',
@@ -3611,6 +3613,7 @@ async function executeTaskCore(
               emitAuditEntry({
                 bus: deps.bus,
                 taskId: input.id,
+                ...hierarchyFromInput(input),
                 actor: { type: 'critic' },
                 variant: {
                   kind: 'verdict',

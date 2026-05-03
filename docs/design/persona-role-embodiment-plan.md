@@ -244,10 +244,12 @@ agents:
     name: Org Secretary (TH)
     role: secretary
     role_protocol: secretary.brief        # NEW
-    soul_path: .vinyan/agents/secretary.md
+    soul_path: .vinyan/agents/my-secretary/soul.md   # default location; explicit override optional
     capability_overrides: { writeAny: false, network: true }
 
 org:                                      # NEW section
+  # Workspace-scope by default; resolve precedence mirrors persona-skill-loader:
+  # `<workspace>/.vinyan/org/context.md` then `~/.vinyan/org/context.md`.
   context_path: .vinyan/org/context.md
   voice:
     style: formal-thai-business
@@ -276,6 +278,33 @@ role_protocols:                           # NEW section — operator overrides
 ```
 
 All sections optional; absence triggers protocol-level fallback per `protocol.fallback`.
+
+### 8.1 On-disk layout
+
+Per-agent assets follow the existing convention from `src/orchestrator/agents/registry.ts:140` and `src/skills/simple/loader.ts:20-23` — every agent owns a directory keyed by its `id`, never a flat file in `.vinyan/agents/`:
+
+```
+<workspace>/.vinyan/agents/<agent-id>/
+  ├── soul.md              # default soul location (overridable via `soul_path`)
+  ├── skills.json          # bound skill snapshot (Phase-13)
+  └── skills/<name>/       # per-agent project-scope skills
+      └── SKILL.md
+
+~/.vinyan/agents/<agent-id>/
+  └── skills/<name>/       # per-agent user-scope skills
+      └── SKILL.md
+```
+
+This redesign adds **no new per-agent files**. Role protocols live under `<workspace>/.vinyan/role-protocols/<protocol-id>.yaml` (or are loaded from built-ins shipped in `src/orchestrator/agents/role-protocols/builtin/`); they are persona-agnostic and bind to multiple personas, so they do not nest under `.vinyan/agents/<id>/`.
+
+Resolution precedence for any per-agent asset matches `persona-skill-loader.ts`:
+
+1. Explicit `soul_path` / `<asset>_path` from `vinyan.json` (absolute or workspace-relative)
+2. `<workspace>/.vinyan/agents/<agent-id>/<asset>` (project scope)
+3. `~/.vinyan/agents/<agent-id>/<asset>` (user scope)
+4. Built-in default shipped in source
+
+
 
 ## 9. Sleep-cycle integration
 

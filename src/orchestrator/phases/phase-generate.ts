@@ -126,6 +126,21 @@ export async function executeGeneratePhase(
     }
   }
 
+  // Phase A1 (inert framework): observe when a persona declares a
+  // RoleProtocol so operators see the wire is plumbed end-to-end before
+  // A2 swaps in the per-step dispatch loop. No dispatch reroute yet —
+  // production paths below run unchanged. When `agent.roleProtocolId`
+  // is unset (the default for every built-in persona at A1), this is a
+  // single property read with no observable effect.
+  if (agent?.roleProtocolId) {
+    deps.bus?.emit('role-protocol:resolved', {
+      taskId: input.id,
+      personaId: agent.id,
+      protocolId: agent.roleProtocolId,
+      conversational: understanding.taskDomain === 'conversational',
+    });
+  }
+
   deps.bus?.emit('worker:dispatch', { taskId: input.id, routing });
   const dispatchStart = Date.now();
   let workerResult!: WorkerResult;

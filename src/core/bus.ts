@@ -1790,6 +1790,16 @@ export interface VinyanBusEvents {
   'hms:risk_scored': { taskId: string; risk: number; primary_signal: string };
   'hms:cross_validation_complete': { taskId: string; consistency: number; probes_sent: number };
 
+  // Phase A1 (RoleProtocol) — observability for the inert framework. Phase A2
+  // adds activation/step-level events when the driver is wired into dispatch.
+  'role-protocol:resolved': {
+    taskId: string;
+    personaId: string;
+    protocolId: string;
+    /** True when the task is a conversational short-circuit; driver bypassed. */
+    conversational: boolean;
+  };
+
   // Economy OS activation events
   'human:review_requested': { taskId: string; prompt: string; timeoutMs: number };
   'human:review_completed': { taskId: string; content: string; reviewerId?: string };

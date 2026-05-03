@@ -1365,6 +1365,23 @@ export interface ExecutionTrace {
   mergedPPass?: number;
   /** EHD Phase 3: Aggregate verification confidence from the gate verdict. */
   verificationConfidence?: number;
+  /**
+   * Phase A1 pre-pave: confidence reported by phase-plan's predictor
+   * (when wired). Populated by Phase A2+ for PsychosisMonitor's
+   * prediction-error trend; absent in A1 traces. Optional preserves
+   * byte-identical wire format until consumers exist.
+   */
+  predictionConfidence?: number;
+  /**
+   * Phase A1 pre-pave: outcome of the per-task DelusionDetector pass
+   * (Phase C2). `kind === 'delusion'` indicates the persona cited at
+   * least one fact whose content hash has changed since citation.
+   * Optional; populated only when reality-anchoring is wired.
+   */
+  delusionResult?: {
+    readonly kind: 'consistent' | 'delusion';
+    readonly falsifiedCount: number;
+  };
   /** EHD Phase 3: 4-state epistemic decision from the gate. */
   epistemicDecision?: 'allow' | 'allow-with-caveats' | 'uncertain' | 'block';
   /** EHD Phase 3: Confidence-based action taken for this task. */
@@ -2087,6 +2104,16 @@ export interface AgentSpec {
    * to keep its scope narrow. Empty/unset disables auto-binding.
    */
   acquirableSkillTags?: string[];
+  /**
+   * Phase A1: optional reference to a `RoleProtocol` (registered via
+   * `src/orchestrator/agents/role-protocols/registry.ts`) that the
+   * persona walks when handling a non-conversational task. When set and
+   * the protocol exists, `phase-generate` routes through `RoleProtocolDriver`
+   * instead of single-shot dispatch. When unset (the default for every
+   * built-in persona at A1), legacy dispatch runs unchanged — the field
+   * is opt-in.
+   */
+  roleProtocolId?: string;
   builtin?: boolean;
 }
 

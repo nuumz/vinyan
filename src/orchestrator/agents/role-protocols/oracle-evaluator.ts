@@ -58,13 +58,23 @@ export interface BuiltinOracleEvaluatorOptions {
 export function buildBuiltinOracleEvaluator(opts: BuiltinOracleEvaluatorOptions = {}): StepOracleEvaluator {
   const warn = opts.onWarn ?? ((m) => console.warn(`[role-protocol] ${m}`));
   let gatheredHashes: ReadonlySet<string> = new Set();
+  let synthesisText = '';
 
   return async ({ step, result }) => {
+    // Per-step state capture — runs for every step regardless of hooks.
     captureGatheredHashes(
       step,
       result,
       (hashes) => {
         gatheredHashes = hashes;
+      },
+      warn,
+    );
+    captureSynthesisText(
+      step,
+      result,
+      (text) => {
+        synthesisText = text;
       },
       warn,
     );
@@ -74,7 +84,10 @@ export function buildBuiltinOracleEvaluator(opts: BuiltinOracleEvaluatorOptions 
     for (const hook of step.oracleHooks ?? []) {
       switch (hook.oracleName) {
         case 'source-citation': {
-          const synthesisText = readSynthesisText(result, warn);
+          // Read from internal state — captured from the prior synthesize
+          // step. The verify-citations step's own dispatch doesn't need
+          // to forward synthesisText through its evidence; the evaluator
+          // already has it.
           const verdict = verifySourceCitations({ synthesisText, gatheredHashes });
           verdicts[hook.oracleName] = verdict.verified;
           break;
@@ -112,12 +125,18 @@ function captureGatheredHashes(
   set(hashes);
 }
 
-function readSynthesisText(result: StepDispatchResult, warn: (msg: string) => void): string {
+function captureSynthesisText(
+  step: RoleStep,
+  result: StepDispatchResult,
+  set: (text: string) => void,
+  warn: (msg: string) => void,
+): void {
+  if (step.kind !== 'synthesize') return;
   const evidence = result.evidence as { readonly synthesisText?: unknown } | undefined;
   const text = evidence?.synthesisText;
-  if (typeof text !== 'string') {
-    warn('verify-citations step received no synthesisText evidence; oracle will see empty input');
-    return '';
+  if (typeof text === 'string' && text.length > 0) {
+    set(text);
+    return;
   }
-  return text;
+  warn(`synthesize step "${step.id}" produced no synthesisText evidence; downstream oracle will see empty input`);
 }

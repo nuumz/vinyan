@@ -8,6 +8,13 @@
 
 import { createContract } from '../../core/agent-contract.ts';
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
+import { RoleProtocolDriver } from '../agents/role-protocol-driver.ts';
+import {
+  aggregateRunToWorkerResult,
+  buildDispatchUnderlying,
+  persistRunResult,
+} from '../agents/role-protocol-integration.ts';
+import { buildBuiltinOracleEvaluator } from '../agents/role-protocols/oracle-evaluator.ts';
 import { clampRoutingToWallClock } from '../budget-clamp.ts';
 import type { DAGExecutionResult, NodeDispatcher } from '../dag-executor.ts';
 import { executeDAG } from '../dag-executor.ts';
@@ -126,12 +133,11 @@ export async function executeGeneratePhase(
     }
   }
 
-  // Phase A1 (inert framework): observe when a persona declares a
-  // RoleProtocol so operators see the wire is plumbed end-to-end before
-  // A2 swaps in the per-step dispatch loop. No dispatch reroute yet —
-  // production paths below run unchanged. When `agent.roleProtocolId`
-  // is unset (the default for every built-in persona at A1), this is a
-  // single property read with no observable effect.
+  // Phase A2.5 — observability marker for personas that declare a
+  // role-protocol. The actual dispatch reroute happens inside the try
+  // block below (after dispatchUnderstanding is built). Emitting here
+  // captures even tasks where the protocol resolution returns null
+  // (conversational, missing protocol, class mismatch).
   if (agent?.roleProtocolId) {
     deps.bus?.emit('role-protocol:resolved', {
       taskId: input.id,
@@ -161,7 +167,62 @@ export async function executeGeneratePhase(
       matchedSkill ?? null,
       hasAgentDeps,
     );
-    if (routing.level <= 1 || !hasAgentDeps) {
+    // ── Phase A2.5: RoleProtocol routing at L0/L1 ────────────────
+    // When the persona declares a registered role-protocol AND routing is
+    // L0/L1 single-node AND task is non-conversational, route through
+    // the `RoleProtocolDriver`: each protocol step dispatches with
+    // `TaskInput.systemPromptAugmentation` set to the step's
+    // `promptPrepend`. The aggregate synthesize-step output becomes the
+    // user-visible answer; per-step records persist to `role_protocol_run`.
+    //
+    // L2+ falls through to the legacy agent-loop (A2.6 wires per-step
+    // dispatch there). DAG plans (multi-node) skip the driver because
+    // the plan IS the workflow.
+    let roleProtocolHandled = false;
+    if (
+      agent?.roleProtocolId &&
+      routing.level <= 1 &&
+      understanding.taskDomain !== 'conversational' &&
+      (!plan || plan.isFallback || plan.nodes.length <= 1)
+    ) {
+      const driver = new RoleProtocolDriver();
+      const protocol = driver.resolve({ persona: agent });
+      if (protocol) {
+        const evaluator = buildBuiltinOracleEvaluator();
+        const dispatchUnderlying = buildDispatchUnderlying(input, {
+          perStepDispatch: (stepInput) =>
+            deps.workerPool.dispatch(
+              stepInput,
+              perception,
+              workingMemory.getSnapshot(),
+              plan,
+              routing,
+              dispatchUnderstanding,
+              contract,
+              turns,
+            ),
+        });
+        const driverResult = await driver.run({
+          protocol,
+          persona: agent,
+          dispatch: dispatchUnderlying,
+          oracleEvaluator: evaluator,
+          maxDurationMs: input.budget.maxDurationMs,
+        });
+        if (deps.roleProtocolRunStore) {
+          persistRunResult(
+            { store: deps.roleProtocolRunStore, taskId: input.id, personaId: agent.id, bus: deps.bus },
+            driverResult,
+          );
+        }
+        workerResult = aggregateRunToWorkerResult(driverResult);
+        roleProtocolHandled = true;
+      }
+    }
+
+    if (roleProtocolHandled) {
+      // Driver path produced the workerResult; skip legacy dispatch.
+    } else if (routing.level <= 1 || !hasAgentDeps) {
       // L0-L1 or no agent deps: single-shot or DAG dispatch
       if (plan && !plan.isFallback && plan.nodes.length > 1) {
         // EO #1+#4: Multi-node plan → DAG executor with parallel dispatch

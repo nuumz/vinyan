@@ -617,6 +617,18 @@ export interface TaskInput {
    */
   capabilityToken?: CapabilityToken;
   /**
+   * Phase A2.5 — internal: per-step prompt augmentation prepended to the
+   * worker's system prompt at dispatch time. Set by `RoleProtocolDriver`'s
+   * `dispatchUnderlying` callback (one task → many sub-dispatches, each
+   * carrying the step's `promptPrepend`). User-facing layers MUST NOT
+   * populate this; it is the role-protocol-driver ↔ worker-pool seam.
+   *
+   * The augmentation is plain text. The worker prepends it to the
+   * assembled `systemPrompt` (after persona soul, before any other
+   * sections), preserving cache breakpoints for the rest of the prompt.
+   */
+  systemPromptAugmentation?: string;
+  /**
    * CoT continuity inject payload (Task 4 / L2 compaction-survival).
    * Set by `collaboration-block` on round-N+1 sub-task dispatches when
    * the inject decision was `cot-inject:N`. Carries the formatted
@@ -1552,6 +1564,13 @@ export interface WorkerInput {
   isolationLevel: IsolationLevel;
   /** Optional worker/engine ID for provider selection (warm pool mode). */
   workerId?: string;
+  /**
+   * Phase A2.5 — orchestrator → worker carrier for `TaskInput.systemPromptAugmentation`.
+   * Worker prepends this to the assembled system prompt at dispatch time
+   * so role-protocol per-step `promptPrepend` reaches the LLM without
+   * mutating any other prompt-section logic.
+   */
+  systemPromptAugmentation?: string;
   /** Gap 9A: Unified task understanding — carries constraints, criteria, action category to prompt assembly. */
   understanding?: TaskUnderstanding;
   /** Phase 7a: M1-M4 instruction hierarchy resolved in-process and shipped through IPC. */

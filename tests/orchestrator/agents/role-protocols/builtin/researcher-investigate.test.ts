@@ -132,14 +132,6 @@ function buildDispatch(synthesisText: string): StepDispatchCallback {
           tokensConsumed: 80,
           durationMs: 4,
         };
-      case 'verify-cross-source':
-        return {
-          mutations: [],
-          evidence: { loneSourceClaims: 0 },
-          confidence: 0.9,
-          tokensConsumed: 60,
-          durationMs: 3,
-        };
       default:
         throw new Error(`unexpected step ${step.id}`);
     }
@@ -155,14 +147,13 @@ describe('researcher.investigate — protocol shape', () => {
     expect(() => validateProtocol(researcherInvestigate)).not.toThrow();
   });
 
-  test('declares 6 steps in canonical order', () => {
+  test('declares 5 steps in canonical order (A2.5: dropped verify-cross-source)', () => {
     expect(researcherInvestigate.steps.map((s) => s.id)).toEqual([
       'discover',
       'gather',
       'compare-extract',
       'synthesize',
       'verify-citations',
-      'verify-cross-source',
     ]);
   });
 
@@ -171,10 +162,11 @@ describe('researcher.investigate — protocol shape', () => {
     expect(verifyStep?.oracleHooks).toEqual([{ oracleName: 'source-citation', blocking: true }]);
   });
 
-  test('verify steps require verifier-class persona', () => {
+  test('verify steps DO NOT require verifier class (deterministic oracle is the A1 separator)', () => {
     const verifySteps = researcherInvestigate.steps.filter((s) => s.kind === 'verify');
+    expect(verifySteps).toHaveLength(1);
     for (const step of verifySteps) {
-      expect(step.requiresPersonaClass).toBe('verifier');
+      expect(step.requiresPersonaClass).toBeUndefined();
     }
   });
 
@@ -232,12 +224,8 @@ describe('researcher.investigate — oracle blocks on uncited claim', () => {
     expect(verifyStep?.attempts).toBe(2);
     expect(verifyStep?.reason).toContain('source-citation');
 
-    // verify-cross-source has a precondition on verify-citations → skipped
-    const crossStep = result.steps.find((s) => s.stepId === 'verify-cross-source');
-    expect(crossStep?.outcome).toBe('skipped');
-    expect(crossStep?.reason).toContain('unmet precondition');
-
-    // Some steps succeeded (discover/gather/compare-extract/synthesize) → 'partial'
+    // Steps before verify-citations succeeded (discover/gather/compare-extract/synthesize),
+    // so the run is 'partial' — at least one success but the gate blocked.
     expect(result.outcome).toBe('partial');
   });
 });
@@ -261,8 +249,8 @@ describe('researcher.investigate — oracle blocks on dangling citation', () => 
   });
 });
 
-describe('researcher.investigate — generator persona cannot complete verify steps', () => {
-  test('researcher persona running this protocol fails the verify steps (A1 honesty)', async () => {
+describe('researcher.investigate — generator persona CAN complete the protocol (A2.5)', () => {
+  test('researcher (generator) walks all 5 steps; A1 satisfied via deterministic oracle', async () => {
     registerRoleProtocol(researcherInvestigate);
     const driver = new RoleProtocolDriver();
     const evaluator = buildBuiltinOracleEvaluator({ onWarn: () => {} });
@@ -282,21 +270,13 @@ describe('researcher.investigate — generator persona cannot complete verify st
       oracleEvaluator: evaluator,
     });
 
-    // First 4 steps succeed; the two verify steps are 'failure' because
-    // researcher (generator) ≠ requiresPersonaClass 'verifier'.
+    // All 5 steps succeed. The verify-citations step has no
+    // requiresPersonaClass — A1 is satisfied by the deterministic oracle
+    // (separate component from the LLM that produced the synthesis), not
+    // by routing to a verifier persona.
+    expect(result.outcome).toBe('success');
     const verifyCit = result.steps.find((s) => s.stepId === 'verify-citations');
-    expect(verifyCit?.outcome).toBe('failure');
-    expect(verifyCit?.reason).toContain('requires verifier');
-
-    const verifyCross = result.steps.find((s) => s.stepId === 'verify-cross-source');
-    // Class check fires BEFORE the precondition check inside the driver, so
-    // verify-cross-source is recorded as 'failure' (class mismatch), not
-    // 'skipped' (unmet precondition). Both are true causes; the driver
-    // surfaces the root cause encountered first. The reason field captures
-    // the specific issue for audit consumers.
-    expect(verifyCross?.outcome).toBe('failure');
-    expect(verifyCross?.reason).toContain('requires verifier');
-
-    expect(result.outcome).toBe('partial');
+    expect(verifyCit?.outcome).toBe('success');
+    expect(verifyCit?.oracleVerdicts).toEqual({ 'source-citation': true });
   });
 });

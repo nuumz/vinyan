@@ -65,6 +65,22 @@ export interface RoleProtocolRunOptions {
   readonly oracleEvaluator?: StepOracleEvaluator;
   /** Wall-clock budget shared across all steps. Driver fails-closed on overrun. */
   readonly maxDurationMs?: number;
+  /**
+   * Phase A3 — when set, replaces the threshold of every
+   * `evidence-confidence` exit criterion in `protocol.exitCriteria`.
+   * Lets operators tune exit aggressiveness via `ParameterStore`
+   * (`role.exit.confidence_floor`) without rewriting the protocol.
+   * Protocol-declared thresholds are used when this is undefined.
+   */
+  readonly exitConfidenceFloorOverride?: number;
+  /**
+   * Phase A3 — fallback `retryMax` for steps that don't declare one.
+   * Default 0 (fail-fast on first blocking-oracle failure). Operators
+   * raise it via `ParameterStore` (`role.step.retry_max`) when they want
+   * the protocol to give the dispatcher a second swing on flaky steps.
+   * A step's explicit `retryMax` always wins over this default.
+   */
+  readonly defaultRetryMax?: number;
 }
 
 export class RoleProtocolDriver {
@@ -169,7 +185,11 @@ export class RoleProtocolDriver {
       }
 
       // Step retry loop — `attempts` always counts at least 1.
-      const maxAttempts = (step.retryMax ?? 0) + 1;
+      // A3 plumbing: step's own retryMax wins; otherwise the run-options
+      // default (which the orchestrator wires to ParameterStore's
+      // `role.step.retry_max`); otherwise 0 (fail-fast).
+      const effectiveRetryMax = step.retryMax ?? opts.defaultRetryMax ?? 0;
+      const maxAttempts = effectiveRetryMax + 1;
       let attempt = 0;
       let final: StepRunRecord | undefined;
 
@@ -229,7 +249,7 @@ export class RoleProtocolDriver {
       if (
         !isLastStep &&
         final?.outcome === 'success' &&
-        shouldExitEarly(protocol.exitCriteria, records, completedSuccessfully)
+        shouldExitEarly(protocol.exitCriteria, records, completedSuccessfully, opts.exitConfidenceFloorOverride)
       ) {
         exitedEarly = true;
         break;
@@ -267,15 +287,22 @@ async function evaluateOracles(
   result: StepDispatchResult,
   evaluator: StepOracleEvaluator | undefined,
 ): Promise<Readonly<Record<string, boolean>>> {
+  // When an evaluator is provided, always call it — even for steps that
+  // declare no hooks. The evaluator is the seam by which an integration
+  // (e.g. the built-in evaluator capturing the gather step's hashes for
+  // a downstream verify-citations check) accumulates per-run state.
+  // Returning early on empty hooks would deny the evaluator visibility
+  // of intermediate steps. The evaluator is responsible for returning
+  // `{}` when it has no opinion on the current step's hooks.
+  if (evaluator) return evaluator({ step, result });
+
+  // A1 inert default — every declared oracle passes. Used by tests that
+  // do not need a real evaluator and by the framework before A2 wires
+  // the built-in evaluator into production paths.
   if (!step.oracleHooks || step.oracleHooks.length === 0) return {};
-  if (!evaluator) {
-    // A1 inert default — every declared oracle passes. Phase A2 wires
-    // a real evaluator that consults the oracle registry.
-    const passed: Record<string, boolean> = {};
-    for (const hook of step.oracleHooks) passed[hook.oracleName] = true;
-    return passed;
-  }
-  return evaluator({ step, result });
+  const passed: Record<string, boolean> = {};
+  for (const hook of step.oracleHooks) passed[hook.oracleName] = true;
+  return passed;
 }
 
 function makeRecord(
@@ -307,6 +334,7 @@ function shouldExitEarly(
   criteria: readonly ExitCriterion[] | undefined,
   records: readonly StepRunRecord[],
   completedSuccessfully: ReadonlySet<string>,
+  exitConfidenceFloorOverride: number | undefined,
 ): boolean {
   if (!criteria || criteria.length === 0) return false;
 
@@ -314,7 +342,11 @@ function shouldExitEarly(
     switch (criterion.kind) {
       case 'evidence-confidence': {
         const conf = computeAggregateConfidence(records.filter((r) => r.outcome === 'success'));
-        if (conf === undefined || conf < criterion.threshold) return false;
+        // A3 plumbing: operator override (from ParameterStore
+        // `role.exit.confidence_floor`) replaces the protocol's
+        // declared threshold when set.
+        const threshold = exitConfidenceFloorOverride ?? criterion.threshold;
+        if (conf === undefined || conf < threshold) return false;
         break;
       }
       case 'oracle-pass': {

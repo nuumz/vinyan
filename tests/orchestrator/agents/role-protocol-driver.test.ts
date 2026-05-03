@@ -322,6 +322,108 @@ describe('run — A1 honesty', () => {
   });
 });
 
+describe('run — A3 adaptive overrides', () => {
+  const driver = new RoleProtocolDriver();
+
+  test('defaultRetryMax fills in for steps that omit retryMax', async () => {
+    const proto = makeProtocol({
+      steps: [
+        {
+          id: 'cite',
+          kind: 'verify',
+          description: 'c',
+          promptPrepend: '',
+          oracleHooks: [{ oracleName: 'soft', blocking: true }],
+          // no retryMax declared — should fall back to runOpts default
+        },
+      ],
+    });
+    let calls = 0;
+    const dispatch: StepDispatchCallback = async () => {
+      calls++;
+      return { mutations: [], tokensConsumed: 50, durationMs: 5 };
+    };
+    const evaluator: StepOracleEvaluator = async () => ({ soft: false });
+    const result = await driver.run({
+      protocol: proto,
+      persona: makePersona(),
+      dispatch,
+      oracleEvaluator: evaluator,
+      defaultRetryMax: 3,
+    });
+    expect(calls).toBe(4); // initial + 3 retries
+    expect(result.steps[0]?.attempts).toBe(4);
+  });
+
+  test("step's explicit retryMax wins over defaultRetryMax", async () => {
+    const proto = makeProtocol({
+      steps: [
+        {
+          id: 'cite',
+          kind: 'verify',
+          description: 'c',
+          promptPrepend: '',
+          oracleHooks: [{ oracleName: 'soft', blocking: true }],
+          retryMax: 0, // explicit fail-fast
+        },
+      ],
+    });
+    let calls = 0;
+    const evaluator: StepOracleEvaluator = async () => ({ soft: false });
+    await driver.run({
+      protocol: proto,
+      persona: makePersona(),
+      dispatch: async () => {
+        calls++;
+        return { mutations: [], tokensConsumed: 0, durationMs: 0 };
+      },
+      oracleEvaluator: evaluator,
+      defaultRetryMax: 5, // ignored — step pinned to 0
+    });
+    expect(calls).toBe(1);
+  });
+
+  test('exitConfidenceFloorOverride raises the bar above the declared threshold', async () => {
+    const proto = makeProtocol({
+      steps: [
+        { id: 'a', kind: 'gather', description: '', promptPrepend: '' },
+        { id: 'b', kind: 'analyze', description: '', promptPrepend: '', preconditions: ['a'] },
+      ],
+      exitCriteria: [{ kind: 'evidence-confidence', threshold: 0.7 }],
+    });
+    // Step 1 confidence 0.75 — exceeds the protocol's threshold (0.7)
+    // BUT operator raised the floor to 0.9 → must NOT exit early.
+    const result = await driver.run({
+      protocol: proto,
+      persona: makePersona(),
+      dispatch: dispatchStub([{ confidence: 0.75 }, { confidence: 0.6 }]),
+      exitConfidenceFloorOverride: 0.9,
+    });
+    expect(result.exitedEarly).toBeUndefined();
+    expect(result.steps).toHaveLength(2);
+  });
+
+  test('exitConfidenceFloorOverride lowers the bar below the declared threshold', async () => {
+    const proto = makeProtocol({
+      steps: [
+        { id: 'a', kind: 'gather', description: '', promptPrepend: '' },
+        { id: 'b', kind: 'analyze', description: '', promptPrepend: '', preconditions: ['a'] },
+      ],
+      exitCriteria: [{ kind: 'evidence-confidence', threshold: 0.95 }],
+    });
+    // Step 1 confidence 0.6 — below the protocol's strict threshold (0.95)
+    // BUT operator lowered the floor to 0.5 → must exit early after step 1.
+    const result = await driver.run({
+      protocol: proto,
+      persona: makePersona(),
+      dispatch: dispatchStub([{ confidence: 0.6 }]),
+      exitConfidenceFloorOverride: 0.5,
+    });
+    expect(result.exitedEarly).toBe(true);
+    expect(result.steps).toHaveLength(1);
+  });
+});
+
 describe('run — exit criteria', () => {
   const driver = new RoleProtocolDriver();
 

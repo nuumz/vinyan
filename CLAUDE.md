@@ -163,6 +163,23 @@ Biome enforces naming + format (`biome.json`): single quotes, 2-space, 120 cols,
 - **HMS integration** — hallucination analysis runs in phase-verify after oracle verification. Confidence is attenuated by HMS risk score.
 - **Honest status** — a feature is ✅ Active ONLY when it runs in default `vinyan run` without extra config.
 
+## Definition of Done (per task type)
+
+A task is **not** done until the relevant gate below passes. Don't declare done because "code looks right" — run the gate.
+
+| Task type | DoD gate |
+|---|---|
+| New feature / wiring | `bun run check` green + relevant `bun test tests/<scope>/` green + grep callers untouched + wired into runtime trace |
+| Bug fix | Failing repro test added → now green; `bun run check` green |
+| Refactor | `bun run check` green + full affected test dirs green; if it touches core-loop/phases/perception → `bun run test:benchmark` within tolerance |
+| Cross-cutting type change | `bun run check` green + `bun run test:all` green |
+| Doc-only | Markdown lints (if any) + cross-references resolve |
+
+**In auto mode, additionally:**
+- Use TodoList for any task with >2 distinct steps; mark items done as you go.
+- Don't ask permission for reversible edits — make the assumption and proceed; flag it in the end-of-turn summary.
+- End-of-turn summary: 1-2 sentences. What changed, what's next.
+
 ## Known Gaps
 
 ```bash

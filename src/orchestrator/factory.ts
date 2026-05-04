@@ -96,6 +96,7 @@ import { AgentMemoryAPIImpl } from './agent-memory/agent-memory-impl.ts';
 import { createAgentRouter } from './agent-router.ts';
 import { LocalHubAcquirer } from './agents/local-hub-acquirer.ts';
 import { scanAgentMarkdown, soulsByIdFrom } from './agents/markdown-loader.ts';
+import { PsychosisMonitor } from './agents/reality-anchor/psychosis-monitor.ts';
 import { loadAgentRegistry } from './agents/registry.ts';
 import { registerBuiltinProtocols } from './agents/role-protocols/builtin/researcher-investigate.ts';
 import { NullSkillAcquirer, type SkillAcquirer } from './agents/skill-acquirer.ts';
@@ -1961,6 +1962,18 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       parameterLedger = undefined;
       parameterStore = undefined;
     }
+  }
+
+  // Phase C3 — PsychosisMonitor subscribes to `trace:record` and emits
+  // `psychosis:trigger` when rolling per-persona signals breach their
+  // ceilings. Wired AFTER parameterStore so the monitor reads live
+  // ceilings (operator tunes via the registry take effect on the next
+  // trace). When parameterStore is unavailable (no DB), monitor falls
+  // back to registry defaults — degraded but functional. Unsubscribe
+  // handle is captured into factoryBusUnsubs so shutdown detaches.
+  {
+    const monitor = new PsychosisMonitor({ bus, parameterStore });
+    trackBusListener(monitor.attach());
   }
 
   // GAP#1 — instantiate comprehension calibrator + LLM stage-2 engine

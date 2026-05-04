@@ -323,6 +323,62 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     tunable: true,
   },
 
+  // ── Reality anchoring — DelusionDetector + PsychosisMonitor (A4 + A7) ──
+  {
+    key: 'psychosis.delusion_ceiling',
+    type: 'number',
+    default: 0.15,
+    range: [0.05, 0.5],
+    axiom: 'A4',
+    owner: 'reality-anchor',
+    description:
+      'Per-trace delusion-rate ceiling that PsychosisMonitor treats as a trigger. ' +
+      'When the fraction of stale citations in a verify cycle exceeds this, the ' +
+      'persona enters quarantine candidacy. Lower = stricter (more re-grounding); ' +
+      'higher = more tolerant of A4 hash drift.',
+    tunable: true,
+  },
+  {
+    key: 'psychosis.prediction_error_ceiling',
+    type: 'number',
+    default: 0.4,
+    range: [0.1, 0.8],
+    axiom: 'A7',
+    owner: 'reality-anchor',
+    description:
+      'Mean prediction-error magnitude (over the rolling per-persona window) above ' +
+      'which PsychosisMonitor fires. A7 — sustained gap between persona predictions ' +
+      'and oracle outcomes is a learning-loop signal, not a single-task one.',
+    tunable: true,
+  },
+  {
+    key: 'psychosis.contradiction_ceiling',
+    type: 'number',
+    default: 0.2,
+    range: [0.05, 0.5],
+    axiom: 'A1',
+    owner: 'reality-anchor',
+    description:
+      'Mean fraction of failing oracles per trace (over the persona window) above ' +
+      'which PsychosisMonitor fires. Multiple oracles disagreeing with a persona ' +
+      'across many tasks is an A1-violation-class signal.',
+    tunable: true,
+  },
+  {
+    key: 'psychosis.goal_drift_ceiling',
+    type: 'number',
+    default: 0.3,
+    range: [0.1, 0.6],
+    axiom: 'A10',
+    owner: 'reality-anchor',
+    description:
+      'Reserved for A10 goal-grounding integration in Phase C4. Fraction of traces ' +
+      'in the window whose goal-grounding action ≠ "continue" — i.e. goal drift / ' +
+      're-clarify / abort. Defined in the registry now so C3 can reference the key; ' +
+      'enforcement lands when the re-grounding state machine consumes it.',
+    tunable: true,
+  },
+
   // ── Skill admission (A3 governance) ──
   {
     key: 'skill.admission.min_overlap_ratio',

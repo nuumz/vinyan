@@ -1385,14 +1385,21 @@ export interface ExecutionTrace {
    */
   predictionConfidence?: number;
   /**
-   * Phase A1 pre-pave: outcome of the per-task DelusionDetector pass
-   * (Phase C2). `kind === 'delusion'` indicates the persona cited at
-   * least one fact whose content hash has changed since citation.
-   * Optional; populated only when reality-anchoring is wired.
+   * Phase A1 pre-pave + Phase C2 population: outcome of the per-task
+   * DelusionDetector pass. `kind === 'delusion'` indicates the persona
+   * cited at least one fact whose content hash has changed since
+   * citation. PsychosisMonitor (Phase C3) reads `delusionRate` from
+   * this field via the `trace:record` bus event.
+   *
+   * `scopedCount` and `delusionRate` are optional for backwards-compat
+   * with traces written before C2; legacy consumers that read only
+   * `kind` and `falsifiedCount` keep working.
    */
   delusionResult?: {
     readonly kind: 'consistent' | 'delusion';
     readonly falsifiedCount: number;
+    readonly scopedCount?: number;
+    readonly delusionRate?: number;
   };
   /** EHD Phase 3: 4-state epistemic decision from the gate. */
   epistemicDecision?: 'allow' | 'allow-with-caveats' | 'uncertain' | 'block';

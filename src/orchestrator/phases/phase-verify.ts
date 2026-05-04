@@ -388,6 +388,58 @@ export async function executeVerifyPhase(
   // ── Pipeline confidence (L1+ only) ──────────────────────────
   let verificationConfidence = verification.aggregateConfidence ?? (verification.passed ? 0.85 : 0.3);
 
+  // ── Phase C2: DelusionDetector — A4 content-hash applied to persona beliefs ──
+  // Compares the persona's recent fact citations (C1 ledger) against the
+  // file hashes the current verify cycle is reporting. When a citation's
+  // recorded hash differs from the in-cycle current hash, the persona's
+  // belief is stale → attenuate verificationConfidence.
+  //
+  // Ordered BEFORE HMS so both attenuators stack (delusion → HMS) on the
+  // same confidence value. Both kinds of unreliability compound.
+  //
+  // Honesty guards (no-op for legacy paths):
+  //   - personaFactCitationsStore unwired → skip
+  //   - input.agentId unset → skip (no persona to anchor citations to)
+  //   - currentFileHashes empty → skip (oracles didn't anchor hashes)
+  let delusionResult:
+    | { kind: 'consistent' | 'delusion'; falsifiedCount: number; scopedCount?: number; delusionRate?: number }
+    | undefined;
+  if (deps.personaFactCitationsStore && input.agentId) {
+    const { detectDelusions, attenuateForDelusion } = await import('../agents/reality-anchor/delusion-detector.ts');
+    const currentFileHashes = new Map<string, string>();
+    for (const verdict of Object.values(verification.verdicts)) {
+      if (!verdict.fileHashes) continue;
+      for (const [path, hash] of Object.entries(verdict.fileHashes)) {
+        if (typeof hash === 'string' && hash.length > 0) currentFileHashes.set(path, hash);
+      }
+    }
+    if (currentFileHashes.size > 0) {
+      const personaId = input.agentId;
+      const detection = detectDelusions({
+        personaId,
+        recentCitations: () => deps.personaFactCitationsStore!.listForPersona(personaId, 1000),
+        currentFileHashes,
+      });
+      delusionResult = {
+        kind: detection.kind,
+        falsifiedCount: detection.falsified.length,
+        scopedCount: detection.scopedCount,
+        delusionRate: detection.delusionRate,
+      };
+      if (detection.kind === 'delusion') {
+        verificationConfidence = attenuateForDelusion(verificationConfidence, detection);
+        deps.bus?.emit('reality-anchor:delusion', {
+          taskId: input.id,
+          personaId,
+          falsifiedCount: detection.falsified.length,
+          scopedCount: detection.scopedCount,
+          delusionRate: detection.delusionRate,
+          attenuation: detection.attenuation,
+        });
+      }
+    }
+  }
+
   // ── HMS: Hallucination Mitigation (A1: separate verification component) ──
   if (deps.hmsConfig?.enabled) {
     const { analyzeForHallucinations } = await import('../../hms/hms-feedback.ts');
@@ -536,6 +588,10 @@ export async function executeVerifyPhase(
     workerSelectionAudit: workerSelection,
     frameworkMarkers: frameworkMarkers.length > 0 ? frameworkMarkers : undefined,
     verificationConfidence: routing.level > 0 ? verificationConfidence : undefined,
+    // Phase C2: DelusionDetector verdict for this cycle. PsychosisMonitor
+    // (Phase C3) reads this off the recorded trace via the trace:record
+    // bus topic to compute a rolling per-persona delusion rate.
+    delusionResult,
     epistemicDecision: verification.epistemicDecision,
     oracleIndependence: deriveOracleIndependenceAudit({
       verdicts: verification.verdicts,

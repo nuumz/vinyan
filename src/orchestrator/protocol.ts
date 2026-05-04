@@ -223,6 +223,29 @@ export const InstructionMemorySchema = z.custom<InstructionMemory>(
  * Gathered by the orchestrator and shipped to the worker so the subprocess
  * can render its own [ENVIRONMENT] block without re-probing the filesystem.
  */
+// ── ThinkingConfig (T0: forward extended-thinking config to subprocess) ─
+
+/**
+ * Provider-agnostic thinking configuration shipped across the subprocess
+ * boundary. Mirrors `ThinkingConfig` in src/orchestrator/types.ts but only
+ * carries the subset that is meaningful at the worker turn-loop layer
+ * (multi-hypothesis / counterfactual / deliberative modes are orchestrated
+ * above the subprocess and never reach `provider.generate` directly).
+ */
+export const ThinkingConfigWireSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('disabled') }),
+  z.object({
+    type: z.literal('adaptive'),
+    effort: z.enum(['low', 'medium', 'high', 'max']),
+    display: z.enum(['omitted', 'summarized']).optional(),
+  }),
+  z.object({
+    type: z.literal('enabled'),
+    budgetTokens: z.number().int().positive(),
+    display: z.enum(['omitted', 'summarized']).optional(),
+  }),
+]);
+
 export const EnvironmentInfoSchema = z.custom<EnvironmentInfo>(
   (value) => {
     if (value == null || typeof value !== 'object') return false;
@@ -608,6 +631,16 @@ export const OrchestratorTurnSchema = z.discriminatedUnion('type', [
     environment: EnvironmentInfoSchema.optional(),
     /** Phase 7c-1: typed subagent role when this worker was spawned via delegate_task. */
     subagentType: SubagentTypeSchema.optional(),
+    /**
+     * T0 (Yinyan thinking & reasoning): extended-thinking configuration the
+     * orchestrator compiled in phase-predict (after applying the P9 ceiling
+     * via `translatePolicyToProvider`). When present, `agent-worker-entry`
+     * forwards it on every per-turn `provider.generate` call so subprocess
+     * dispatch honors the same thinking budget as in-process single-shot.
+     * Old subprocess binaries silently ignore this (Zod `.strip()` default),
+     * keeping the IPC change forward-compatible.
+     */
+    thinkingConfig: ThinkingConfigWireSchema.optional(),
     /**
      * Turn-model conversation history (plan commit A). A6 removed the
      * legacy `conversationHistory: ConversationEntry[]` sibling — turns is

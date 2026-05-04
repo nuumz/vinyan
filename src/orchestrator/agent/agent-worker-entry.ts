@@ -291,6 +291,13 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
             parameters: t.inputSchema,
             kind: t.toolKind ?? 'executable',
           })),
+          // T0 (Yinyan thinking & reasoning): when the orchestrator forwards
+          // an extended-thinking config in the init turn, every per-turn
+          // provider.generate call inherits it. Without this, L2+ subprocess
+          // turns silently dropped the compiled ThinkingPolicy and ran with
+          // the provider's default (usually no thinking) — exactly the
+          // routing tier where deliberation matters most.
+          ...(init.thinkingConfig ? { thinking: init.thinkingConfig } : {}),
         };
         const turnIdForDelta = `t${turnCount}`;
         response =

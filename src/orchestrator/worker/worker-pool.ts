@@ -1035,6 +1035,65 @@ export class WorkerPoolImpl implements WorkerPool {
 
     const startTime = performance.now();
 
+    // Yinyan T&R Kernel — opt-in multi-hypothesis path. Activates ONLY when
+    // the compiled ThinkingPolicy explicitly asks for multi-hypothesis mode
+    // (compiler currently never emits this — wired ahead of compiler T3 so
+    // tests / configs / future compilers can drive it without touching this
+    // dispatcher again). When inactive, falls through to the single-shot
+    // execute below — zero behavior change for L0/L1.
+    const mhConfig = routing.thinkingPolicy?.thinking;
+    if (mhConfig && mhConfig.type === 'multi-hypothesis') {
+      const { runReasoningKernel } = await import('../thinking/reasoning-kernel.ts');
+      const { DefaultHypothesisGenerator } = await import('../thinking/hypothesis-generator.ts');
+      const kernelResult = await runReasoningKernel(
+        { generator: new DefaultHypothesisGenerator(this.engineRegistry) },
+        {
+          systemPrompt,
+          userPrompt,
+          perBranchTokens: Math.max(1, Math.floor(workerInput.budget.maxTokens / mhConfig.branches)),
+          totalTokenCeiling: workerInput.budget.maxTokens,
+          perBranchTimeoutMs: workerInput.budget.timeoutMs,
+          providerOptions: {
+            ...(routing.thinkingConfig ? { thinking: routing.thinkingConfig } : {}),
+            tiers,
+          },
+        },
+        {
+          branches: mhConfig.branches,
+          diversityConstraint: mhConfig.diversityConstraint,
+        },
+      );
+      this.bus?.emit('reasoning:kernel', {
+        taskId: workerInput.taskId,
+        outcome: kernelResult.type,
+        attempted: kernelResult.audit.branchesAttempted,
+        accepted: kernelResult.audit.branchesAccepted,
+        rejected: kernelResult.audit.branchesRejected,
+        durationMs: kernelResult.audit.durationMs,
+      });
+      if (kernelResult.type === 'unknown') {
+        // A2 first-class uncertainty — surface as empty output so the
+        // outer phase routes to retry/escalate instead of fabricating a
+        // winner. Token spend on rejected branches is still recorded.
+        const out = emptyOutput(workerInput.taskId, kernelResult.audit.totalTokens.input + kernelResult.audit.totalTokens.output);
+        return out;
+      }
+      const winner = kernelResult.winner;
+      const synthesizedRE: REResponse = {
+        content: winner.content,
+        toolCalls: [],
+        tokensUsed: {
+          input: kernelResult.audit.totalTokens.input,
+          output: kernelResult.audit.totalTokens.output,
+          thinkingTokens: kernelResult.audit.totalTokens.thinking,
+        },
+        engineId: winner.engineId,
+        terminationReason: winner.terminationReason,
+      };
+      const durationMs = Math.round(performance.now() - startTime);
+      return parseWorkerOutputFromRE(workerInput.taskId, synthesizedRE, durationMs);
+    }
+
     // Race: RE execute vs timeout
     const timeoutMs = workerInput.budget.timeoutMs;
     const timeoutPromise = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs));

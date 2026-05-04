@@ -117,6 +117,7 @@ export async function executePredictPhase(
   if (deps.thinkingPolicyCompiler) {
     const { computeTaskUncertainty } = await import('../thinking/uncertainty-computer.ts');
     const { computeTaskSignature } = await import('../prediction/self-model.ts');
+    const { translatePolicyToProvider } = await import('../llm/thinking-policy-translator.ts');
     const taskSig = computeTaskSignature(input);
 
     const uncertainty = computeTaskUncertainty({
@@ -133,7 +134,14 @@ export async function executePredictPhase(
       selfModelConfidence: prediction?.confidence,
     });
 
-    const compiledThinking = compiledPolicy.thinking;
+    // T0: apply P9 thinking ceiling at dispatch time. The compiler computes
+    // `thinkingCeiling` (10% floor + audit-sample bypass) but until now no
+    // consumer enforced it — `routing.thinkingConfig` flowed straight to the
+    // provider with the unclamped budget. The translator is the single place
+    // that knows how to convert (adaptive, ceiling) → enabled budget so we
+    // funnel the routing config through it before storing.
+    const translated = translatePolicyToProvider(compiledPolicy);
+    const compiledThinking = translated.thinkingConfig;
     const shouldKeepRouting = compiledThinking.type === 'disabled' && routing.thinkingConfig?.type !== 'disabled';
     routing = {
       ...routing,

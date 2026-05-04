@@ -1257,6 +1257,20 @@ export async function runAgentLoop(
       // side, so a missing subAgentId on the wire is a signal-loss for
       // events that originate WITHIN the subprocess only.
       ...(input.parentTaskId ? { subAgentId: input.id } : {}),
+      // T0 (Yinyan thinking & reasoning): forward the ceiling-clamped
+      // thinkingConfig that phase-predict computed so the subprocess turn
+      // loop dispatches each provider.generate with the same extended-
+      // thinking budget as the in-process single-shot path. Limited to
+      // wire-supported variants (disabled / adaptive / enabled) — the
+      // exotic modes (multi-hypothesis, counterfactual, deliberative,
+      // debate) are orchestrated above the subprocess and never reach
+      // this turn loop directly.
+      ...(routing.thinkingConfig &&
+      (routing.thinkingConfig.type === 'disabled'
+        || routing.thinkingConfig.type === 'adaptive'
+        || routing.thinkingConfig.type === 'enabled')
+        ? { thinkingConfig: routing.thinkingConfig }
+        : {}),
       // Phase 2: realtime streaming opt-in (config-gated).
       ...(deps.streamingAssistantDelta ? { stream: true } : {}),
     };

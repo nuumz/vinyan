@@ -455,6 +455,18 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     tunable: true,
   },
 
+  // ── Yinyan T6 (goal-grounding A10 enforcement) ──
+  {
+    key: 'goal_grounding.extended_actions_enabled',
+    type: 'boolean',
+    default: true,
+    axiom: 'A10',
+    owner: 'goal-grounding',
+    description:
+      'Kill-switch for the 4 extended goal-grounding actions (`re-ground-context`, `re-verify-evidence`, `ask-freshness-question`, `abort-unsafe-drift`). Default true — the substrate is wired to fire on real drift fixtures. Operators revert to legacy 3-action behavior by setting false; existing factories that pass an explicit policy override still take precedence.',
+    tunable: true,
+  },
+
   // ── Yinyan T5 (per-task-type thinking calibration) ──
   {
     key: 'thinking.budget_table',

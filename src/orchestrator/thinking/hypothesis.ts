@@ -72,6 +72,31 @@ export interface Hypothesis {
   };
   /** Termination signal from the underlying engine — `limit_reached` taints confidence. */
   terminationReason: REResponse['terminationReason'];
+  /**
+   * T6 (Yinyan goal-grounding / A10): wall-clock timestamp at which this
+   * hypothesis was generated. Snapshot of `Date.now()` taken inside the
+   * generator. Pairs with `factHashes` to bind this proposal to a specific
+   * world-graph state so downstream re-grounding can detect when the
+   * underlying facts have changed since the hypothesis was synthesized.
+   *
+   * Optional + additive — older callers that construct Hypothesis literals
+   * (test fixtures, custom adapters) keep working; the kernel and bridge
+   * tolerate `undefined` and skip A10 staleness checks for that branch.
+   */
+  groundedAt?: number;
+  /**
+   * T6 (Yinyan goal-grounding / A10): list of `(factId, fileHash)` pairs
+   * captured from the world-graph reads that informed this branch's
+   * generation. When `WorldGraph.invalidateByFileHash` reports any of
+   * these `fileHash` values mismatched against the current file content,
+   * the hypothesis is flagged stale and the orchestrator re-grounds
+   * (re-perceive + regenerate) rather than committing the proposal.
+   *
+   * Empty array means "no facts were consulted" (e.g. a pure conversational
+   * task). Absent (undefined) means "this hypothesis predates the T6
+   * binding" — staleness check is skipped.
+   */
+  factHashes?: ReadonlyArray<{ factId: string; fileHash: string }>;
 }
 
 /**
@@ -135,4 +160,17 @@ export interface GenerationInput {
   perBranchTimeoutMs?: number;
   /** Optional providerOptions forwarded verbatim (e.g. thinkingConfig per branch). */
   providerOptions?: Record<string, unknown>;
+  /**
+   * T6 (Yinyan goal-grounding / A10): pre-computed `(factId, fileHash)`
+   * snapshot of the world-graph reads that informed the prompts above.
+   * Each generated `Hypothesis.factHashes` will be populated with this
+   * verbatim so the orchestrator can later detect when the underlying
+   * facts have changed and re-ground.
+   *
+   * Optional + additive: callers that don't wire a fact-snapshot hook
+   * leave it undefined. The generator falls back to an empty array on
+   * each Hypothesis, signalling "T6 binding requested but no facts
+   * recorded" — distinct from "T6 not wired" (legacy literal callers).
+   */
+  factHashes?: ReadonlyArray<{ factId: string; fileHash: string }>;
 }

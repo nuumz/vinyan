@@ -187,6 +187,7 @@ async function runBranch(args: RunBranchInput): Promise<Hypothesis> {
     timeoutMs: input.perBranchTimeoutMs,
     providerOptions: input.providerOptions,
   };
+  const groundedAt = Date.now();
   const res = await branch.engine.execute(req);
   const id = hypothesisId(idFactory ? idFactory(branchIndex) : `hyp-${branch.engine.id}-${branchIndex}`);
   return {
@@ -202,6 +203,16 @@ async function runBranch(args: RunBranchInput): Promise<Hypothesis> {
       thinking: res.tokensUsed.thinkingTokens,
     },
     terminationReason: res.terminationReason,
+    // T6 — bind to wall-clock for A10 staleness detection. Captured BEFORE
+    // the engine call so a long-running generation does not push the
+    // grounding timestamp into the future relative to the world-graph
+    // reads that informed the prompt.
+    groundedAt,
+    // T6 — factHashes is populated by callers that wired a fact-snapshot
+    // hook into the kernel; the bare generator does not reach into the
+    // world-graph itself (A1: separation). Empty array surfaces explicitly
+    // so consumers can distinguish "no facts consulted" from "T6 not wired".
+    factHashes: input.factHashes ?? [],
   };
 }
 

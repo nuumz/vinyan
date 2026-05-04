@@ -134,6 +134,17 @@ export interface OracleVerdict {
     reason: string;
     suggestedBudget: number;
   };
+  /**
+   * T6 (Yinyan goal-grounding / A10): raw alignment score in [0, 1] as
+   * computed by the goal-alignment oracle BEFORE the heuristic-tier
+   * confidence cap is applied. Other oracles do NOT populate this — the
+   * field is specific to goal-alignment so consumers (the kernel-precheck
+   * bridge, the goal-grounding boundary) can downgrade hypothesis
+   * confidence at uncapped thresholds (<0.5 → reject, 0.5-0.7 → audit
+   * warning) without conflating with deterministic-tier oracles whose
+   * `confidence` is already 1.0.
+   */
+  alignmentScore?: number;
   /** Phase 1+: Evidence validity window with TTL (→ concept §2.2 ECP). */
   temporalContext?: {
     validFrom: number;

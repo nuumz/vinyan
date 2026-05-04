@@ -52,7 +52,14 @@ function resolvePolicy(p?: GoalGroundingPolicy): Required<GoalGroundingPolicy> {
     elapsedCheckThresholdMs: p?.elapsedCheckThresholdMs ?? ELAPSED_CHECK_THRESHOLD_MS,
     freshnessConfidenceFloor: p?.freshnessConfidenceFloor ?? FRESHNESS_CONFIDENCE_FLOOR,
     driftSimilarityThreshold: p?.driftSimilarityThreshold ?? GOAL_DRIFT_OVERLAP_THRESHOLD,
-    extendedActionsEnabled: p?.extendedActionsEnabled ?? false,
+    // T6 (Yinyan A10 enforcement) — default flips to TRUE. The four
+    // extended actions (`re-ground-context`, `re-verify-evidence`,
+    // `ask-freshness-question`, `abort-unsafe-drift`) are now active out
+    // of the box. Operators who need to opt out revert via parameter
+    // store (`goal_grounding.extended_actions_enabled = false`) without
+    // a code change. Callers that explicitly pass `false` still get
+    // legacy behavior — explicit override beats the default.
+    extendedActionsEnabled: p?.extendedActionsEnabled ?? true,
   };
 }
 

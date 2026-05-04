@@ -902,6 +902,21 @@ export interface WorkingMemoryState {
       severity: 'error' | 'warning';
       suggestedFix?: string;
     }>;
+    /**
+     * T4 (Yinyan counterfactual replay): META-directives derived from
+     * `classifiedFailures` by `buildCounterfactualConstraints`. Distinct
+     * from `classifiedFailures` (which describes WHAT failed) — these tell
+     * the next attempt HOW to behave so the same failure category does
+     * not recur. Rendered into the `[COUNTERFACTUAL CONSTRAINTS]` prompt
+     * section. Optional + additive — absent on cold-start tasks and on
+     * failures where the classifier produced no entries.
+     */
+    counterfactualConstraints?: Array<{
+      category: string;
+      negativeDirective: string;
+      failureCount: number;
+      evidence: string[];
+    }>;
   }>;
   activeHypotheses: Array<{
     hypothesis: string;

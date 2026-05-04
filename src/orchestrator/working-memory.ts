@@ -69,7 +69,26 @@ export class WorkingMemory {
     this.archiver = options?.archiver;
   }
 
-  recordFailedApproach(approach: string, oracleVerdict: string, verdictConfidence?: number, failureOracle?: string, classifiedFailures?: Array<{ category: string; file?: string; line?: number; message: string; severity: 'error' | 'warning'; suggestedFix?: string }>): void {
+  recordFailedApproach(
+    approach: string,
+    oracleVerdict: string,
+    verdictConfidence?: number,
+    failureOracle?: string,
+    classifiedFailures?: Array<{
+      category: string;
+      file?: string;
+      line?: number;
+      message: string;
+      severity: 'error' | 'warning';
+      suggestedFix?: string;
+    }>,
+    counterfactualConstraints?: Array<{
+      category: string;
+      negativeDirective: string;
+      failureCount: number;
+      evidence: string[];
+    }>,
+  ): void {
     if (this.failedApproaches.length >= MAX_FAILED_APPROACHES) {
       // EO #8: Evict lowest-confidence approach (least informative) instead of FIFO
       // NOTE: undefined confidence → 0.5 (unknown ≠ low; treat as neutral)
@@ -97,6 +116,7 @@ export class WorkingMemory {
       verdictConfidence,
       failureOracle,
       classifiedFailures,
+      counterfactualConstraints,
     });
 
     // G3: Emit memory pressure warning for GAP-H FC4 detection

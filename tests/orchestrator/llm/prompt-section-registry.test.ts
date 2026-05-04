@@ -71,15 +71,18 @@ describe('PromptSectionRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers 28 sections', () => {
+  it('registers 29 sections', () => {
     // Phase-2 redesign added `agent-skill-cards` (system, priority 130) so
     // SKILL.md cards can be injected with an integrity envelope right after
     // `agent-soul`. Bumped from 24.
     // Hybrid skill redesign added `simple-skill-descriptions` (system, 131)
     // and `simple-skill-bodies` (system, 232) — Claude-Code-style layer.
     // Bumped from 26 → 28.
+    // Yinyan T4 added `counterfactual-constraints` (user, priority 275) so
+    // META-directives derived from prior failures render right after the
+    // `[FAILED APPROACHES]` block. Bumped from 28 → 29.
     const registry = createDefaultRegistry();
-    expect(registry.getSectionIds()).toHaveLength(28);
+    expect(registry.getSectionIds()).toHaveLength(29);
   });
 
   it('system prompt contains ROLE, OUTPUT FORMAT, BEHAVIORAL RULES, TOOLS, ORACLE', () => {

@@ -69,6 +69,20 @@ export interface VinyanBusEvents {
     taskCount: number;
     dayCount: number;
   };
+  // Yinyan T5: emitted at the end of the per-task-type thinking
+  // calibration pass inside sleep-cycle. `applied: true` means at least
+  // one budget-table entry was promoted and the parameter ledger was
+  // updated; `applied: false` means the gate rejected every candidate
+  // (insufficient data, walk-forward failed, monotonicity guard blocked).
+  // Dashboards consume this to track how often the calibrator finds
+  // signal vs. how often it abstains. Payload kept flat so offline
+  // analysis tooling can tail without pulling in calibrator-internal
+  // types.
+  'thinking:budget-table-calibrated': {
+    applied: boolean;
+    promotedCount: number;
+    rejectedCount: number;
+  };
   // Yinyan T3: emitted by the factory when the active critic provider
   // shares a vendor family with the active generator provider — the soft
   // A1 (Epistemic Separation) policy. `policy: 'warn'` indicates the

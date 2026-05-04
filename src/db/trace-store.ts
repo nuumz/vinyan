@@ -289,6 +289,58 @@ export class TraceStore {
     }));
   }
 
+  /**
+   * T5 (Yinyan per-task-type calibration): per-task-type variant of
+   * `getSuccessRateByThinkingMode`. Returns the same shape but with an
+   * extra `taskType` column so the calibrator can mine
+   * (taskType, thinkingMode) success rates independently per type.
+   *
+   * Filters out rows where `task_type_signature` is NULL so the calibrator
+   * does not attempt to write a budget-table entry keyed by NULL. Modes
+   * with NULL `thinking_mode` still bucket under `'(none)'` for the same
+   * reason as the global variant.
+   */
+  getSuccessRateByThinkingModePerTaskType(): Array<{
+    taskType: string;
+    thinkingMode: string;
+    total: number;
+    successes: number;
+    failures: number;
+    successRate: number;
+    avgQualityComposite: number | null;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT
+           task_type_signature AS task_type,
+           COALESCE(thinking_mode, '(none)') AS mode,
+           COUNT(*) AS total,
+           SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS successes,
+           SUM(CASE WHEN outcome = 'failure' THEN 1 ELSE 0 END) AS failures,
+           AVG(quality_composite) AS avg_quality
+         FROM execution_traces
+         WHERE task_type_signature IS NOT NULL
+         GROUP BY task_type, mode`,
+      )
+      .all() as Array<{
+      task_type: string;
+      mode: string;
+      total: number;
+      successes: number;
+      failures: number;
+      avg_quality: number | null;
+    }>;
+    return rows.map((r) => ({
+      taskType: r.task_type,
+      thinkingMode: r.mode,
+      total: r.total,
+      successes: r.successes,
+      failures: r.failures,
+      successRate: r.total === 0 ? 0 : r.successes / r.total,
+      avgQualityComposite: r.avg_quality,
+    }));
+  }
+
   /** Update a trace's shadow validation result (called after async shadow processing). */
   updateShadowValidation(taskId: string, result: ShadowValidationResult): void {
     // Wrap in IMMEDIATE transaction so the writer claims the WAL lock up
@@ -349,9 +401,9 @@ export class TraceStore {
 
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
-    const totalRow = this.db
-      .prepare(`SELECT COUNT(*) as cnt FROM execution_traces ${whereSql}`)
-      .get(...params) as { cnt: number };
+    const totalRow = this.db.prepare(`SELECT COUNT(*) as cnt FROM execution_traces ${whereSql}`).get(...params) as {
+      cnt: number;
+    };
 
     // Order by persisted decision_timestamp when available, else by trace
     // timestamp, so legacy rows still sort deterministically.

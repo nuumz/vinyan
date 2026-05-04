@@ -454,6 +454,23 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
       'When the kernel selector reports a winner-vs-runnerUp margin below this threshold, the debate-router fires regardless of risk score. Tunable per task type by T5 calibrator.',
     tunable: true,
   },
+
+  // ── Yinyan T5 (per-task-type thinking calibration) ──
+  {
+    key: 'thinking.budget_table',
+    type: 'number-record',
+    // Sparse: keys are dynamic, populated by the sleep-cycle calibrator
+    // as `${taskType}:${thinkingMode}` → recommended max-output-token
+    // budget. Empty default means "no per-type override exists yet" —
+    // the compiler falls through to its profile-default budget for any
+    // (taskType, mode) pair the calibrator hasn't promoted.
+    default: {},
+    axiom: 'A7',
+    owner: 'sleep-cycle-t5',
+    description:
+      'Per-task-type thinking budget table. Keys: "${taskType}:${thinkingMode}". Values: token budget. Sleep-cycle T5 promotes entries only when the per-type readiness gate passes AND the walk-forward backtest accepts the proposed budget. P9 monotonicity: an existing entry MUST not regress more than `decay_rate` per cycle (enforced pre-write by the calibrator).',
+    tunable: true,
+  },
 ];
 
 const REGISTRY: ReadonlyMap<string, ParameterDef> = (() => {
@@ -521,6 +538,18 @@ export function validateParameterValue(
         const v = actual[key];
         if (typeof v !== 'number' || !Number.isFinite(v)) {
           return { ok: false, reason: `field "${key}" must be a finite number` };
+        }
+      }
+      // T5: sparse-record extension — extra keys (not in default) are
+      // accepted but every value must still be a finite number. Lets
+      // dynamic-key tables (`thinking.budget_table`) store entries the
+      // registry default doesn't enumerate, while keeping hostile/garbage
+      // writes (booleans, strings, NaN, Infinity) out of the ledger.
+      for (const key of Object.keys(actual)) {
+        if (key in expected) continue;
+        const v = actual[key];
+        if (typeof v !== 'number' || !Number.isFinite(v)) {
+          return { ok: false, reason: `extra field "${key}" must be a finite number` };
         }
       }
       return { ok: true };

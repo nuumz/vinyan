@@ -134,6 +134,18 @@ export class SleepCycleRunner {
     registry: AgentRegistry;
   };
   /**
+   * Phase A3-followup — role-protocol step EMA mining. When set,
+   * sleep-cycle reads `role_protocol_run` rows once per cycle and
+   * emits `role-protocol:step_ema` for each tuple that meets the
+   * observation threshold. Best-effort: any failure is swallowed.
+   */
+  private roleProtocolEmaDeps?: {
+    runStore: import('../db/role-protocol-run-store.ts').RoleProtocolRunStore;
+    /** Registered protocol ids the EMA should scope itself to. */
+    protocolIds: readonly string[];
+    bus: import('../core/bus.ts').VinyanBus;
+  };
+  /**
    * Phase-15 (Item 4) — skill tier graduation hook. When set, every
    * scheduled `run()` reads outcome rows per persona, looks up current
    * `confidence_tier` per skill from disk, evaluates Wilson LB-based
@@ -333,6 +345,20 @@ export class SleepCycleRunner {
     registry: AgentRegistry;
   }): void {
     this.skillPromoterDeps = deps;
+  }
+
+  /**
+   * Phase A3-followup — wire role-protocol step EMA mining.
+   * Called by the factory once the role-protocol registry is loaded.
+   * Best-effort: when invoked with a missing store, the cycle's EMA
+   * step silently no-ops.
+   */
+  setRoleProtocolEma(deps: {
+    runStore: import('../db/role-protocol-run-store.ts').RoleProtocolRunStore;
+    protocolIds: readonly string[];
+    bus: import('../core/bus.ts').VinyanBus;
+  }): void {
+    this.roleProtocolEmaDeps = deps;
   }
 
   /**
@@ -706,6 +732,31 @@ export class SleepCycleRunner {
         }
       } catch {
         /* Promotion is observational — never disrupts sleep cycle */
+      }
+    }
+
+    // Phase A3-followup: role-protocol step EMA mining. Reads the
+    // role_protocol_run audit table for each registered protocol and
+    // emits one `role-protocol:step_ema` event per (persona, protocol,
+    // step) tuple that meets the observation threshold. Operators wire
+    // dashboards to this topic to spot degrading steps. Best-effort:
+    // any failure is swallowed so the sleep cycle keeps running.
+    if (this.roleProtocolEmaDeps) {
+      try {
+        const { computeStepSuccessEMAs } = await import('./role-protocol-ema.ts');
+        const records = computeStepSuccessEMAs(this.roleProtocolEmaDeps.runStore, this.roleProtocolEmaDeps.protocolIds);
+        for (const record of records) {
+          this.roleProtocolEmaDeps.bus.emit('role-protocol:step_ema', {
+            personaId: record.personaId,
+            protocolId: record.protocolId,
+            stepId: record.stepId,
+            ema: record.ema,
+            observations: record.observations,
+            successes: record.successes,
+          });
+        }
+      } catch {
+        /* EMA mining is observational — never disrupts sleep cycle */
       }
     }
 

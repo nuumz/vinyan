@@ -25,7 +25,9 @@
  */
 
 import type { VinyanBus } from '../../../core/bus.ts';
+import type { PersonaFactCitationsStore } from '../../../db/persona-fact-citations-store.ts';
 import type { RealityAnchorAuditStore } from '../../../db/reality-anchor-audit-store.ts';
+import type { TraceStore } from '../../../db/trace-store.ts';
 import type { ParameterStore } from '../../adaptive-params/parameter-store.ts';
 import type { ExecutionTrace } from '../../types.ts';
 import { assertValidTransition, type RealityAnchorStage, type RealityAnchorState } from './state.ts';
@@ -39,10 +41,35 @@ export interface RealityAnchorReGrounderOptions {
   readonly cleanStreakRequired?: number;
   /** Test-injectable clock so audit timestamps are deterministic. */
   readonly clock?: () => number;
+  /**
+   * Persona-fact-citation store. When supplied, the `rebuild` sub-action
+   * drops the persona's stale citations (older than `rebuildHorizonMs`)
+   * so the next verify cycle writes fresh ones. When unset, rebuild
+   * audits but does no work.
+   */
+  readonly citationsStore?: PersonaFactCitationsStore;
+  /**
+   * Trace store. When supplied, the `replay` sub-action scans the
+   * persona's recent traces and reports how many were delusion-flagged.
+   * When unset, replay audits but does no work.
+   */
+  readonly traceStore?: TraceStore;
+  /**
+   * Maximum age of citations the `rebuild` sub-action keeps. Older
+   * citations are dropped on rebuild. Default: 7 days.
+   */
+  readonly rebuildHorizonMs?: number;
+  /**
+   * How many recent traces `replay` scans for delusion-flagged outcomes.
+   * Default: 20.
+   */
+  readonly replayWindowSize?: number;
 }
 
 const STREAK_PARAM_KEY = 'reality_anchor.shadow_clean_streak_required';
 const DEFAULT_STREAK_REQUIRED = 5;
+const DEFAULT_REBUILD_HORIZON_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const DEFAULT_REPLAY_WINDOW_SIZE = 20;
 
 export class RealityAnchorReGrounder {
   private readonly bus: VinyanBus;
@@ -50,6 +77,10 @@ export class RealityAnchorReGrounder {
   private readonly parameterStore: ParameterStore | undefined;
   private readonly cleanStreakRequiredOverride: number | undefined;
   private readonly clock: () => number;
+  private readonly citationsStore: PersonaFactCitationsStore | undefined;
+  private readonly traceStore: TraceStore | undefined;
+  private readonly rebuildHorizonMs: number;
+  private readonly replayWindowSize: number;
 
   /** Current state per persona. Hydrated from audit on first access. */
   private readonly states = new Map<string, RealityAnchorState>();
@@ -66,6 +97,10 @@ export class RealityAnchorReGrounder {
     this.parameterStore = opts.parameterStore;
     this.cleanStreakRequiredOverride = opts.cleanStreakRequired;
     this.clock = opts.clock ?? Date.now;
+    this.citationsStore = opts.citationsStore;
+    this.traceStore = opts.traceStore;
+    this.rebuildHorizonMs = opts.rebuildHorizonMs ?? DEFAULT_REBUILD_HORIZON_MS;
+    this.replayWindowSize = opts.replayWindowSize ?? DEFAULT_REPLAY_WINDOW_SIZE;
   }
 
   /**
@@ -115,15 +150,78 @@ export class RealityAnchorReGrounder {
    */
   startRegrounding(personaId: string, reason: string): void {
     const prev = this.getState(personaId);
-    // active → quarantined OR rebuilding/shadow-mode → quarantined (bounce)
+    // 1. quarantine — entering quarantined state
     this.transitionTo(personaId, prev, 'quarantined', 'quarantine', reason);
-    this.transitionTo(personaId, 'quarantined', 'rebuilding', 'rebuild', reason);
-    // sub-actions emit audit rows but stay in `rebuilding`
-    this.recordSubAction(personaId, 'prune', reason);
-    this.recordSubAction(personaId, 'replay', reason);
-    // After replay, persona implicitly enters shadow-mode
-    this.transitionTo(personaId, 'rebuilding', 'shadow-mode', 'replay', `${reason}; shadow-entry`);
+    // 2. rebuild — drop stale citations + transition into rebuilding
+    const rebuildOutcome = this.runRebuild(personaId);
+    this.transitionTo(personaId, 'quarantined', 'rebuilding', 'rebuild', `${reason}; ${rebuildOutcome}`);
+    // 3. prune — sub-action; stays in rebuilding state
+    const pruneOutcome = this.runPrune(personaId);
+    this.recordSubAction(personaId, 'prune', `${reason}; ${pruneOutcome}`);
+    // 4. replay — scan recent traces + transition into shadow-mode
+    const replayOutcome = this.runReplay(personaId);
+    this.transitionTo(personaId, 'rebuilding', 'shadow-mode', 'replay', `${reason}; ${replayOutcome}`);
     this.shadowStreak.set(personaId, 0);
+  }
+
+  /**
+   * Rebuild work body — drop the persona's citations older than
+   * `rebuildHorizonMs` so the next verify cycle writes fresh citations
+   * at current hashes. Returns a one-line summary for the audit reason.
+   *
+   * No-op when the citations store wasn't wired (test fixture).
+   */
+  private runRebuild(personaId: string): string {
+    if (!this.citationsStore) return 'rebuild=skipped (no citations store)';
+    const cutoff = this.clock() - this.rebuildHorizonMs;
+    const dropped = this.citationsStore.pruneOlderThanForPersona(personaId, cutoff);
+    return `rebuild=dropped ${dropped} stale citation(s) older than ${Math.round(this.rebuildHorizonMs / (24 * 60 * 60 * 1000))}d`;
+  }
+
+  /**
+   * Prune work body — Phase C4-followup. Drops the persona's
+   * "superseded" citations: for each fact the persona has cited
+   * multiple times, keep only the latest. Collapses the belief
+   * ledger to exactly one citation per fact.
+   *
+   * Distinct from `rebuild` (time-based, drops citations >7d) and
+   * from DelusionDetector's stale check (compares against current
+   * source hash). This handles the case where the persona has
+   * RE-CITED a fact at a different hash in a later task — the
+   * earlier append-only row is now historical noise that recovery
+   * should drop.
+   *
+   * The plan §11 originally framed this as "drop tier-3 evidence"
+   * via A5 confidence tiers. The current world-graph schema doesn't
+   * carry a tier_reliability column; superseded-citation dedup is
+   * the schema-honest interpretation of the same intent (the latest
+   * citation IS the persona's most recent confidence statement;
+   * older same-fact citations are by definition superseded).
+   *
+   * No-op when the citations store wasn't wired (test fixture).
+   */
+  private runPrune(personaId: string): string {
+    if (!this.citationsStore) return 'prune=skipped (no citations store)';
+    const dropped = this.citationsStore.pruneSupersededForPersona(personaId);
+    return `prune=dropped ${dropped} superseded citation(s)`;
+  }
+
+  /**
+   * Replay work body — scan the persona's most recent `replayWindowSize`
+   * traces and report how many were delusion-flagged. The count is
+   * surfaced in the audit reason so operators see how "off-reality"
+   * the persona's recent history is at re-grounding time.
+   *
+   * No-op when the trace store wasn't wired (test fixture).
+   */
+  private runReplay(personaId: string): string {
+    if (!this.traceStore) return 'replay=skipped (no trace store)';
+    const recent = this.traceStore.findByAgent(personaId, this.replayWindowSize);
+    let delusions = 0;
+    for (const t of recent) {
+      if (t.delusionResult?.kind === 'delusion') delusions++;
+    }
+    return `replay=scanned ${recent.length} trace(s), ${delusions} delusion-flagged`;
   }
 
   /**

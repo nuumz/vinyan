@@ -330,6 +330,71 @@ describe('PersonaFactCitationsStore', () => {
     expect(store.countForPersona('researcher')).toBe(7);
   });
 
+  test('pruneSupersededForPersona drops all-but-latest per fact for a persona', () => {
+    // Persona 'p' cited fact 'a' three times, fact 'b' once.
+    // Persona 'q' cited fact 'a' twice.
+    let ts = 1000;
+    for (const hash of ['h1', 'h2', 'h3']) {
+      store.recordCitation({
+        personaId: 'p',
+        factId: 'a',
+        citedAtHash: hash,
+        taskId: `t-${hash}`,
+        phase: 'verify',
+        claimExcerpt: 'x',
+        citedAtTs: ts++,
+      });
+    }
+    store.recordCitation({
+      personaId: 'p',
+      factId: 'b',
+      citedAtHash: 'hb',
+      taskId: 'tb',
+      phase: 'verify',
+      claimExcerpt: 'x',
+      citedAtTs: ts++,
+    });
+    for (const hash of ['qh1', 'qh2']) {
+      store.recordCitation({
+        personaId: 'q',
+        factId: 'a',
+        citedAtHash: hash,
+        taskId: `q-${hash}`,
+        phase: 'verify',
+        claimExcerpt: 'x',
+        citedAtTs: ts++,
+      });
+    }
+
+    // Prune 'p' only — 2 of 3 'a' citations dropped, 'b' singleton kept
+    expect(store.pruneSupersededForPersona('p')).toBe(2);
+    const pCitations = store.listForPersona('p');
+    expect(pCitations).toHaveLength(2);
+    const pA = pCitations.find((c) => c.factId === 'a');
+    expect(pA?.citedAtHash).toBe('h3'); // latest survives
+
+    // 'q' untouched
+    expect(store.listForPersona('q')).toHaveLength(2);
+  });
+
+  test('pruneSupersededForPersona returns 0 when nothing to dedupe', () => {
+    store.recordCitation({
+      personaId: 'p',
+      factId: 'a',
+      citedAtHash: 'h',
+      taskId: 't',
+      phase: 'verify',
+      claimExcerpt: 'x',
+      citedAtTs: 1000,
+    });
+    expect(store.pruneSupersededForPersona('p')).toBe(0);
+    expect(store.listForPersona('p')).toHaveLength(1);
+  });
+
+  test('pruneSupersededForPersona returns 0 for unknown persona', () => {
+    expect(store.pruneSupersededForPersona('ghost')).toBe(0);
+  });
+
   test('default citedAtTs uses the wall clock when omitted', () => {
     store.recordCitation({
       personaId: 'p',

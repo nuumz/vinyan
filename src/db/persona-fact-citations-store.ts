@@ -178,6 +178,54 @@ export class PersonaFactCitationsStore {
     return Number(result.changes ?? 0);
   }
 
+  /**
+   * Delete citations older than `cutoffTs` belonging to a single persona.
+   * Used by Phase C4's `rebuild` sub-action — when a persona enters
+   * recovery, citations older than the rebuild horizon are dropped so
+   * the next verify cycle writes fresh ones at current hashes.
+   * Returns the row count removed.
+   */
+  pruneOlderThanForPersona(personaId: string, cutoffTs: number): number {
+    const result = this.db
+      .prepare('DELETE FROM persona_fact_citations WHERE persona_id = ? AND cited_at_ts < ?')
+      .run(personaId, cutoffTs);
+    return Number(result.changes ?? 0);
+  }
+
+  /**
+   * Delete the persona's "superseded" citations — for each `fact_id` the
+   * persona has cited multiple times, keep ONLY the latest (largest
+   * `cited_at_ts`); delete every older entry.
+   *
+   * Semantically: collapses the persona's belief ledger so that exactly
+   * one citation per fact remains. Used by Phase C4's `prune` sub-action.
+   * Different from `pruneOlderThanForPersona` (which is time-based) and
+   * different from `listStaleForPersona` (which compares against current
+   * source hash) — this method handles the case where the persona has
+   * REPLACED their belief about a fact (e.g., re-cited at a different
+   * hash in a later task) but the old citation row was kept appended.
+   *
+   * Returns the row count removed. Idempotent: repeated calls remove
+   * nothing further once deduped.
+   */
+  pruneSupersededForPersona(personaId: string): number {
+    // For each (persona, fact) pair, find MAX(cited_at_ts) and delete
+    // every row that doesn't match. SQLite supports tuple-IN subqueries
+    // since 3.15+; bun:sqlite ships well above.
+    const sql = `
+      DELETE FROM persona_fact_citations
+      WHERE persona_id = ?
+        AND (fact_id, cited_at_ts) NOT IN (
+          SELECT fact_id, MAX(cited_at_ts)
+            FROM persona_fact_citations
+           WHERE persona_id = ?
+           GROUP BY fact_id
+        )
+    `;
+    const result = this.db.prepare(sql).run(personaId, personaId);
+    return Number(result.changes ?? 0);
+  }
+
   /** Total citation count for a persona — cheap summary for sleep-cycle health checks. */
   countForPersona(personaId: string): number {
     const row = this.db

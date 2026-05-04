@@ -838,13 +838,16 @@ export async function executeWorkflow(input: TaskInput, deps: WorkflowExecutorDe
     // Absent store falls through to the cot-injection module default
     // (`DEFAULT_COT_REUSE_MAX_STALENESS_MS`).
     const paramStore = deps.parameterStore;
-    const getCotStalenessMs = paramStore
-      ? () => paramStore.getDurationMs('cot.reuse_max_staleness_ms')
-      : undefined;
+    const getCotStalenessMs = paramStore ? () => paramStore.getDurationMs('cot.reuse_max_staleness_ms') : undefined;
     const blockResult = await runCollaborationBlock(plan, plan.collaborationBlock, input, {
       executeTask: executeTaskFn,
       ...(deps.bus ? { bus: deps.bus } : {}),
       ...(getCotStalenessMs ? { getCotStalenessMs } : {}),
+      // Persona execution envelope reads the registered persona name +
+      // description into every primary's per-round goal so the LLM has
+      // full identity context inside the user prompt. Optional — when
+      // absent the envelope emits the persona id alone.
+      ...(deps.agentRegistry ? { agentRegistry: deps.agentRegistry } : {}),
     });
     totalTokens += blockResult.totalTokensConsumed;
     for (const [stepId, result] of blockResult.stepResults) {

@@ -11,12 +11,12 @@
  */
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { TaskProcessProjectionService } from '../../src/api/projections/task-process-projection.ts';
 import { ApprovalLedgerStore } from '../../src/db/approval-ledger-store.ts';
 import { CodingCliStore } from '../../src/db/coding-cli-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import type { SessionTaskRow } from '../../src/db/session-store.ts';
 import { TaskEventStore } from '../../src/db/task-event-store.ts';
-import { TaskProcessProjectionService } from '../../src/api/projections/task-process-projection.ts';
 import type { CodingCliSessionRecord } from '../../src/orchestrator/external-coding-cli/types.ts';
 import type { TaskResult } from '../../src/orchestrator/types.ts';
 
@@ -280,12 +280,7 @@ describe('TaskProcessProjectionService.build — plan', () => {
       { todos: [{ id: 't1', content: 'Step 1', status: 'pending' }] },
       1300,
     );
-    append(
-      'task-todos',
-      'workflow:todo_updated',
-      { todos: [{ id: 't1', status: 'completed' }] },
-      1400,
-    );
+    append('task-todos', 'workflow:todo_updated', { todos: [{ id: 't1', status: 'completed' }] }, 1400);
     const plan = makeService().build('task-todos')!.plan;
     expect(plan.todoList).toHaveLength(1);
     expect(plan.todoList[0]!.status).toBe('completed');
@@ -312,6 +307,39 @@ describe('TaskProcessProjectionService.build — plan', () => {
     expect(plan.todoList).toHaveLength(2);
     expect(plan.todoList.map((t) => t.id)).toEqual(['tdo-1', 'tdo-2']);
     expect(plan.todoList[0]!.content).toBe('Researcher answers');
+  });
+
+  test('todo list folds the canonical single-item `workflow:todo_updated` shape', () => {
+    // Production emits `workflow:todo_updated` as `{ todoId, status,
+    // failureReason? }` (single-item, see WorkflowTodoUpdatedEvent in
+    // stage-manifest.ts and emitTodoUpdate in workflow-executor.ts:148).
+    // The legacy list shape only appears in older fixtures; missing the
+    // single-item branch silently drops every live update and freezes
+    // the projection's todoList at whatever `todo_created` seeded
+    // (concrete repro: session de93426c-6241-4ab7-95e1-9c7ca54e09d1).
+    plantTaskRow('task-todos-canonical');
+    append(
+      'task-todos-canonical',
+      'workflow:todo_created',
+      {
+        todoList: [{ id: 'todo-synth-coordinator', content: 'coordinator synthesizes', status: 'pending' }],
+      },
+      2000,
+    );
+    append(
+      'task-todos-canonical',
+      'workflow:todo_updated',
+      { todoId: 'todo-synth-coordinator', status: 'running' },
+      2100,
+    );
+    append('task-todos-canonical', 'workflow:todo_updated', { todoId: 'todo-synth-coordinator', status: 'done' }, 2200);
+    const plan = makeService().build('task-todos-canonical')!.plan;
+    expect(plan.todoList).toHaveLength(1);
+    expect(plan.todoList[0]!.status).toBe('done');
+    // Content must survive the update — the single-item event carries
+    // only id+status, so the projection has to copy from the existing
+    // todoMap entry rather than overwriting with empty.
+    expect(plan.todoList[0]!.content).toBe('coordinator synthesizes');
   });
 
   test('collaborationRounds fold per-(stepId, round) telemetry, sorted by stepId then round', () => {
@@ -386,20 +414,11 @@ describe('TaskProcessProjectionService.build — plan', () => {
     expect(plan.collaborationRounds!).toHaveLength(4);
     // Sorted by stepId then round; architect's two rounds first, then mentor's.
     const ordered = plan.collaborationRounds!.map((r) => `${r.stepId}-r${r.round}`);
-    expect(ordered).toEqual([
-      'p-architect-r0',
-      'p-architect-r1',
-      'p-mentor-r0',
-      'p-mentor-r1',
-    ]);
-    const archR1 = plan.collaborationRounds!.find(
-      (r) => r.stepId === 'p-architect' && r.round === 1,
-    )!;
+    expect(ordered).toEqual(['p-architect-r0', 'p-architect-r1', 'p-mentor-r0', 'p-mentor-r1']);
+    const archR1 = plan.collaborationRounds!.find((r) => r.stepId === 'p-architect' && r.round === 1)!;
     expect(archR1.status).toBe('failed');
     expect(archR1.tokensConsumed).toBe(0);
-    const mentorR1 = plan.collaborationRounds!.find(
-      (r) => r.stepId === 'p-mentor' && r.round === 1,
-    )!;
+    const mentorR1 = plan.collaborationRounds!.find((r) => r.stepId === 'p-mentor' && r.round === 1)!;
     expect(mentorR1.outputPreview).toBe('mentor r1 output');
     expect(mentorR1.agentId).toBe('mentor');
   });
@@ -424,7 +443,10 @@ describe('TaskProcessProjectionService.build — plan', () => {
     );
     // Two rounds per agent.
     for (const round of [0, 1]) {
-      for (const [stepId, agentId] of [['s1', 'researcher'], ['s2', 'mentor']] as const) {
+      for (const [stepId, agentId] of [
+        ['s1', 'researcher'],
+        ['s2', 'mentor'],
+      ] as const) {
         append(
           'task-card-cardinality',
           'workflow:collaboration_round',
@@ -455,12 +477,7 @@ describe('TaskProcessProjectionService.build — plan', () => {
     // descriptions. Without folding it the projection emits steps with
     // empty `description`, which the UI then renders blank.
     plantTaskRow('task-plan-ready');
-    append(
-      'task-plan-ready',
-      'workflow:decision_recorded',
-      { decision: { stage: 'classified' } },
-      1500,
-    );
+    append('task-plan-ready', 'workflow:decision_recorded', { decision: { stage: 'classified' } }, 1500);
     append(
       'task-plan-ready',
       'workflow:plan_ready',
@@ -508,15 +525,8 @@ describe('TaskProcessProjectionService.build — coding-cli + diagnostics + hist
 
   test('coding-cli cancelDetail surfaced from coding-cli:cancelled event payload', () => {
     plantTaskRow('task-cli-cancel');
-    codingCliStore.insert(
-      makeSession({ id: 'cli-cancel', taskId: 'task-cli-cancel', state: 'cancelled' }),
-    );
-    codingCliStore.appendEvent(
-      'cli-cancel',
-      'coding-cli:cancelled',
-      { by: 'alice', reason: 'budget exceeded' },
-      6000,
-    );
+    codingCliStore.insert(makeSession({ id: 'cli-cancel', taskId: 'task-cli-cancel', state: 'cancelled' }));
+    codingCliStore.appendEvent('cli-cancel', 'coding-cli:cancelled', { by: 'alice', reason: 'budget exceeded' }, 6000);
     const sessions = makeService().build('task-cli-cancel')!.codingCliSessions;
     expect(sessions[0]!.cancelDetail?.by).toBe('alice');
     expect(sessions[0]!.cancelDetail?.reason).toBe('budget exceeded');
@@ -535,9 +545,7 @@ describe('TaskProcessProjectionService.build — coding-cli + diagnostics + hist
 
   test('coding-cli failureDetail is NOT set when state is not failed (defensive against stale events)', () => {
     plantTaskRow('task-cli-recovered');
-    codingCliStore.insert(
-      makeSession({ id: 'cli-recovered', taskId: 'task-cli-recovered', state: 'completed' }),
-    );
+    codingCliStore.insert(makeSession({ id: 'cli-recovered', taskId: 'task-cli-recovered', state: 'completed' }));
     // Stale "failed" event from an earlier attempt, then a later event
     // means the session ended in 'completed' state.
     codingCliStore.appendEvent('cli-recovered', 'coding-cli:failed', { reason: 'old' }, 8000);
@@ -589,24 +597,14 @@ describe('TaskProcessProjectionService.build — coding-cli + diagnostics + hist
     plantTaskRow('task-diag');
     append('task-diag', 'task:start', { routingLevel: 1 }, 1000);
     append('task-diag', 'phase:timing', { phase: 'perceive', durationMs: 50 }, 1050);
-    append(
-      'task-diag',
-      'agent:tool_started',
-      { callId: 'c1', tool: 'file_read' },
-      1100,
-    );
+    append('task-diag', 'agent:tool_started', { callId: 'c1', tool: 'file_read' }, 1100);
     append(
       'task-diag',
       'agent:tool_executed',
       { callId: 'c1', tool: 'file_read', status: 'success', outputPreview: 'ok' },
       1200,
     );
-    append(
-      'task-diag',
-      'task:escalate',
-      { fromLevel: 1, toLevel: 2, reason: 'oracle-disagreement' },
-      1300,
-    );
+    append('task-diag', 'task:escalate', { fromLevel: 1, toLevel: 2, reason: 'oracle-disagreement' }, 1300);
     const diag = makeService().build('task-diag')!.diagnostics;
     expect(diag.phases).toHaveLength(1);
     expect(diag.phases[0]!.status).toBe('completed');
@@ -662,18 +660,8 @@ describe('TaskProcessProjectionService.build — coding-cli + diagnostics + hist
 
   test('history.descendantTaskIds reads from delegate_dispatched payloads', () => {
     plantTaskRow('task-parent');
-    append(
-      'task-parent',
-      'workflow:delegate_dispatched',
-      { subTaskId: 'task-child-1' },
-      1100,
-    );
-    append(
-      'task-parent',
-      'workflow:delegate_dispatched',
-      { subTaskId: 'task-child-2' },
-      1200,
-    );
+    append('task-parent', 'workflow:delegate_dispatched', { subTaskId: 'task-child-1' }, 1100);
+    append('task-parent', 'workflow:delegate_dispatched', { subTaskId: 'task-child-2' }, 1200);
     const history = makeService().build('task-parent')!.history;
     expect(history.descendantTaskIds).toEqual(['task-child-1', 'task-child-2']);
     expect(history.eventCount).toBe(2);

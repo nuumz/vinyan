@@ -985,6 +985,17 @@ export class TaskProcessProjectionService {
           break;
         }
         case 'workflow:todo_updated': {
+          // Two shapes coexist:
+          //   - Canonical (`WorkflowTodoUpdatedEvent`, single-item):
+          //     `{ todoId, status, failureReason?, ownerId? }` — what the
+          //     workflow executor actually emits via `emitTodoUpdate`
+          //     (workflow-executor.ts:148-154).
+          //   - Legacy (`{ todoList: [...] }` / `{ todos: [...] }`) —
+          //     older fixtures and replays. Kept for back-compat so the
+          //     projection folds historical event logs the same way.
+          // Without the single-item branch every live `todo_updated`
+          // silently no-ops here, leaving the projection's todoList
+          // frozen at whatever `todo_created` seeded.
           const list = Array.isArray(p.todoList) ? p.todoList : Array.isArray(p.todos) ? p.todos : null;
           if (list) {
             for (const todo of list as Array<Record<string, unknown>>) {
@@ -1001,6 +1012,16 @@ export class TaskProcessProjectionService {
                     : {}),
               });
             }
+            break;
+          }
+          if (typeof p.todoId === 'string' && typeof p.status === 'string') {
+            const existing = todoMap.get(p.todoId);
+            todoMap.set(p.todoId, {
+              id: p.todoId,
+              content: existing?.content ?? '',
+              status: p.status,
+              ...(existing?.activeForm ? { activeForm: existing.activeForm } : {}),
+            });
           }
           break;
         }

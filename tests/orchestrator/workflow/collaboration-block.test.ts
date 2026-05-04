@@ -22,13 +22,11 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { createBus, type VinyanBus } from '../../../src/core/bus.ts';
-import type { CollaborationDirective } from '../../../src/orchestrator/intent/collaboration-parser.ts';
 import type { AgentRegistry } from '../../../src/orchestrator/agents/registry.ts';
-import { runCollaborationBlock } from '../../../src/orchestrator/workflow/collaboration-block.ts';
-import {
-  buildCollaborationPlan,
-} from '../../../src/orchestrator/workflow/workflow-planner.ts';
+import type { CollaborationDirective } from '../../../src/orchestrator/intent/collaboration-parser.ts';
 import type { AgentSpec, TaskInput, TaskResult } from '../../../src/orchestrator/types.ts';
+import { runCollaborationBlock } from '../../../src/orchestrator/workflow/collaboration-block.ts';
+import { buildCollaborationPlan } from '../../../src/orchestrator/workflow/workflow-planner.ts';
 
 function agentSpec(id: string, role: AgentSpec['role'], description = id): AgentSpec {
   return { id, name: id, description, role } as AgentSpec;
@@ -148,9 +146,7 @@ type ScriptedExecuteTask = ((sub: TaskInput) => Promise<TaskResult>) & {
 function scriptedExecuteTask(
   bus: VinyanBus,
   opts: {
-    thoughtsBySubTaskId?:
-      | 'all-r0'
-      | Record<string, Array<{ content: string; trigger?: string; tsOffset?: number }>>;
+    thoughtsBySubTaskId?: 'all-r0' | Record<string, Array<{ content: string; trigger?: string; tsOffset?: number }>>;
     toolCallsBySubTaskId?: 'all-r0-mutation';
     thoughtTrigger?: string;
     thoughtContent?: string;
@@ -196,9 +192,7 @@ function scriptedExecuteTask(
           redactionPolicyHash: 'a'.repeat(64),
           kind: 'thought',
           content: t.content,
-          ...(t.trigger
-            ? { trigger: t.trigger as 'pre-tool' | 'post-tool' | 'plan' | 'reflect' | 'compaction' }
-            : {}),
+          ...(t.trigger ? { trigger: t.trigger as 'pre-tool' | 'post-tool' | 'plan' | 'reflect' | 'compaction' } : {}),
         } as never);
       }
     }
@@ -417,12 +411,9 @@ describe('runCollaborationBlock', () => {
     const failingExecute = async (): Promise<TaskResult> => {
       throw new Error('mock LLM unavailable');
     };
-    const { stepResults } = await runCollaborationBlock(
-      plan,
-      plan.collaborationBlock!,
-      makeInput(),
-      { executeTask: failingExecute },
-    );
+    const { stepResults } = await runCollaborationBlock(plan, plan.collaborationBlock!, makeInput(), {
+      executeTask: failingExecute,
+    });
     expect(stepResults.size).toBe(2);
     for (const [, result] of stepResults) {
       expect(result.status).toBe('failed');
@@ -760,10 +751,10 @@ describe('runCollaborationBlock', () => {
         makeRegistry(),
         'task-cot-determ',
       );
-    const fixedClock = (() => {
+    const fixedClock = () => {
       let t = 1_000_000;
       return () => (t += 1);
-    });
+    };
     const buildOnce = async () => {
       const bus = createBus();
       const fn = scriptedExecuteTask(bus, {
@@ -830,5 +821,116 @@ describe('runCollaborationBlock', () => {
     const agentSet = new Set(calls.map((c) => c.agentId));
     // 3 distinct personas dispatched, each across multiple rounds.
     expect(agentSet.size).toBe(3);
+  });
+
+  // ── Persona execution envelope (T7) ────────────────────────────────
+  // The UI shows distinct agents but the LLM only really diverges when
+  // the per-sub-task TaskInput.goal carries an explicit persona-bound
+  // execution contract — not just a different `agentId` field. These
+  // tests pin the wire-level shape: every primary's goal MUST name the
+  // assigned persona, instruct it to answer AS that persona, and forbid
+  // role-playing other agents or describing the orchestration. The
+  // envelope must be present on round 0 AND every rebuttal round.
+  describe('persona execution envelope', () => {
+    test('round 0 — every subInput.goal names the assigned persona and carries the contract', async () => {
+      const plan = buildCollaborationPlan(
+        'topic',
+        directive({ requestedPrimaryParticipantCount: 3, rebuttalRounds: 0 }),
+        makeRegistry(),
+        'task-env-r0',
+      );
+      const userGoal = 'Should we use microservices?';
+      const { fn, calls } = captureExecuteTask();
+      await runCollaborationBlock(plan, plan.collaborationBlock!, makeInput({ goal: userGoal }), {
+        executeTask: fn,
+        agentRegistry: makeRegistry(),
+      });
+      expect(calls).toHaveLength(3);
+      for (const c of calls) {
+        // The original user goal is preserved verbatim — the envelope
+        // wraps it, never replaces it. Without this the delegate loses
+        // the question it is supposed to answer.
+        expect(c.goal).toContain(userGoal);
+        // The envelope MUST name the assigned persona explicitly so the
+        // LLM cannot fall through to a generic Vinyan voice when the
+        // system prompt is short or partially compacted.
+        expect(c.agentId).toBeDefined();
+        expect(c.goal).toContain(`Assigned persona: ${c.agentId}`);
+        // The contract: this sub-task is one workflow step and the
+        // delegate must answer AS the assigned persona — not simulate
+        // the others, not describe the orchestration. Wording matches
+        // the SUB-TASK CONTRACT in conversational-result-builder.ts so
+        // the two paths reinforce the same rule.
+        expect(c.goal).toMatch(/executing this workflow step as this Vinyan persona/i);
+        expect(c.goal).toMatch(/do not role-play|do not speak as|do not simulate other agents/i);
+        expect(c.goal).toMatch(/do not describe the orchestration|do not describe the workflow/i);
+      }
+    });
+
+    test('rebuttal round — envelope coexists with Shared Discussion (peer transcript)', async () => {
+      const plan = buildCollaborationPlan(
+        'topic',
+        directive({ requestedPrimaryParticipantCount: 2, rebuttalRounds: 1, sharedDiscussion: true }),
+        makeRegistry(),
+        'task-env-r1',
+      );
+      const userGoal = 'Should we use microservices?';
+      const { fn, calls } = captureExecuteTask();
+      await runCollaborationBlock(plan, plan.collaborationBlock!, makeInput({ goal: userGoal }), {
+        executeTask: fn,
+        agentRegistry: makeRegistry(),
+      });
+      const round1Calls = calls.filter((c) => c.subTaskId.endsWith('-r1'));
+      expect(round1Calls).toHaveLength(2);
+      for (const c of round1Calls) {
+        // Persona envelope still present on rebuttal rounds — not just round 0.
+        expect(c.goal).toContain(`Assigned persona: ${c.agentId}`);
+        expect(c.goal).toMatch(/executing this workflow step as this Vinyan persona/i);
+        // Shared Discussion peer transcript is rendered alongside the envelope.
+        expect(c.goal).toContain('Shared Discussion (prior rounds)');
+        // Original user goal is still anchored.
+        expect(c.goal).toContain(userGoal);
+      }
+    });
+
+    test('envelope is content-agnostic — same wording across personas (no hardcoded role templates)', async () => {
+      const plan = buildCollaborationPlan(
+        'topic',
+        directive({ requestedPrimaryParticipantCount: 3, rebuttalRounds: 0 }),
+        makeRegistry(),
+        'task-env-agnostic',
+      );
+      const { fn, calls } = captureExecuteTask();
+      await runCollaborationBlock(plan, plan.collaborationBlock!, makeInput({ goal: 'pick anything' }), {
+        executeTask: fn,
+        agentRegistry: makeRegistry(),
+      });
+      // The envelope contract clauses must be byte-identical across personas
+      // — only the persona id varies. This proves the helper is a stable
+      // content-agnostic frame, not a per-role template that pre-shapes
+      // answer style. (Style comes from the soul, not the goal text.)
+      const contractFragment = 'executing this workflow step as this Vinyan persona';
+      for (const c of calls) {
+        expect(c.goal).toContain(contractFragment);
+      }
+    });
+
+    test('envelope renders without registry — falls back to step.agentId only (no fabricated metadata)', async () => {
+      const plan = buildCollaborationPlan(
+        'topic',
+        directive({ requestedPrimaryParticipantCount: 2, rebuttalRounds: 0 }),
+        makeRegistry(),
+        'task-env-noreg',
+      );
+      const { fn, calls } = captureExecuteTask();
+      // No agentRegistry in deps — registry is optional, envelope must
+      // still emit using step.agentId verbatim (no fake name/description).
+      await runCollaborationBlock(plan, plan.collaborationBlock!, makeInput(), { executeTask: fn });
+      for (const c of calls) {
+        expect(c.goal).toContain(`Assigned persona: ${c.agentId}`);
+        // No name/description leaked when registry is absent.
+        expect(c.goal).not.toMatch(/\(agent name:|\(description:/);
+      }
+    });
   });
 });

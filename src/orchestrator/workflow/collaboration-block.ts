@@ -27,6 +27,7 @@
 import type { AuditEntry } from '../../core/audit.ts';
 import { emitAuditEntry } from '../../core/audit-emit.ts';
 import type { VinyanBus } from '../../core/bus.ts';
+import type { AgentRegistry } from '../agents/registry.ts';
 import { hierarchyFromInput } from '../observability/audit-hierarchy.ts';
 import type { TaskInput, TaskResult } from '../types.ts';
 import {
@@ -36,12 +37,7 @@ import {
   type InjectionDecision,
   type ThoughtView,
 } from './cot-injection.ts';
-import type {
-  CollaborationBlock,
-  WorkflowPlan,
-  WorkflowStep,
-  WorkflowStepResult,
-} from './types.ts';
+import type { CollaborationBlock, WorkflowPlan, WorkflowStep, WorkflowStepResult } from './types.ts';
 
 export interface CollaborationBlockDeps {
   executeTask: (input: TaskInput) => Promise<TaskResult>;
@@ -53,6 +49,15 @@ export interface CollaborationBlockDeps {
    * via `cot.reuse_max_staleness_ms`. Absent ⇒ module default.
    */
   getCotStalenessMs?: () => number;
+  /**
+   * Optional agent registry. When wired the persona execution envelope
+   * additionally surfaces the assigned persona's `name` and one-line
+   * `description` so the LLM has full identity context inside the user
+   * prompt — not only inside the system prompt. Optional by design:
+   * minimal test setups (mocks without a registry) still emit a valid
+   * envelope using `step.agentId` alone, no fabricated metadata.
+   */
+  agentRegistry?: AgentRegistry;
 }
 
 export interface CollaborationBlockResult {
@@ -189,11 +194,12 @@ export async function runCollaborationBlock(
   for (let round = 0; round < block.rounds; round++) {
     const roundStartedAt = clock();
     const dispatchTargets = primarySteps.map((step) => {
-      const transcript = round === 0
-        ? null
-        : block.sharedDiscussion
-          ? buildSharedDiscussionContext(step, primarySteps, roundOutputs, roundStatuses, round, block)
-          : null;
+      const transcript =
+        round === 0
+          ? null
+          : block.sharedDiscussion
+            ? buildSharedDiscussionContext(step, primarySteps, roundOutputs, roundStatuses, round, block)
+            : null;
       // CoT continuity (L1): on rebuttal rounds, build the prior-round
       // own-thoughts block via `cot-injection.evaluateInjection` and
       // emit a `kind:'decision'` audit row for A8 traceability.
@@ -218,6 +224,7 @@ export async function runCollaborationBlock(
         round,
         block,
         cotBlock,
+        deps.agentRegistry,
       );
       const subInput: TaskInput = {
         ...parentInput,
@@ -237,18 +244,14 @@ export async function runCollaborationBlock(
       return { step, subInput };
     });
 
-    const settled = await Promise.allSettled(
-      dispatchTargets.map((t) => deps.executeTask(t.subInput)),
-    );
+    const settled = await Promise.allSettled(dispatchTargets.map((t) => deps.executeTask(t.subInput)));
     const roundCompletedAt = clock();
 
     for (let i = 0; i < dispatchTargets.length; i++) {
       const { step } = dispatchTargets[i]!;
       const settledI = settled[i]!;
       if (settledI.status === 'rejected') {
-        const errMsg = settledI.reason instanceof Error
-          ? settledI.reason.message
-          : String(settledI.reason);
+        const errMsg = settledI.reason instanceof Error ? settledI.reason.message : String(settledI.reason);
         roundOutputs.get(step.id)!.push(`[round ${round + 1} failed: ${errMsg}]`);
         roundStatuses.get(step.id)!.push('failed');
         roundTokens.get(step.id)!.push(0);
@@ -272,10 +275,7 @@ export async function runCollaborationBlock(
       }
       const result = settledI.value;
       const answer = typeof result.answer === 'string' ? result.answer : '';
-      const tokens =
-        typeof result.trace?.tokensConsumed === 'number'
-          ? result.trace.tokensConsumed
-          : 0;
+      const tokens = typeof result.trace?.tokensConsumed === 'number' ? result.trace.tokensConsumed : 0;
       const status: 'completed' | 'failed' =
         result.status === 'completed' || result.status === 'partial' ? 'completed' : 'failed';
       roundOutputs.get(step.id)!.push(answer);
@@ -322,9 +322,7 @@ export async function runCollaborationBlock(
       }
     }
     const finalOutput =
-      lastSuccessIdx >= 0
-        ? outputs[lastSuccessIdx]!
-        : (outputs[outputs.length - 1] ?? '[every round failed]');
+      lastSuccessIdx >= 0 ? outputs[lastSuccessIdx]! : (outputs[outputs.length - 1] ?? '[every round failed]');
     const overallStatus: 'completed' | 'failed' = lastSuccessIdx >= 0 ? 'completed' : 'failed';
 
     const result: WorkflowStepResult = {
@@ -423,10 +421,7 @@ function emitCotInjectionDecision(
   deps: CollaborationBlockDeps,
 ): void {
   if (!deps.bus) return;
-  const verdict =
-    decision.kind === 'inject'
-      ? `cot-inject:${decision.thoughts.length}`
-      : `cot-skip:${decision.reason}`;
+  const verdict = decision.kind === 'inject' ? `cot-inject:${decision.thoughts.length}` : `cot-skip:${decision.reason}`;
   const rationale =
     decision.kind === 'inject'
       ? `Injected ${decision.thoughts.length} thought(s) from ${priorSubTaskId} into round ${round + 1} of step ${step.id}` +
@@ -439,9 +434,7 @@ function emitCotInjectionDecision(
   // `type: 'event'` references the original `audit:entry` event id (the
   // wrapper.id we captured at thought emit time).
   const evidenceRefs =
-    decision.kind === 'inject'
-      ? decision.thoughts.map((t) => ({ type: 'event' as const, eventId: t.id }))
-      : undefined;
+    decision.kind === 'inject' ? decision.thoughts.map((t) => ({ type: 'event' as const, eventId: t.id })) : undefined;
   // Wrapper.subTaskId points to the TARGET sub-task (the round-N+1 task
   // that consumes the inject), so phase-verify of that sub-task can
   // locate this decision row via a single query on the parent's audit
@@ -475,19 +468,23 @@ function subTaskId(parentTaskId: string, stepId: string, round: number): string 
 
 function describePrimary(step: WorkflowStep, totalRounds: number): string {
   const personaLabel = step.agentId ?? step.id;
-  return totalRounds > 1
-    ? `${personaLabel} · ${totalRounds} rounds`
-    : `${personaLabel} answers`;
+  return totalRounds > 1 ? `${personaLabel} · ${totalRounds} rounds` : `${personaLabel} answers`;
 }
 
 /**
  * Compose the primary participant's per-round sub-task goal.
  *
- *   Round 0: original user goal verbatim.
- *   Round N>0 (sharedDiscussion=true): goal + "## Shared Discussion (prior rounds)"
- *     block built from peer outputs.
- *   Round N>0 (sharedDiscussion=false): goal + "## Round N of M" header so
- *     the participant knows the round count even without shared transcripts.
+ *   Round 0: original user goal verbatim, prepended with the persona
+ *     execution envelope.
+ *   Round N>0 (sharedDiscussion=true): envelope + goal + "## Shared
+ *     Discussion (prior rounds)" block built from peer outputs.
+ *   Round N>0 (sharedDiscussion=false): envelope + goal + "## Round N of M"
+ *     header so the participant knows the round count even without shared
+ *     transcripts.
+ *
+ * The envelope is the same content-agnostic frame across all personas —
+ * style/voice comes from the persona's soul (system prompt), never from
+ * keyword-shaped goal text.
  */
 function composePrimaryGoal(
   step: WorkflowStep,
@@ -496,27 +493,64 @@ function composePrimaryGoal(
   round: number,
   block: CollaborationBlock,
   cotBlock: string | null,
+  registry?: AgentRegistry,
 ): string {
   const personaLabel = step.agentId ?? step.id;
-  const baseGoal = parentGoal;
-  if (round === 0) {
-    return baseGoal;
+  const envelope = buildPersonaExecutionEnvelope(step, registry);
+  const sections: string[] = [envelope, parentGoal];
+  if (round > 0) {
+    if (transcript) {
+      sections.push(transcript);
+    } else {
+      sections.push(
+        `## Round ${round + 1} of ${block.rounds}\nYou are **${personaLabel}**. Refine, deepen, or strengthen your prior answer — do NOT simply repeat your previous turn.`,
+      );
+    }
+    if (cotBlock) sections.push(cotBlock);
   }
-  // Composition order on rebuttal rounds:
-  //   parent goal → peer transcript (if shared discussion) → own CoT (if inject)
-  // Peer transcript first because it primes "what others said"; own CoT
-  // second so it reads as "and here's how I argued, let me refine".
-  // The round-of-M scaffolding (when no shared transcript) sits between.
-  const sections: string[] = [baseGoal];
-  if (transcript) {
-    sections.push(transcript);
-  } else {
-    sections.push(
-      `## Round ${round + 1} of ${block.rounds}\nYou are **${personaLabel}**. Refine, deepen, or strengthen your prior answer — do NOT simply repeat your previous turn.`,
-    );
-  }
-  if (cotBlock) sections.push(cotBlock);
   return sections.join('\n\n');
+}
+
+/**
+ * Persona execution envelope — a content-agnostic frame prepended to every
+ * primary's per-round sub-task goal.
+ *
+ * Why this exists: distinct `agentId` values + per-persona system prompts
+ * are not enough on their own. With identical user-prompt text across all
+ * primaries, smaller LLMs converge on a generic "Vinyan-style" answer
+ * regardless of which soul fired. The envelope re-anchors the persona
+ * INSIDE the user prompt the LLM is asked to answer, so identity survives
+ * even when the system prompt is short, partially compacted, or weakened
+ * by upstream wrappers.
+ *
+ * What this is NOT: a per-role template that pre-shapes answer style. We
+ * deliberately use the same wording for every persona — the only varying
+ * fields are the persona id and (when registry is wired) the registered
+ * name + description. Style comes from the soul, never from this envelope.
+ *
+ * Honesty (A2): when no registry is wired, the envelope emits the persona
+ * id alone. We never fabricate a name/description; absence stays absent.
+ */
+function buildPersonaExecutionEnvelope(step: WorkflowStep, registry?: AgentRegistry): string {
+  const personaId = step.agentId ?? step.id;
+  const lines: string[] = ['[PERSONA EXECUTION CONTRACT]', `Assigned persona: ${personaId}`];
+  if (registry && step.agentId) {
+    try {
+      const agent = registry.getAgent(step.agentId);
+      if (agent) {
+        if (agent.name && agent.name !== personaId) lines.push(`Persona name: ${agent.name}`);
+        if (agent.description) lines.push(`Persona description: ${agent.description}`);
+      }
+    } catch {
+      /* registry without getAgent — degrade silently to id-only envelope */
+    }
+  }
+  lines.push(
+    'You are executing this workflow step as this Vinyan persona. Use your registered persona / soul / system prompt as the primary frame for voice, judgment, and approach.',
+    'Produce only your own answer as the assigned persona. Do not role-play or simulate other agents in this debate. Do not describe the orchestration, the workflow, or what other personas would say.',
+    'Answer the user request below directly as the assigned persona.',
+  );
+  return lines.join('\n');
 }
 
 /**
@@ -574,11 +608,7 @@ function buildSharedDiscussionContext(
  * primary gets a fair share of the total budget. Token budget honours
  * the planner-assigned `step.budgetFraction`.
  */
-function deriveSubBudget(
-  parentInput: TaskInput,
-  step: WorkflowStep,
-  block: CollaborationBlock,
-): TaskInput['budget'] {
+function deriveSubBudget(parentInput: TaskInput, step: WorkflowStep, block: CollaborationBlock): TaskInput['budget'] {
   const totalSlots = Math.max(1, block.primaryStepIds.length * block.rounds);
   const perSlotMs = Math.floor(parentInput.budget.maxDurationMs / totalSlots);
   return {

@@ -811,6 +811,50 @@ If you have nothing to change, return empty arrays — do NOT propose unnecessar
     },
   });
 
+  // T4 (Yinyan counterfactual replay): META-directives derived from prior
+  // failures' classifications. Distinct from the [FAILED APPROACHES] section
+  // above (which describes what failed) — this section tells the LLM HOW to
+  // behave so the same failure category does not recur on this retry. Sits
+  // at priority 275 so it renders immediately after the failure list, before
+  // the active hypotheses block.
+  registry.register({
+    id: 'counterfactual-constraints',
+    target: 'user',
+    cache: 'ephemeral',
+    volatility: 'turn',
+    priority: 275,
+    render: (ctx) => {
+      // Aggregate constraints across all failed approaches, deduplicating by
+      // category. The latest occurrence wins (newer failures supersede older
+      // ones for the same category) and `failureCount` reflects the latest
+      // observation only — historical counts stay in `failedApproaches[]`.
+      const byCategory = new Map<string, { directive: string; failureCount: number; evidence: string[] }>();
+      for (const fa of ctx.memory.failedApproaches) {
+        if (!fa.counterfactualConstraints) continue;
+        for (const c of fa.counterfactualConstraints) {
+          byCategory.set(c.category, {
+            directive: c.negativeDirective,
+            failureCount: c.failureCount,
+            evidence: c.evidence,
+          });
+        }
+      }
+      if (byCategory.size === 0) return null;
+      const sortedCategories = [...byCategory.keys()].sort();
+      const lines: string[] = [
+        '[COUNTERFACTUAL CONSTRAINTS — derived from prior failures, follow these on this attempt]',
+      ];
+      for (const cat of sortedCategories) {
+        const entry = byCategory.get(cat);
+        if (!entry) continue;
+        const evidenceTail =
+          entry.evidence.length > 0 ? `\n    evidence: ${entry.evidence.map((e) => clean(e)).join(' | ')}` : '';
+        lines.push(`  • ${cat} (×${entry.failureCount}): ${clean(entry.directive)}${evidenceTail}`);
+      }
+      return lines.join('\n');
+    },
+  });
+
   registry.register({
     id: 'hypotheses',
     target: 'user',

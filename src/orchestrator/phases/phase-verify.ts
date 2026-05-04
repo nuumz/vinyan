@@ -22,6 +22,7 @@ import {
   deriveConfidenceDecision,
   PIPELINE_THRESHOLDS,
 } from '../pipeline-confidence.ts';
+import { buildCounterfactualConstraints } from '../thinking/counterfactual-constraint.ts';
 import type {
   EngineSelectionResult,
   ExecutionTrace,
@@ -697,13 +698,29 @@ export async function executeVerifyPhase(
           reVerifyPassed = true; // Signal success to coordinator
         } else {
           const classified = classifyAllFailures(verification.verdicts);
+          // T4 (Yinyan counterfactual replay): convert classified failures into
+          // META-directives the next attempt's prompt assembler renders as a
+          // dedicated `[COUNTERFACTUAL CONSTRAINTS]` section. The transformation
+          // is deterministic (A3) and additive — `classified` keeps feeding the
+          // existing `[FAILED APPROACHES]` section, the counterfactual array
+          // tells the LLM HOW to behave so the same category does not recur.
+          const counterfactual = buildCounterfactualConstraints(classified);
           workingMemory.recordFailedApproach(
             trace.approach,
             verification.reason ?? 'unknown',
             verificationConfidence,
             failedOracles[0],
             classified.length > 0 ? classified : undefined,
+            counterfactual.length > 0 ? counterfactual : undefined,
           );
+          if (counterfactual.length > 0) {
+            deps.bus?.emit('thinking:counterfactual-retry', {
+              taskId: input.id,
+              routingLevel: routing.level,
+              retryCount: retry + 1,
+              failureReason: verification.reason ?? 'unknown',
+            });
+          }
           if (isAgenticResult && lastAgentResult) {
             workingMemory.addPriorAttempt(buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed'));
           }
@@ -728,13 +745,28 @@ export async function executeVerifyPhase(
           composite: pipelineConf?.composite,
           fromLevel: routing.level,
         });
+        const escalateClassified = classifyAllFailures(verification.verdicts);
+        // T4: emit counterfactual constraints on escalation as well — the
+        // escalated attempt at L(n+1) inherits the same WorkingMemory and
+        // benefits from the same negative directives. Same axiom invariants
+        // as the retry branch above.
+        const escalateCounterfactual = buildCounterfactualConstraints(escalateClassified);
         workingMemory.recordFailedApproach(
           trace.approach,
           verification.reason ?? 'unknown',
           verificationConfidence,
           failedOracles[0],
-          classifyAllFailures(verification.verdicts),
+          escalateClassified,
+          escalateCounterfactual.length > 0 ? escalateCounterfactual : undefined,
         );
+        if (escalateCounterfactual.length > 0) {
+          deps.bus?.emit('thinking:counterfactual-retry', {
+            taskId: input.id,
+            routingLevel: routing.level,
+            retryCount: retry + 1,
+            failureReason: verification.reason ?? 'unknown',
+          });
+        }
         if (isAgenticResult && lastAgentResult) {
           workingMemory.addPriorAttempt(buildAgentSessionSummary(lastAgentResult, retry, 'oracle_failed'));
         }

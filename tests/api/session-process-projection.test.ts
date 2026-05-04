@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { SessionProcessProjectionService } from '../../src/api/projections/session-process-projection.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
+import { TaskEventStore } from '../../src/db/task-event-store.ts';
 
 let db: Database;
 let sessionStore: SessionStore;
@@ -139,5 +140,113 @@ describe('SessionProcessProjectionService.build', () => {
     expect(proj?.lifecycle.sessionId).toBe('sess-meta');
     expect(proj?.lifecycle.title).toBe('My audit session');
     expect(proj?.lifecycle.source).toBe('cli');
+  });
+
+  test('descendantTasks defaults to [] when taskEventStore is not wired', () => {
+    plantSession({ id: 'sess-no-events' });
+    plantTask('sess-no-events', 'root-1', 'completed');
+    const proj = service.build('sess-no-events');
+    expect(proj?.descendantTasks).toEqual([]);
+  });
+});
+
+describe('SessionProcessProjectionService.build with taskEventStore', () => {
+  test('surfaces sub-agent tasks recorded only in task_events', () => {
+    const sid = plantSession({ id: 'sess-multi' });
+    plantTask(sid, 'root-1', 'running');
+    const taskEventStore = new TaskEventStore(db);
+    // Root task event
+    taskEventStore.append({
+      taskId: 'root-1',
+      sessionId: sid,
+      eventType: 'task:start',
+      payload: { taskId: 'root-1', sessionId: sid },
+      ts: 1100,
+    });
+    // Two delegate sub-tasks dispatched by root-1
+    taskEventStore.append({
+      taskId: 'sub-A',
+      sessionId: sid,
+      parentTaskId: 'root-1',
+      eventType: 'task:start',
+      payload: { taskId: 'sub-A', sessionId: sid, input: { parentTaskId: 'root-1' } },
+      ts: 1150,
+    });
+    taskEventStore.append({
+      taskId: 'sub-A',
+      sessionId: sid,
+      parentTaskId: 'root-1',
+      eventType: 'task:complete',
+      payload: { taskId: 'sub-A', result: { id: 'sub-A', status: 'completed' } },
+      ts: 1200,
+    });
+    taskEventStore.append({
+      taskId: 'sub-B',
+      sessionId: sid,
+      parentTaskId: 'root-1',
+      eventType: 'task:start',
+      payload: { taskId: 'sub-B', sessionId: sid, input: { parentTaskId: 'root-1' } },
+      ts: 1175,
+    });
+    // sub-B has no task:complete → should report as 'running'
+
+    const enriched = new SessionProcessProjectionService({ sessionStore, taskEventStore });
+    const proj = enriched.build(sid);
+    expect(proj).not.toBeNull();
+    // root-1 stays in tasks (authoritative from session_tasks); the
+    // descendants tier excludes it because it's already a root.
+    const descendantIds = proj!.descendantTasks.map((d) => d.taskId).sort();
+    expect(descendantIds).toEqual(['sub-A', 'sub-B']);
+    const subA = proj!.descendantTasks.find((d) => d.taskId === 'sub-A')!;
+    expect(subA.parentTaskId).toBe('root-1');
+    expect(subA.status).toBe('completed');
+    expect(subA.eventCount).toBe(2);
+    const subB = proj!.descendantTasks.find((d) => d.taskId === 'sub-B')!;
+    expect(subB.status).toBe('running');
+    expect(subB.eventCount).toBe(1);
+  });
+
+  test('respects maxDescendantTasks cap', () => {
+    const sid = plantSession({ id: 'sess-cap' });
+    const taskEventStore = new TaskEventStore(db);
+    for (let i = 0; i < 10; i++) {
+      taskEventStore.append({
+        taskId: `sub-${i}`,
+        sessionId: sid,
+        parentTaskId: 'root-X',
+        eventType: 'task:start',
+        payload: { taskId: `sub-${i}` },
+        ts: 1000 + i,
+      });
+    }
+    const enriched = new SessionProcessProjectionService({
+      sessionStore,
+      taskEventStore,
+      maxDescendantTasks: 3,
+    });
+    const proj = enriched.build(sid);
+    expect(proj!.descendantTasks.length).toBe(3);
+  });
+
+  test('failed sub-task derived status maps cleanly', () => {
+    const sid = plantSession({ id: 'sess-fail' });
+    const taskEventStore = new TaskEventStore(db);
+    taskEventStore.append({
+      taskId: 'sub-fail',
+      sessionId: sid,
+      eventType: 'task:start',
+      payload: {},
+      ts: 1000,
+    });
+    taskEventStore.append({
+      taskId: 'sub-fail',
+      sessionId: sid,
+      eventType: 'task:complete',
+      payload: { result: { id: 'sub-fail', status: 'failed' } },
+      ts: 1100,
+    });
+    const enriched = new SessionProcessProjectionService({ sessionStore, taskEventStore });
+    const proj = enriched.build(sid);
+    expect(proj!.descendantTasks[0]!.status).toBe('failed');
   });
 });

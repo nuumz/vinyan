@@ -4700,6 +4700,10 @@ export class VinyanAPIServer {
     if (this.sessionProcessProjectionService) return this.sessionProcessProjectionService;
     this.sessionProcessProjectionService = new SessionProcessProjectionService({
       sessionStore: this.deps.sessionManager.getSessionStore(),
+      // Optional — when the orchestrator wires TaskEventStore the projection
+      // surfaces descendant (sub-agent / delegate) tasks alongside the roots.
+      // Without it, `descendantTasks: []` keeps the response shape stable.
+      ...(this.deps.taskEventStore ? { taskEventStore: this.deps.taskEventStore } : {}),
     });
     return this.sessionProcessProjectionService;
   }

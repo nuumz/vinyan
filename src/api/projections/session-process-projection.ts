@@ -56,6 +56,7 @@
  *   change log if the audit UI ever needs "title was 'X', then 'Y'".
  */
 import type { SessionRow, SessionStore, SessionTaskRow } from '../../db/session-store.ts';
+import type { DerivedTaskStatus, TaskEventStore, TaskNodeRow } from '../../db/task-event-store.ts';
 
 export interface SessionProcessLifecycle {
   sessionId: string;
@@ -79,6 +80,27 @@ export interface SessionProcessTaskSummary {
   archivedAt: number | null;
 }
 
+/**
+ * One descendant task discovered through `task_events` membership rather
+ * than the `session_tasks` table. The SessionManager only seeds root tasks
+ * into `session_tasks`; sub-agent / delegate tasks live in `task_events`
+ * with their `session_id` backfilled via the recorder's pre-seed cache.
+ *
+ * `parentTaskId` is `null` when the recorder has not yet associated the
+ * row with a parent (rare — every delegate carries `parentTaskId` from
+ * `task:start.input.parentTaskId`). `status` is derived from the latest
+ * `task:complete` event when available; otherwise the task is reported as
+ * `'running'` (saw `task:start`) or `'unknown'`.
+ */
+export interface SessionProcessDescendantTask {
+  taskId: string;
+  parentTaskId: string | null;
+  status: DerivedTaskStatus;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  eventCount: number;
+}
+
 export interface SessionProcessAuditCounts {
   /** Total tasks recorded under this session (regardless of status). */
   totalTasks: number;
@@ -93,16 +115,36 @@ export interface SessionProcessAuditCounts {
 export interface SessionProcessProjection {
   lifecycle: SessionProcessLifecycle;
   tasks: SessionProcessTaskSummary[];
+  /**
+   * Sub-agent / delegate tasks discovered through `task_events`. Empty when
+   * the projection is built without a `taskEventStore` (read-side degrades
+   * gracefully so older callers see the same shape as before, just with
+   * `descendantTasks: []`).
+   */
+  descendantTasks: SessionProcessDescendantTask[];
   audit: SessionProcessAuditCounts;
 }
 
 export interface SessionProcessProjectionDeps {
   sessionStore: SessionStore;
+  /**
+   * Optional event-store handle. When provided, the projection enriches
+   * the response with descendant tasks discovered through `task_events`
+   * membership. Without it, `descendantTasks` is `[]` (back-compatible).
+   */
+  taskEventStore?: TaskEventStore;
   /** Hard cap on returned task summaries (default 500). Older tasks paged separately if needed. */
   maxTasks?: number;
+  /**
+   * Hard cap on returned descendant tasks (default 1000). Multi-agent
+   * sessions can spawn many delegates; the cap protects the response from
+   * unbounded fanout while still surfacing the most-recently-touched ones.
+   */
+  maxDescendantTasks?: number;
 }
 
 const DEFAULT_MAX_TASKS = 500;
+const DEFAULT_MAX_DESCENDANT_TASKS = 1000;
 
 function deriveLifecycleState(row: SessionRow): SessionProcessLifecycle['lifecycleState'] {
   if (row.deleted_at !== null) return 'trashed';
@@ -143,6 +185,8 @@ export class SessionProcessProjectionService {
       archivedAt: t.archived_at ?? null,
     }));
 
+    const descendantTasks = this.buildDescendantTasks(sessionId, tasks);
+
     const audit: SessionProcessAuditCounts = {
       totalTasks: tasks.length,
       pendingTasks: tasks.filter((t) => t.status === 'pending').length,
@@ -153,6 +197,49 @@ export class SessionProcessProjectionService {
       archivedTasks: tasks.filter((t) => t.archivedAt !== null).length,
     };
 
-    return { lifecycle, tasks, audit };
+    return { lifecycle, tasks, descendantTasks, audit };
+  }
+
+  /**
+   * Resolve descendant tasks from `task_events` (sub-agent / delegate
+   * tasks). Filters out task ids already present as roots in `tasks`
+   * because those carry authoritative status from `session_tasks`.
+   *
+   * Degrades to `[]` when no event store is wired or the session has no
+   * recorded events yet — the read path stays compatible with older
+   * deployments that haven't run the recorder.
+   */
+  private buildDescendantTasks(
+    sessionId: string,
+    rootTasks: readonly SessionProcessTaskSummary[],
+  ): SessionProcessDescendantTask[] {
+    const store = this.deps.taskEventStore;
+    if (!store) return [];
+    const cap = this.deps.maxDescendantTasks ?? DEFAULT_MAX_DESCENDANT_TASKS;
+    const rootIds = new Set(rootTasks.map((t) => t.taskId));
+
+    let nodes: TaskNodeRow[];
+    try {
+      nodes = store.listSessionTaskNodes(sessionId);
+    } catch {
+      // The event store is best-effort — a transient SQLite hiccup must
+      // not poison the projection (the root tasks tier is still useful).
+      return [];
+    }
+
+    const descendants: SessionProcessDescendantTask[] = [];
+    for (const node of nodes) {
+      if (rootIds.has(node.taskId)) continue;
+      descendants.push({
+        taskId: node.taskId,
+        parentTaskId: node.parentTaskId,
+        status: node.derivedStatus,
+        firstSeenAt: node.firstSeenAt,
+        lastSeenAt: node.lastSeenAt,
+        eventCount: node.eventCount,
+      });
+      if (descendants.length >= cap) break;
+    }
+    return descendants;
   }
 }

@@ -2,8 +2,10 @@
  * Memory Wiki — trace bridge contract.
  *
  * Pins the gate semantics + ingestion path: `task:complete` events
- * with high-signal outcomes (non-success / L2+ / predictionError) are
- * fed to `ingestor.ingestTrace`; routine L0/L1 successes are skipped.
+ * that produced reasoning mass (non-success / L1+ / predictionError) are
+ * fed to `ingestor.ingestTrace`; only L0 routine successes are skipped.
+ * The stricter `highSignalTraceGate` (L2+ only) stays exposed for
+ * deployments that prefer the older filter.
  */
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
@@ -17,6 +19,7 @@ import {
   attachTraceBridge,
   buildTraceSummaryMarkdown,
   defaultTraceGate,
+  highSignalTraceGate,
 } from '../../../src/memory/wiki/trace-bridge.ts';
 import type { ExecutionTrace, TaskResult } from '../../../src/orchestrator/types.ts';
 
@@ -54,8 +57,11 @@ function makeResult(overrides: Partial<TaskResult> = {}, traceOverrides: Partial
 }
 
 describe('defaultTraceGate', () => {
-  test('skips routine L0/L1 success', () => {
+  test('skips routine L0 success', () => {
     expect(defaultTraceGate(makeResult())).toBe('skip');
+  });
+  test('ingests L1 successes (broader than the legacy gate)', () => {
+    expect(defaultTraceGate(makeResult({}, { routingLevel: 1 as ExecutionTrace['routingLevel'] }))).toBe('ingest');
   });
   test('ingests on non-success outcome', () => {
     expect(defaultTraceGate(makeResult({ status: 'failed' }))).toBe('ingest');
@@ -63,9 +69,7 @@ describe('defaultTraceGate', () => {
     expect(defaultTraceGate(makeResult({ status: 'partial' }))).toBe('ingest');
   });
   test('ingests on L2+ even when successful', () => {
-    expect(
-      defaultTraceGate(makeResult({}, { routingLevel: 2 as ExecutionTrace['routingLevel'] })),
-    ).toBe('ingest');
+    expect(defaultTraceGate(makeResult({}, { routingLevel: 2 as ExecutionTrace['routingLevel'] }))).toBe('ingest');
   });
   test('ingests on prediction error', () => {
     expect(
@@ -82,6 +86,17 @@ describe('defaultTraceGate', () => {
         ),
       ),
     ).toBe('ingest');
+  });
+});
+
+describe('highSignalTraceGate (legacy / strict opt-in)', () => {
+  test('skips L0 and L1 successes', () => {
+    expect(highSignalTraceGate(makeResult())).toBe('skip');
+    expect(highSignalTraceGate(makeResult({}, { routingLevel: 1 as ExecutionTrace['routingLevel'] }))).toBe('skip');
+  });
+  test('ingests L2+ successes and any non-success', () => {
+    expect(highSignalTraceGate(makeResult({}, { routingLevel: 2 as ExecutionTrace['routingLevel'] }))).toBe('ingest');
+    expect(highSignalTraceGate(makeResult({ status: 'failed' }))).toBe('ingest');
   });
 });
 
@@ -102,9 +117,9 @@ describe('attachTraceBridge', () => {
 
     bus.emit('task:complete', { result: makeResult({ status: 'failed' }) });
 
-    const c = (db
-      .query("SELECT COUNT(*) as c FROM memory_wiki_sources WHERE kind = 'trace'")
-      .get() as { c: number } | null)?.c;
+    const c = (
+      db.query("SELECT COUNT(*) as c FROM memory_wiki_sources WHERE kind = 'trace'").get() as { c: number } | null
+    )?.c;
     expect(c).toBe(1);
     bridge.off();
   });
@@ -125,9 +140,9 @@ describe('attachTraceBridge', () => {
 
     bus.emit('task:complete', { result: makeResult() }); // L0 success
 
-    const c = (db
-      .query("SELECT COUNT(*) as c FROM memory_wiki_sources WHERE kind = 'trace'")
-      .get() as { c: number } | null)?.c;
+    const c = (
+      db.query("SELECT COUNT(*) as c FROM memory_wiki_sources WHERE kind = 'trace'").get() as { c: number } | null
+    )?.c;
     expect(c).toBe(0);
     bridge.off();
   });
@@ -147,9 +162,9 @@ describe('attachTraceBridge', () => {
     });
     bridge.off();
     bus.emit('task:complete', { result: makeResult({ status: 'failed' }) });
-    const c = (db
-      .query("SELECT COUNT(*) as c FROM memory_wiki_sources WHERE kind = 'trace'")
-      .get() as { c: number } | null)?.c;
+    const c = (
+      db.query("SELECT COUNT(*) as c FROM memory_wiki_sources WHERE kind = 'trace'").get() as { c: number } | null
+    )?.c;
     expect(c).toBe(0);
   });
 
@@ -168,9 +183,7 @@ describe('attachTraceBridge', () => {
       dispatcher: (fn) => fn(),
       onError: (_id, err) => errors.push(err),
     });
-    expect(() =>
-      bus.emit('task:complete', { result: makeResult({ status: 'failed' }) }),
-    ).not.toThrow();
+    expect(() => bus.emit('task:complete', { result: makeResult({ status: 'failed' }) })).not.toThrow();
     expect(errors.length).toBe(1);
     bridge.off();
   });

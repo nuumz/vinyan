@@ -111,6 +111,51 @@ export interface TreeEventPage {
 }
 
 /**
+ * Coarse status enum derived from `task:complete` payloads. Mirrors the
+ * status strings produced by the orchestrator's `TaskResult.status` plus
+ * `'running'` (saw `task:start` only) and `'unknown'` (no recognizable
+ * marker). Consumers map this onto their own enums (e.g. the session
+ * projection collapses `'input-required'` → `'running'`).
+ */
+export type DerivedTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'input-required'
+  | 'unknown';
+
+type RawTaskStatus = string;
+
+export interface TaskNodeRow {
+  taskId: string;
+  parentTaskId: string | null;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  eventCount: number;
+  derivedStatus: DerivedTaskStatus;
+}
+
+function deriveTaskStatus(raw: RawTaskStatus | undefined): DerivedTaskStatus {
+  switch (raw) {
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+    case 'input-required':
+      return raw;
+    case 'pending':
+      return 'pending';
+    case 'running':
+      return 'running';
+    case undefined:
+      return 'running';
+    default:
+      return 'unknown';
+  }
+}
+
+/**
  * Defensive cap on the number of taskIds resolved into a single tree query.
  * Prevents a runaway delegation graph (or accidental cycle detected late)
  * from producing a multi-thousand-placeholder IN-list. The handler reports
@@ -310,6 +355,74 @@ export class TaskEventStore {
       )
       .all(taskId, taskId);
     return rows.map((r) => r.child_task_id);
+  }
+
+  /**
+   * Return one summary row per `task_id` whose events were recorded under
+   * `sessionId`. Powers the descendant-task surface on
+   * `/api/v1/sessions/:sid/process-state` so the audit UI can show every
+   * sub-agent task spawned inside a session, not just the root tasks the
+   * SessionManager seeded into `session_tasks`.
+   *
+   * `derivedStatus` peeks at the last `task:complete` event (if any),
+   * mapping `result.status` onto the projection's enum. Tasks with only a
+   * `task:start` are reported as `'running'`; tasks with no recognizable
+   * marker fall back to `'unknown'`. The projection layer maps `'unknown'`
+   * onto its own enum.
+   */
+  listSessionTaskNodes(sessionId: string): TaskNodeRow[] {
+    const rows = this.db
+      .query<
+        {
+          task_id: string;
+          parent_task_id: string | null;
+          first_ts: number;
+          last_ts: number;
+          event_count: number;
+        },
+        [string]
+      >(
+        `SELECT task_id,
+                MAX(parent_task_id) AS parent_task_id,
+                MIN(ts) AS first_ts,
+                MAX(ts) AS last_ts,
+                COUNT(*) AS event_count
+           FROM task_events
+          WHERE session_id = ?
+          GROUP BY task_id
+          ORDER BY first_ts ASC`,
+      )
+      .all(sessionId);
+
+    const completeRows = this.db
+      .query<{ task_id: string; payload_json: string; ts: number }, [string]>(
+        `SELECT task_id, payload_json, ts
+           FROM task_events
+          WHERE session_id = ?
+            AND event_type = 'task:complete'
+          ORDER BY ts ASC, id ASC`,
+      )
+      .all(sessionId);
+
+    const statusByTask = new Map<string, RawTaskStatus>();
+    for (const r of completeRows) {
+      try {
+        const parsed = JSON.parse(r.payload_json) as { result?: { status?: unknown } };
+        const status = parsed.result?.status;
+        if (typeof status === 'string') statusByTask.set(r.task_id, status as RawTaskStatus);
+      } catch {
+        /* ignore malformed payload */
+      }
+    }
+
+    return rows.map((r) => ({
+      taskId: r.task_id,
+      parentTaskId: r.parent_task_id,
+      firstSeenAt: r.first_ts,
+      lastSeenAt: r.last_ts,
+      eventCount: r.event_count,
+      derivedStatus: deriveTaskStatus(statusByTask.get(r.task_id)),
+    }));
   }
 
   /**

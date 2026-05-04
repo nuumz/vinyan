@@ -56,23 +56,46 @@ const defaultDispatcher = (fn: () => void): void => {
 };
 
 const defaultOnError = (taskId: string, err: unknown): void => {
-  console.warn(
-    `[vinyan-wiki] trace ingestion failed for task ${taskId}:`,
-    err instanceof Error ? err.message : err,
-  );
+  console.warn(`[vinyan-wiki] trace ingestion failed for task ${taskId}:`, err instanceof Error ? err.message : err);
 };
 
 /**
- * Default signal gate. Keeps high-signal traces; drops routine L0/L1
- * successes. Pure: no side effects, deterministic given a result.
+ * Default signal gate. Keeps any task that produced reasoning mass the
+ * wiki can summarize:
+ *
+ *   - routingLevel >= 1 (L1 heuristic / L2 analytical / L3 deliberative)
+ *   - non-`completed` status (failed, escalated, uncertain, partial,
+ *     input-required)
+ *   - non-`success` trace outcomes
+ *   - any prediction-error record (A7 — claimed-vs-actual divergence)
+ *
+ * Only L0 routine successes are dropped — they are reflex-tier replies
+ * with no oracle/agent verification trail to extract from. Earlier
+ * versions also dropped L1 successes; that proved too noisy a filter
+ * for live operators (the wiki stayed near-empty even after dozens of
+ * tasks completed because most tool-using turns route at L0 with a
+ * short-circuit success). Operators that want the older filter pass
+ * `shouldIngest: highSignalTraceGate`.
  */
 export function defaultTraceGate(result: TaskResult): TraceIngestionDecision {
   if (result.status !== 'completed') return 'ingest';
   const trace = result.trace;
+  if (trace.routingLevel >= 1) return 'ingest';
+  if (trace.outcome && trace.outcome !== 'success') return 'ingest';
+  if (trace.predictionError) return 'ingest';
+  return 'skip';
+}
+
+/**
+ * Stricter gate that mirrors the pre-2026-05 behavior: only L2+ successes
+ * or non-success outcomes pass. Exposed so deployments that hit wiki
+ * volume pressure can opt back into the noisier filter without forking.
+ */
+export function highSignalTraceGate(result: TaskResult): TraceIngestionDecision {
+  if (result.status !== 'completed') return 'ingest';
+  const trace = result.trace;
   if (trace.routingLevel >= 2) return 'ingest';
   if (trace.outcome && trace.outcome !== 'success') return 'ingest';
-  // A7 prediction error — claimed-vs-actual divergence is wiki-worthy
-  // even on a successful task because it teaches the SelfModel.
   if (trace.predictionError) return 'ingest';
   return 'skip';
 }

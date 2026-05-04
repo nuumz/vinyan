@@ -53,7 +53,10 @@ const TURN_SNIPPET_CAP = 800;
 const MAX_TURNS_FOR_SUMMARY = 24;
 const WORKING_MEMORY_SNIPPET_CAP = 2_000;
 
-export type SessionIngestionTrigger = 'session:archived' | 'session:compacted';
+export type SessionIngestionTrigger = 'session:archived' | 'session:compacted' | 'task:complete';
+
+/** Default coalescing window for `task:complete` re-ingest. */
+export const DEFAULT_TASK_COMPLETE_DEBOUNCE_MS = 5_000;
 
 export interface SessionIngestionBridgeOptions {
   readonly bus: VinyanBus;
@@ -63,6 +66,20 @@ export interface SessionIngestionBridgeOptions {
   readonly clock?: () => number;
   readonly dispatcher?: (fn: () => void) => void;
   readonly onError?: (trigger: SessionIngestionTrigger, sessionId: string, err: unknown) => void;
+  /**
+   * Debounce window for `task:complete` triggers. Multiple tasks settling
+   * within this window collapse into a single re-ingest of the parent
+   * session, so a multi-agent task that fans out N delegates produces one
+   * wiki source row rather than N. Set to `0` to disable the trigger
+   * entirely (fall back to archive/compact only). Default 5s.
+   */
+  readonly taskCompleteDebounceMs?: number;
+  /**
+   * Test hook — replace `setTimeout` so the debounce can be controlled
+   * from a unit test without real timers. Returns a handle that the
+   * bridge will call to cancel the timer.
+   */
+  readonly scheduleDebounce?: (fn: () => void, ms: number) => { cancel: () => void };
 }
 
 export interface SessionIngestionBridge {
@@ -73,22 +90,21 @@ const defaultDispatcher = (fn: () => void): void => {
   queueMicrotask(fn);
 };
 
-const defaultOnError = (
-  trigger: SessionIngestionTrigger,
-  sessionId: string,
-  err: unknown,
-): void => {
-  console.warn(
-    `[vinyan-wiki] ${trigger} ingestion failed for ${sessionId}:`,
-    err instanceof Error ? err.message : err,
-  );
+const defaultOnError = (trigger: SessionIngestionTrigger, sessionId: string, err: unknown): void => {
+  console.warn(`[vinyan-wiki] ${trigger} ingestion failed for ${sessionId}:`, err instanceof Error ? err.message : err);
 };
 
-export function attachSessionIngestionBridge(
-  opts: SessionIngestionBridgeOptions,
-): SessionIngestionBridge {
+export function attachSessionIngestionBridge(opts: SessionIngestionBridgeOptions): SessionIngestionBridge {
   const dispatch = opts.dispatcher ?? defaultDispatcher;
   const onError = opts.onError ?? defaultOnError;
+  const debounceMs = opts.taskCompleteDebounceMs ?? DEFAULT_TASK_COMPLETE_DEBOUNCE_MS;
+  const scheduleDebounce =
+    opts.scheduleDebounce ??
+    ((fn, ms) => {
+      const t = setTimeout(fn, ms);
+      (t as { unref?: () => void }).unref?.();
+      return { cancel: () => clearTimeout(t) };
+    });
 
   const handle = (trigger: SessionIngestionTrigger, sessionId: string): void => {
     dispatch(() => {
@@ -127,10 +143,44 @@ export function attachSessionIngestionBridge(
     });
   };
 
+  // Per-session debouncer for task:complete. A multi-agent workflow that
+  // settles N delegate tasks in quick succession collapses to a single
+  // re-ingest of the parent session: the wiki source is content-addressed
+  // (`deriveSourceId(kind, contentHash)`), so duplicates would collapse on
+  // insert anyway, but skipping the build saves CPU and avoids redundant
+  // log lines. The debounce timer fires after the *last* task settles
+  // within the window — it resets on every new event for the same
+  // session.
+  const debouncers = new Map<string, { cancel: () => void }>();
+  const scheduleSessionIngest = (sessionId: string): void => {
+    if (debounceMs <= 0) {
+      handle('task:complete', sessionId);
+      return;
+    }
+    debouncers.get(sessionId)?.cancel();
+    const debouncerHandle = scheduleDebounce(() => {
+      debouncers.delete(sessionId);
+      handle('task:complete', sessionId);
+    }, debounceMs);
+    debouncers.set(sessionId, debouncerHandle);
+  };
+
   const offArchived = opts.bus.on('session:archived', (e) => handle('session:archived', e.sessionId));
-  const offCompacted = opts.bus.on('session:compacted', (e) =>
-    handle('session:compacted', e.sessionId),
-  );
+  const offCompacted = opts.bus.on('session:compacted', (e) => handle('session:compacted', e.sessionId));
+
+  // task:complete payload shape: { id: taskId, result: TaskResult } where
+  // result.sessionId is set by the orchestrator when the task came from a
+  // session-bound POST. Sub-task completions also carry sessionId via the
+  // recorder's pre-seed cache, but they don't reach the bus's task:complete
+  // until the root task settles — so the debounce is keyed on the root's
+  // sessionId, which is what we want.
+  const offTaskComplete =
+    debounceMs >= 0
+      ? opts.bus.on('task:complete', (e) => {
+          const sessionId = extractSessionIdFromTaskComplete(e);
+          if (sessionId) scheduleSessionIngest(sessionId);
+        })
+      : () => {};
 
   let detached = false;
   return {
@@ -139,8 +189,33 @@ export function attachSessionIngestionBridge(
       detached = true;
       offArchived();
       offCompacted();
+      offTaskComplete();
+      for (const d of debouncers.values()) d.cancel();
+      debouncers.clear();
     },
   };
+}
+
+/**
+ * Extract the parent session id from a `task:complete` bus payload.
+ *
+ * The canonical anchor is `result.trace.sessionId` (`ExecutionTrace.sessionId`,
+ * populated by the core loop from the originating `TaskInput.sessionId`).
+ * The function is permissive about a top-level `sessionId` and a hypothetical
+ * `result.sessionId` for forward compatibility — bus payloads have grown
+ * fields before, and an extra layer of probing is cheaper than a missed
+ * re-ingest. Returns `undefined` when the task ran without a session
+ * (CLI one-shot, internal probes), in which case the bridge skips it.
+ */
+function extractSessionIdFromTaskComplete(event: unknown): string | undefined {
+  if (!event || typeof event !== 'object') return undefined;
+  const root = event as Record<string, unknown>;
+  const result = root.result as Record<string, unknown> | undefined;
+  const trace = result?.trace as Record<string, unknown> | undefined;
+  const fromTrace = typeof trace?.sessionId === 'string' ? trace.sessionId : undefined;
+  const fromResult = typeof result?.sessionId === 'string' ? result.sessionId : undefined;
+  const fromTopLevel = typeof root.sessionId === 'string' ? root.sessionId : undefined;
+  return fromTrace ?? fromResult ?? fromTopLevel;
 }
 
 // ── Pure builders (exported for tests) ──────────────────────────────────
@@ -203,9 +278,7 @@ export function buildSessionSummaryMarkdown(input: SessionSummaryInput): string 
     lines.push('');
     const omitted = totalTurns - recentTurns.length;
     const header =
-      omitted > 0
-        ? `## Recent Turns (latest ${recentTurns.length} of ${totalTurns})`
-        : `## Turns (${totalTurns})`;
+      omitted > 0 ? `## Recent Turns (latest ${recentTurns.length} of ${totalTurns})` : `## Turns (${totalTurns})`;
     lines.push(header);
     lines.push('');
     for (const turn of recentTurns) {

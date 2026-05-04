@@ -179,15 +179,31 @@ export class RealityAnchorReGrounder {
   }
 
   /**
-   * Prune work body — currently a no-op with explicit explanation.
-   * The plan §11 calls for "drop probabilistic / tier-3 cached beliefs"
-   * which requires per-persona linkage on the world-graph `facts` table
-   * (currently keyed only by `session_id`). Until that linkage lands,
-   * prune emits the audit row + reason but does no real deletion. The
-   * state machine still progresses through the stage cleanly.
+   * Prune work body — Phase C4-followup. Drops the persona's
+   * "superseded" citations: for each fact the persona has cited
+   * multiple times, keep only the latest. Collapses the belief
+   * ledger to exactly one citation per fact.
+   *
+   * Distinct from `rebuild` (time-based, drops citations >7d) and
+   * from DelusionDetector's stale check (compares against current
+   * source hash). This handles the case where the persona has
+   * RE-CITED a fact at a different hash in a later task — the
+   * earlier append-only row is now historical noise that recovery
+   * should drop.
+   *
+   * The plan §11 originally framed this as "drop tier-3 evidence"
+   * via A5 confidence tiers. The current world-graph schema doesn't
+   * carry a tier_reliability column; superseded-citation dedup is
+   * the schema-honest interpretation of the same intent (the latest
+   * citation IS the persona's most recent confidence statement;
+   * older same-fact citations are by definition superseded).
+   *
+   * No-op when the citations store wasn't wired (test fixture).
    */
-  private runPrune(_personaId: string): string {
-    return 'prune=deferred (requires world-graph persona linkage)';
+  private runPrune(personaId: string): string {
+    if (!this.citationsStore) return 'prune=skipped (no citations store)';
+    const dropped = this.citationsStore.pruneSupersededForPersona(personaId);
+    return `prune=dropped ${dropped} superseded citation(s)`;
   }
 
   /**

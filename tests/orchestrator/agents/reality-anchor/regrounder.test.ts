@@ -125,11 +125,117 @@ describe('RealityAnchorReGrounder — sub-action work bodies (Phase C4-followup)
     expect(rebuildRow?.reason).toContain('rebuild=skipped');
   });
 
-  test('prune is deferred (real work requires world-graph persona linkage)', () => {
+  test('prune skipped reason when citationsStore unwired', () => {
     const r = new RealityAnchorReGrounder({ bus, auditStore });
     r.startRegrounding('p', 'test');
     const pruneRow = auditStore.listForPersona('p').find((row) => row.stage === 'prune');
-    expect(pruneRow?.reason).toContain('prune=deferred');
+    expect(pruneRow?.reason).toContain('prune=skipped');
+  });
+
+  test('prune drops superseded citations for the persona (Phase C4-followup real work)', async () => {
+    const { PersonaFactCitationsStore } = await import('../../../../src/db/persona-fact-citations-store.ts');
+    const citationsStore = new PersonaFactCitationsStore(db);
+    // Persona 'p' cited fact 'a' three times at different hashes
+    // (e.g., file mutated between citations and persona kept observing).
+    citationsStore.recordCitation({
+      personaId: 'p',
+      factId: 'a',
+      citedAtHash: 'h1',
+      taskId: 't1',
+      phase: 'verify',
+      claimExcerpt: 'first',
+      citedAtTs: 100_000_000_000_000,
+    });
+    citationsStore.recordCitation({
+      personaId: 'p',
+      factId: 'a',
+      citedAtHash: 'h2',
+      taskId: 't2',
+      phase: 'verify',
+      claimExcerpt: 'second',
+      citedAtTs: 100_000_000_000_001,
+    });
+    citationsStore.recordCitation({
+      personaId: 'p',
+      factId: 'a',
+      citedAtHash: 'h3',
+      taskId: 't3',
+      phase: 'verify',
+      claimExcerpt: 'latest',
+      citedAtTs: 100_000_000_000_002,
+    });
+    // Singleton citation for 'b' — should not be dropped.
+    citationsStore.recordCitation({
+      personaId: 'p',
+      factId: 'b',
+      citedAtHash: 'hb',
+      taskId: 't4',
+      phase: 'verify',
+      claimExcerpt: 'b-only',
+      citedAtTs: 100_000_000_000_003,
+    });
+    // Different persona — should be untouched.
+    citationsStore.recordCitation({
+      personaId: 'q',
+      factId: 'a',
+      citedAtHash: 'q-h1',
+      taskId: 'tq',
+      phase: 'verify',
+      claimExcerpt: 'q-claim',
+      citedAtTs: 100_000_000_000_004,
+    });
+
+    // Use a clock far in the past so rebuild horizon (7d) doesn't drop
+    // anything — isolate prune's effect.
+    const r = new RealityAnchorReGrounder({
+      bus,
+      auditStore,
+      citationsStore,
+      clock: () => 100_000_000_000_005,
+    });
+    r.startRegrounding('p', 'test');
+
+    // Persona 'p': only the latest citation of 'a' (h3) + the singleton 'b' survive
+    const pCitations = citationsStore.listForPersona('p');
+    expect(pCitations).toHaveLength(2);
+    expect(pCitations.map((c) => c.factId).sort()).toEqual(['a', 'b']);
+    const aRow = pCitations.find((c) => c.factId === 'a');
+    expect(aRow?.citedAtHash).toBe('h3');
+
+    // Persona 'q' untouched
+    expect(citationsStore.listForPersona('q')).toHaveLength(1);
+
+    // Audit reason captures the drop count (2 = the older 'a' citations)
+    const auditRows = auditStore.listForPersona('p');
+    const pruneRow = auditRows.find((row) => row.stage === 'prune');
+    expect(pruneRow?.reason).toContain('prune=dropped 2');
+  });
+
+  test('prune is idempotent — re-running drops zero', async () => {
+    const { PersonaFactCitationsStore } = await import('../../../../src/db/persona-fact-citations-store.ts');
+    const citationsStore = new PersonaFactCitationsStore(db);
+    citationsStore.recordCitation({
+      personaId: 'p',
+      factId: 'a',
+      citedAtHash: 'h1',
+      taskId: 't1',
+      phase: 'verify',
+      claimExcerpt: 'x',
+      citedAtTs: 100_000_000_000_000,
+    });
+    citationsStore.recordCitation({
+      personaId: 'p',
+      factId: 'a',
+      citedAtHash: 'h2',
+      taskId: 't2',
+      phase: 'verify',
+      claimExcerpt: 'x',
+      citedAtTs: 100_000_000_000_001,
+    });
+    // First call: drops 1 superseded
+    expect(citationsStore.pruneSupersededForPersona('p')).toBe(1);
+    // Second call: nothing left to drop
+    expect(citationsStore.pruneSupersededForPersona('p')).toBe(0);
   });
 
   test('replay scans recent traces and counts delusion-flagged outcomes', async () => {

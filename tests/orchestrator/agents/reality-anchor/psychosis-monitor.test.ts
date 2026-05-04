@@ -300,6 +300,84 @@ describe('PsychosisMonitor — multi-signal at trace', () => {
   });
 });
 
+describe('PsychosisMonitor — goal_drift signal (Phase C3-followup)', () => {
+  function groundingCheck(action: 'continue' | 'request-clarification' | 'abort-unsafe-drift') {
+    return {
+      taskId: 't',
+      phase: 'verify' as const,
+      routingLevel: 1 as const,
+      policyVersion: 'v1',
+      checkedAt: 1000,
+      action,
+      reason: 'r',
+      rootGoalHash: 'h-root',
+      currentGoalHash: 'h-curr',
+      goalDrift: action !== 'continue',
+      freshnessDowngraded: false,
+      factCount: 0,
+      staleFactCount: 0,
+      evidence: [],
+    };
+  }
+
+  test('goal_drift fires when fraction of non-continue actions exceeds ceiling', () => {
+    const bus = makeBus();
+    const { events } = capturedTriggers(bus);
+    const monitor = new PsychosisMonitor({
+      bus,
+      minObservations: 5,
+      fallbackCeilings: { goal_drift: 0.3, prediction_error: 1, contradiction: 1, delusion: 1 },
+    });
+    // Each trace has 2 grounding checks: 1 continue + 1 abort = 0.5 drift rate
+    for (let i = 0; i < 5; i++) {
+      monitor.onTraceRecord(
+        trace({
+          agentId: 'p',
+          goalGrounding: [groundingCheck('continue'), groundingCheck('abort-unsafe-drift')],
+        }),
+      );
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0]?.signal).toBe('goal_drift');
+    expect(events[0]?.value).toBeCloseTo(0.5, 5);
+    expect(events[0]?.ceiling).toBe(0.3);
+  });
+
+  test('goal_drift does not fire when all actions are continue', () => {
+    const bus = makeBus();
+    const { events } = capturedTriggers(bus);
+    const monitor = new PsychosisMonitor({
+      bus,
+      minObservations: 5,
+      fallbackCeilings: { goal_drift: 0.1, prediction_error: 1, contradiction: 1, delusion: 1 },
+    });
+    for (let i = 0; i < 5; i++) {
+      monitor.onTraceRecord(
+        trace({
+          agentId: 'p',
+          goalGrounding: [groundingCheck('continue'), groundingCheck('continue')],
+        }),
+      );
+    }
+    expect(events).toHaveLength(0);
+  });
+
+  test('traces without goalGrounding contribute nothing to goal_drift mean', () => {
+    const bus = makeBus();
+    const { events } = capturedTriggers(bus);
+    const monitor = new PsychosisMonitor({
+      bus,
+      minObservations: 5,
+      fallbackCeilings: { goal_drift: 0.3, prediction_error: 1, contradiction: 1, delusion: 1 },
+    });
+    // 5 traces with no grounding info — goal_drift undefined per trace, mean undefined
+    for (let i = 0; i < 5; i++) {
+      monitor.onTraceRecord(trace({ agentId: 'p' }));
+    }
+    expect(events).toHaveLength(0);
+  });
+});
+
 describe('PsychosisMonitor — attach', () => {
   test('attach() subscribes to trace:record and returns unsubscribe', () => {
     const bus = makeBus();

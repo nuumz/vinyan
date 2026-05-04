@@ -32,12 +32,13 @@ import type { VinyanBus } from '../../../core/bus.ts';
 import type { ParameterStore } from '../../adaptive-params/parameter-store.ts';
 import type { ExecutionTrace } from '../../types.ts';
 
-export type PsychosisSignal = 'prediction_error' | 'contradiction' | 'delusion';
+export type PsychosisSignal = 'prediction_error' | 'contradiction' | 'delusion' | 'goal_drift';
 
 interface SignalSnapshot {
   readonly predictionError: number | undefined;
   readonly contradictionRate: number | undefined;
   readonly delusionRate: number | undefined;
+  readonly goalDriftRate: number | undefined;
 }
 
 /** Sliding window of recent traces for a single persona. */
@@ -106,12 +107,14 @@ const DEFAULT_CEILINGS: Record<PsychosisSignal, number> = {
   prediction_error: 0.4,
   contradiction: 0.2,
   delusion: 0.15,
+  goal_drift: 0.3,
 };
 
 const PARAM_KEY: Record<PsychosisSignal, string> = {
   prediction_error: 'psychosis.prediction_error_ceiling',
   contradiction: 'psychosis.contradiction_ceiling',
   delusion: 'psychosis.delusion_ceiling',
+  goal_drift: 'psychosis.goal_drift_ceiling',
 };
 
 export class PsychosisMonitor {
@@ -161,7 +164,7 @@ export class PsychosisMonitor {
     if (window.inCooldownAndStep()) return;
     if (window.size() < this.minObservations) return;
 
-    for (const signal of ['prediction_error', 'contradiction', 'delusion'] as const) {
+    for (const signal of ['prediction_error', 'contradiction', 'delusion', 'goal_drift'] as const) {
       const observed = window.meanFor(picker(signal));
       if (observed === undefined) continue;
       const ceiling = this.ceilingFor(signal);
@@ -201,6 +204,13 @@ export class PsychosisMonitor {
       predictionError: trace.predictionError?.error.composite,
       contradictionRate: contradictionRateOf(trace),
       delusionRate: trace.delusionResult?.delusionRate,
+      // Phase C3-followup: A10 goal-grounding integration. Reads
+      // trace.goalGrounding (populated by phase-learn from the
+      // boundary checks accumulated in PhaseContext) and computes the
+      // fraction of grounding actions that aren't 'continue' — i.e.
+      // goal drift / re-clarification / abort. Undefined when no
+      // grounding checks fired this trace.
+      goalDriftRate: goalDriftRateOf(trace),
     };
   }
 
@@ -224,7 +234,19 @@ function picker(signal: PsychosisSignal): (s: SignalSnapshot) => number | undefi
       return (s) => s.contradictionRate;
     case 'delusion':
       return (s) => s.delusionRate;
+    case 'goal_drift':
+      return (s) => s.goalDriftRate;
   }
+}
+
+function goalDriftRateOf(trace: ExecutionTrace): number | undefined {
+  const checks = trace.goalGrounding;
+  if (!checks || checks.length === 0) return undefined;
+  let drift = 0;
+  for (const c of checks) {
+    if (c.action !== 'continue') drift++;
+  }
+  return drift / checks.length;
 }
 
 function contradictionRateOf(trace: ExecutionTrace): number | undefined {

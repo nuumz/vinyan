@@ -301,6 +301,12 @@ export function verify(
     oracleName: 'goal-alignment',
     durationMs,
     opinion: fromScalar(confidence, BASE_RATE),
+    // T6 (Yinyan goal-grounding): expose the raw alignment fraction
+    // separately from `confidence` (which is capped at MAX_CONFIDENCE
+    // for heuristic-tier sources). Consumers downgrading hypothesis
+    // confidence at <0.5 / between 0.5-0.7 thresholds need the unscaled
+    // signal — they can't recover it from the capped `confidence`.
+    alignmentScore: rawConfidence,
     temporalContext: {
       validFrom: Date.now(),
       validUntil: Date.now() + TTL_MS,

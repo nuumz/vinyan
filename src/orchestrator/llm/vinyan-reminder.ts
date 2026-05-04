@@ -44,6 +44,48 @@ export function hasReminderBlock(content: string | null | undefined): boolean {
 }
 
 /**
+ * Hard cap on the rendered `[ROOT-INTENT-ANCHOR]` body so a long-running
+ * session cannot bloat the prompt by re-injecting the same goal repeatedly.
+ * 200 chars matches the budget-clamp guarantees in `agent-loop.ts` — any
+ * raw goal longer than this is truncated with an ellipsis.
+ */
+export const ROOT_INTENT_ANCHOR_CAP = 200;
+
+/**
+ * T6 (Yinyan A10 enforcement) — emit a `[ROOT-INTENT-ANCHOR]` reminder
+ * that re-states the user's original task goal alongside the current
+ * sub-goal. The agent-loop injects this at every L3 boundary so a long
+ * worker session does not silently drift into a goal-adjacent
+ * interpretation.
+ *
+ * Wraps the result in the standard `<vinyan-reminder>` envelope so the
+ * worker treats the anchor with the same protocol as other reminders.
+ * Returns `null` when both inputs are empty / blank — the caller skips
+ * injection in that case.
+ *
+ * Truncates each component to `ROOT_INTENT_ANCHOR_CAP` chars total so a
+ * pathological goal cannot push existing prompt sections out of the
+ * window. Truncation is content-sensitive (single trailing `…` ellipsis)
+ * because the worker is expected to read the anchor verbatim — silent
+ * truncation without a visible marker would mislead it about the
+ * intended scope.
+ */
+export function wrapRootIntentAnchor(rootIntent: string, currentGoal?: string): string | null {
+  const root = (rootIntent ?? '').trim();
+  if (!root) return null;
+  const current = (currentGoal ?? '').trim();
+  const rootClipped = root.length > ROOT_INTENT_ANCHOR_CAP ? `${root.slice(0, ROOT_INTENT_ANCHOR_CAP - 1)}…` : root;
+  const currentClipped =
+    current.length > ROOT_INTENT_ANCHOR_CAP ? `${current.slice(0, ROOT_INTENT_ANCHOR_CAP - 1)}…` : current;
+  const lines = [`[ROOT-INTENT-ANCHOR] Original goal: ${rootClipped}`];
+  if (currentClipped && currentClipped !== rootClipped) {
+    lines.push(`[ROOT-INTENT-ANCHOR] Current sub-goal: ${currentClipped}`);
+  }
+  lines.push('Confirm your next action serves the original goal before acting.');
+  return wrapReminder(lines.join('\n'));
+}
+
+/**
  * System-prompt description of the reminder protocol. Include this in `buildSystemPrompt`
  * so the worker LLM knows how to interpret `<vinyan-reminder>` tags when they appear in
  * tool-result messages. Kept as a constant so the exact wording is centralized and

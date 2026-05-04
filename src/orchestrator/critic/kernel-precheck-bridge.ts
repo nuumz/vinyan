@@ -36,6 +36,28 @@ import type { PerceptualHierarchy, TaskInput } from '../types.ts';
 import type { CriticContext, CriticEngine, WorkerProposal } from './critic-engine.ts';
 import { criticVerdictOf } from './critic-engine.ts';
 
+/**
+ * T6 (Yinyan A10 enforcement) thresholds for alignment-score gating.
+ * Same constants the bridge uses internally — exported so behavior tests
+ * pin against the canonical values rather than re-encoding them.
+ */
+export const ALIGNMENT_REJECT_THRESHOLD = 0.5;
+export const ALIGNMENT_AUDIT_WARNING_CEILING = 0.7;
+
+/**
+ * T6 — pluggable alignment scorer. The bridge calls this for each
+ * hypothesis when wired and translates the returned score into the
+ * downgrade ladder:
+ *   - score < 0.5 → emit `passed: false` (oracle: 'goal-alignment')
+ *   - 0.5 ≤ score ≤ 0.7 → emit `passed: true` with audit-warning reason
+ *   - score > 0.7 → no extra verdict emitted (critic verdict stands)
+ *
+ * Implementations MUST be deterministic and MUST NOT call an LLM —
+ * the bridge stays A1/A3-clean only when this scorer is rule-based
+ * (e.g. wraps `goal-alignment-verifier.ts`).
+ */
+export type AlignmentScorer = (hypothesis: Hypothesis) => number | undefined | Promise<number | undefined>;
+
 export interface KernelPreCheckBridgeOptions {
   critic: CriticEngine;
   task: TaskInput;
@@ -43,6 +65,15 @@ export interface KernelPreCheckBridgeOptions {
   acceptanceCriteria?: string[];
   /** Optional context threaded to the critic — same shape used by core-loop. */
   criticContext?: CriticContext;
+  /**
+   * T6 — optional alignment scorer. When wired, the bridge consults it
+   * AFTER the critic and emits a separate `oracle: 'goal-alignment'`
+   * verdict according to the downgrade ladder above. Critic verdicts and
+   * alignment verdicts coexist in the returned array — the selector
+   * applies BOTH when filtering hypotheses, so a hypothesis that the
+   * critic approved but goal-alignment rejected is still eliminated.
+   */
+  alignmentScorer?: AlignmentScorer;
 }
 
 /**
@@ -84,14 +115,45 @@ export function buildKernelPreCheck(opts: KernelPreCheckBridgeOptions) {
         // Omit — selector treats missing entry as pass (A2 first-class
         // uncertainty). The hypothesis survives to the Wilson / cost
         // tiebreakers.
-        continue;
+      } else {
+        verdicts.push({
+          hypothesisId: h.id,
+          passed: verdict === 'approved',
+          oracle: 'critic',
+          reason: result.reason,
+        });
       }
-      verdicts.push({
-        hypothesisId: h.id,
-        passed: verdict === 'approved',
-        oracle: 'critic',
-        reason: result.reason,
-      });
+
+      // T6 — alignment-score downgrade ladder. Independent of the critic
+      // verdict: a critic-approved hypothesis can still be eliminated by
+      // a goal-alignment score below the reject threshold (and vice
+      // versa). Two `PreCheckVerdict` rows for the same hypothesis is
+      // intentional — the selector treats `passed: false` from any
+      // oracle as a HARD eliminator, so the strictest signal wins (A5
+      // tiered trust: deterministic alignment beats heuristic critic).
+      if (opts.alignmentScorer) {
+        const score = await opts.alignmentScorer(h);
+        if (typeof score === 'number' && Number.isFinite(score)) {
+          if (score < ALIGNMENT_REJECT_THRESHOLD) {
+            verdicts.push({
+              hypothesisId: h.id,
+              passed: false,
+              oracle: 'goal-alignment',
+              reason: `alignment score ${score.toFixed(2)} < ${ALIGNMENT_REJECT_THRESHOLD} reject threshold`,
+            });
+          } else if (score <= ALIGNMENT_AUDIT_WARNING_CEILING) {
+            // Audit row — hypothesis survives the gate but the trace
+            // records why we noticed. Operators query for these rows to
+            // tune the reject threshold.
+            verdicts.push({
+              hypothesisId: h.id,
+              passed: true,
+              oracle: 'goal-alignment',
+              reason: `alignment score ${score.toFixed(2)} in audit-warning band [${ALIGNMENT_REJECT_THRESHOLD}, ${ALIGNMENT_AUDIT_WARNING_CEILING}]`,
+            });
+          }
+        }
+      }
     }
     return verdicts;
   };

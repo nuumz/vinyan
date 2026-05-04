@@ -8,7 +8,12 @@ import {
   GOAL_GROUNDING_POLICY_VERSION,
   shouldRunGoalGrounding,
 } from '../../src/orchestrator/goal-grounding.ts';
-import type { ExecutionTrace, RoutingDecision, SemanticTaskUnderstanding, TaskInput } from '../../src/orchestrator/types.ts';
+import type {
+  ExecutionTrace,
+  RoutingDecision,
+  SemanticTaskUnderstanding,
+  TaskInput,
+} from '../../src/orchestrator/types.ts';
 
 function makeInput(overrides: Partial<TaskInput> = {}): TaskInput {
   return {
@@ -111,6 +116,9 @@ describe('goal grounding', () => {
       phase: 'plan',
       startedAt: Date.now(),
       now: 500,
+      // T6 flipped extendedActionsEnabled to default true; preserve legacy
+      // 3-action assertions by opting back into the pre-T6 behavior.
+      policy: { extendedActionsEnabled: false },
     });
 
     expect(check).toMatchObject({
@@ -132,6 +140,8 @@ describe('goal grounding', () => {
       startedAt: Date.now(),
       rootGoal: 'Fix auth token refresh',
       now: 500,
+      // T6: pre-T6 legacy 3-action behavior preserved by explicit override.
+      policy: { extendedActionsEnabled: false },
     });
 
     expect(check).toMatchObject({
@@ -151,6 +161,9 @@ describe('goal grounding', () => {
       phase: 'plan',
       startedAt: Date.now(),
       now: 500,
+      // T6 flipped extendedActionsEnabled to default true; preserve legacy
+      // 3-action assertions by opting back into the pre-T6 behavior.
+      policy: { extendedActionsEnabled: false },
     });
 
     const provenance = buildGoalGroundingProvenance(input, check!);
@@ -192,6 +205,8 @@ describe('goal grounding', () => {
       startedAt: Date.now(),
       worldGraph,
       now: 500,
+      // T6: pre-T6 legacy 3-action behavior preserved by explicit override.
+      policy: { extendedActionsEnabled: false },
     });
 
     expect(check).toMatchObject({
@@ -243,6 +258,8 @@ describe('goal grounding', () => {
       startedAt: Date.now(),
       worldGraph: { queryFacts: () => [makeFact({ id: 'fact-low', confidence: 0.2 })] },
       now: 500,
+      // T6: pre-T6 legacy 3-action behavior preserved by explicit override.
+      policy: { extendedActionsEnabled: false },
     });
 
     const input = makeInput();
@@ -301,6 +318,8 @@ describe('goal grounding', () => {
         phase: 'plan',
         startedAt: Date.now(),
         now: 500,
+        // T6: pre-T6 legacy 3-action behavior preserved by explicit override.
+        policy: { extendedActionsEnabled: false },
       });
 
       expect(check?.goalDrift).toBe(true);
@@ -369,9 +388,7 @@ describe('goal grounding', () => {
       });
 
     function staleFacts(n: number) {
-      return Array.from({ length: n }, (_, i) =>
-        makeFact({ id: `fact-${i}`, confidence: 0.2, validUntil: 2_000 }),
-      );
+      return Array.from({ length: n }, (_, i) => makeFact({ id: `fact-${i}`, confidence: 0.2, validUntil: 2_000 }));
     }
 
     test('drift + stale facts → abort-unsafe-drift', () => {
@@ -461,6 +478,11 @@ describe('goal grounding', () => {
     });
 
     test('extended disabled → falls back to legacy 3 actions (request-clarification on drift)', () => {
+      // T6 flipped the default-on, so this test now passes
+      // `extendedActionsEnabled: false` explicitly to exercise the
+      // legacy 3-action behavior. Before T6, the default was false and
+      // legacy was implicit; tests that want default behavior should now
+      // omit `policy` (which gets the new extended-actions-on default).
       const worldGraph = { queryFacts: () => staleFacts(3) };
       const check = evaluateGoalGrounding({
         input: driftingInput(),
@@ -470,6 +492,7 @@ describe('goal grounding', () => {
         startedAt: Date.now(),
         worldGraph,
         now: 500,
+        policy: { extendedActionsEnabled: false },
       });
 
       expect(['request-clarification', 'downgrade-confidence']).toContain(check?.action ?? '');

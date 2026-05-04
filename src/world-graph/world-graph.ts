@@ -328,11 +328,53 @@ export class WorldGraph {
     this.updateFileHash(filePath, newHash);
   }
 
+  /**
+   * T6 (Yinyan A4-into-A10 sewing): return the set of facts whose stored
+   * `fileHash` differs from `newHash` for `filePath`. The caller (T6
+   * orchestration boundary) uses the returned list to mark Hypotheses
+   * stale when their `factHashes` array intersects the invalidated set.
+   *
+   * Pure read — does NOT mutate the world-graph. Pair with
+   * `updateFileHash(filePath, newHash)` to persist the new hash AFTER
+   * acting on the invalidation set, so that re-grounding sees the fresh
+   * hash on the next pass and does not re-fire on the same change.
+   *
+   * Why this is separate from `invalidateByFile`: that method silently
+   * recomputes from disk; T6 needs to know exactly WHICH facts changed
+   * and WHICH file_hash drove the invalidation so the audit trail can
+   * replay the chain (file edited → hash mismatch → hypothesis stale →
+   * re-ground). Returning the affected facts surfaces that chain.
+   */
+  invalidateByFileHash(filePath: string, newHash: string): Fact[] {
+    const normalized = this.normalizePath(filePath);
+    const now = Date.now();
+    const rows = this.db
+      .query(
+        `SELECT * FROM facts WHERE source_file = ? AND file_hash != ? AND (valid_until IS NULL OR valid_until > ?)`,
+      )
+      .all(normalized, newHash, now) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: row.id as string,
+      target: row.target as string,
+      pattern: row.pattern as string,
+      evidence: JSON.parse(row.evidence as string) as Evidence[],
+      oracleName: row.oracle_name as string,
+      fileHash: row.file_hash as string,
+      sourceFile: row.source_file as string,
+      verifiedAt: row.verified_at as number,
+      sessionId: row.session_id as string | undefined,
+      confidence: row.confidence as number,
+      validUntil: (row.valid_until as number) || undefined,
+      decayModel: (row.decay_model as string as Fact['decayModel']) || undefined,
+      tierReliability: (row.tier_reliability as number) ?? undefined,
+    }));
+  }
+
   /** Get the current stored hash for a file. */
   getFileHash(filePath: string): string | undefined {
-    const row = this.db.query('SELECT current_hash FROM file_hashes WHERE path = ?').get(this.normalizePath(filePath)) as
-      | { current_hash: string }
-      | undefined;
+    const row = this.db
+      .query('SELECT current_hash FROM file_hashes WHERE path = ?')
+      .get(this.normalizePath(filePath)) as { current_hash: string } | undefined;
     return row?.current_hash;
   }
 
@@ -424,12 +466,7 @@ export class WorldGraph {
   // ── FP-B: Typed Causal Edge Adapters ─────────────────────────────
 
   /** Store a typed CausalEdge, mapping to the existing recordCausalEdge store. */
-  storeCausalEdgeTyped(edge: {
-    fromFile: string;
-    toFile: string;
-    edgeType: string;
-    confidence: number;
-  }): void {
+  storeCausalEdgeTyped(edge: { fromFile: string; toFile: string; edgeType: string; confidence: number }): void {
     this.recordCausalEdge(edge.fromFile, edge.toFile, edge.edgeType, edge.confidence);
   }
 
@@ -478,9 +515,9 @@ export class WorldGraph {
     for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
       for (const current of frontier) {
-        const rows = this.db
-          .query('SELECT target_file FROM causal_edges WHERE source_file = ?')
-          .all(current) as Array<{ target_file: string }>;
+        const rows = this.db.query('SELECT target_file FROM causal_edges WHERE source_file = ?').all(current) as Array<{
+          target_file: string;
+        }>;
         for (const row of rows) {
           if (row.target_file !== root && !visited.has(row.target_file)) {
             visited.add(row.target_file);

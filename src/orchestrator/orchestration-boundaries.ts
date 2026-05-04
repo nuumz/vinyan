@@ -38,6 +38,15 @@ export async function enforceGoalGroundingBoundary(
   understanding: SemanticTaskUnderstanding,
   workerSelectionAudit?: import('./types.ts').EngineSelectionResult,
 ): Promise<GoalGroundingBoundaryResult> {
+  // T6 (Yinyan A10) — kill-switch lookup. When the parameter store has
+  // `goal_grounding.extended_actions_enabled = false`, force the policy
+  // override so the legacy 3-action behavior is restored even though the
+  // policy default has flipped to true. Honors an explicit caller-passed
+  // policy first (deterministic precedence: code > parameter > default).
+  const callerPolicy = ctx.deps.goalGroundingPolicy;
+  const killSwitch = ctx.deps.parameterStore?.getBoolean('goal_grounding.extended_actions_enabled');
+  const effectivePolicy =
+    callerPolicy !== undefined ? callerPolicy : killSwitch === false ? { extendedActionsEnabled: false } : undefined;
   const check = evaluateGoalGrounding({
     input: ctx.input,
     understanding,
@@ -46,7 +55,7 @@ export async function enforceGoalGroundingBoundary(
     startedAt: ctx.startTime,
     rootGoal: ctx.intentResolution?.originalGoal,
     worldGraph: ctx.deps.worldGraph,
-    policy: ctx.deps.goalGroundingPolicy,
+    policy: effectivePolicy,
   });
   if (!check) return { ctx };
 

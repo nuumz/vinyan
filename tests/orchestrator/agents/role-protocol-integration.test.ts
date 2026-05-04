@@ -295,6 +295,32 @@ describe('extractStepEvidence — direct unit coverage', () => {
   });
 });
 
+describe('A2.6: systemPromptAugmentation roundtrips through WorkerInputSchema (subprocess wire)', () => {
+  test('WorkerInputSchema declares systemPromptAugmentation as an optional string field', async () => {
+    const { WorkerInputSchema } = await import('../../../src/orchestrator/protocol.ts');
+    // Pick a single field out of the schema and validate it independently —
+    // avoids hand-rolling a full WorkerInput fixture (the rest of the
+    // schema is exercised by every existing subprocess dispatch test).
+    const fieldSchema = WorkerInputSchema.shape.systemPromptAugmentation;
+    expect(fieldSchema).toBeDefined();
+    expect(fieldSchema.parse('Step 2 of 5 — GATHER. ...')).toBe('Step 2 of 5 — GATHER. ...');
+    expect(fieldSchema.parse(undefined)).toBeUndefined();
+    expect(() => fieldSchema.parse(123)).toThrow();
+  });
+
+  test('extractStepEvidence preserves the step kind contract for verify steps too', () => {
+    // Cross-check that the integration helper handles every step kind a
+    // protocol can declare — this is the same layer that turns
+    // WorkerResult.proposedContent into evidence on the L2+ subprocess
+    // path. Behavior is identical to L0/L1 since the integration helper
+    // doesn't branch on routing.
+    expect(extractStepEvidence('discover', 'list')).toBeUndefined();
+    expect(extractStepEvidence('analyze', 'analysis')).toBeUndefined();
+    expect(extractStepEvidence('synthesize', 'body')).toEqual({ synthesisText: 'body' });
+    expect(extractStepEvidence('verify', 'note')).toEqual({ verifyNote: 'note' });
+  });
+});
+
 describe('aggregateRunToWorkerResult — direct unit coverage', () => {
   test('successful run with synthesize: proposedContent === synthesisText', async () => {
     const driver = new RoleProtocolDriver();

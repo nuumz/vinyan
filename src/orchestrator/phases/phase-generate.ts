@@ -167,21 +167,29 @@ export async function executeGeneratePhase(
       matchedSkill ?? null,
       hasAgentDeps,
     );
-    // ── Phase A2.5: RoleProtocol routing at L0/L1 ────────────────
-    // When the persona declares a registered role-protocol AND routing is
-    // L0/L1 single-node AND task is non-conversational, route through
-    // the `RoleProtocolDriver`: each protocol step dispatches with
+    // ── Phase A2.5/A2.6: RoleProtocol routing across all routing levels ─
+    // When the persona declares a registered role-protocol AND task is
+    // non-conversational AND no multi-node DAG plan exists, route every
+    // dispatch through `RoleProtocolDriver`: each protocol step
+    // dispatches via `workerPool.dispatch` with
     // `TaskInput.systemPromptAugmentation` set to the step's
-    // `promptPrepend`. The aggregate synthesize-step output becomes the
-    // user-visible answer; per-step records persist to `role_protocol_run`.
+    // `promptPrepend`. At L0/L1 the per-step dispatch is in-process
+    // single-shot; at L2+ it is subprocess single-shot — both paths
+    // honor the augmentation (worker-pool.dispatchInProcess and
+    // worker-entry.ts each prepend it to their assembled systemPrompt).
     //
-    // L2+ falls through to the legacy agent-loop (A2.6 wires per-step
-    // dispatch there). DAG plans (multi-node) skip the driver because
-    // the plan IS the workflow.
+    // Per-step records persist to `role_protocol_run`. Aggregate
+    // synthesize-step output becomes the user-visible answer.
+    //
+    // DAG plans (multi-node) skip the driver because the plan IS the
+    // workflow — protocol decomposition + DAG decomposition would
+    // double-fan-out the dispatch, blowing token budgets.
+    //
+    // Per-step true multi-turn tool-use (agent-loop within a step) is
+    // A2.7 — currently each step is a single-shot worker call.
     let roleProtocolHandled = false;
     if (
       agent?.roleProtocolId &&
-      routing.level <= 1 &&
       understanding.taskDomain !== 'conversational' &&
       (!plan || plan.isFallback || plan.nodes.length <= 1)
     ) {

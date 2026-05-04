@@ -218,6 +218,15 @@ export interface OrchestratorDeps {
    */
   roleProtocolRunStore?: import('../db/role-protocol-run-store.ts').RoleProtocolRunStore;
   /**
+   * Phase C1 — per-(persona, fact-target, hash) citation ledger that
+   * powers DelusionDetector (C2) and PsychosisMonitor (C3). Phase-verify
+   * appends one row per `verified` oracle verdict when both `agentId`
+   * and the verdict's `fileHashes` are populated. When unset (no DB or
+   * test fixture), phase-verify silently no-ops the citation write —
+   * runtime behaviour byte-identical to pre-C1.
+   */
+  personaFactCitationsStore?: import('../db/persona-fact-citations-store.ts').PersonaFactCitationsStore;
+  /**
    * Phase-6: runtime skill acquirer. When present, the worker pool checks
    * task gaps before dispatch and asks the acquirer to fill them with
    * skills already cached in `.vinyan/skills/`. Defaults to NullSkillAcquirer

@@ -28,6 +28,7 @@ import { LocalOracleProfileStore } from '../db/local-oracle-profile-store.ts';
 import { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
 import { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import { PatternStore } from '../db/pattern-store.ts';
+import { PersonaFactCitationsStore } from '../db/persona-fact-citations-store.ts';
 import { PersonaOverclaimStore } from '../db/persona-overclaim-store.ts';
 import { PredictionLedger } from '../db/prediction-ledger.ts';
 import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
@@ -565,6 +566,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let providerTrustStore: ProviderTrustStore | undefined;
   let skillOutcomeStore: SkillOutcomeStore | undefined;
   let roleProtocolRunStore: import('../db/role-protocol-run-store.ts').RoleProtocolRunStore | undefined;
+  let personaFactCitationsStore: PersonaFactCitationsStore | undefined;
   // Phase-6: skill acquirer; defaults to NullSkillAcquirer when no DB/workspace
   // path so deps consumers can call `.acquireForGap` unconditionally.
   let skillAcquirer: SkillAcquirer = NullSkillAcquirer;
@@ -590,6 +592,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // Phase A2.5 — role-protocol per-step audit store. Consumed by
     // phase-generate via OrchestratorDeps.
     roleProtocolRunStore = new RoleProtocolRunStore(db.getDb());
+    // Phase C1 — persona fact-citation ledger. Phase-verify writes one
+    // row per `verified` oracle verdict for personas with `agentId` set;
+    // DelusionDetector (C2) reads it to detect stale beliefs.
+    personaFactCitationsStore = new PersonaFactCitationsStore(db.getDb());
 
     // Phase-6: skill acquirer scans `.vinyan/skills/` for skills that match
     // a runtime gap. Phase-15 (Item 1) layers an optional hub-fetch path
@@ -2031,6 +2037,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     skillOutcomeStore,
     // Phase A2.5: per-step audit log for role-protocol runs
     roleProtocolRunStore,
+    // Phase C1: per-(persona, fact-target, hash) citation ledger
+    personaFactCitationsStore,
     // Phase-6: runtime skill acquirer (LocalHubAcquirer / NullSkillAcquirer)
     skillAcquirer,
     // Adaptive parameter store — runtime-tunable ceilings (A10 freshness, etc.).

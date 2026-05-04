@@ -17,10 +17,6 @@ import { buildShortCircuitProvenance } from '../governance-provenance.ts';
 import { hierarchyFromInput } from '../observability/audit-hierarchy.ts';
 import { deriveOracleIndependenceAudit } from '../oracle-independence.ts';
 import {
-  applyInjectedPriorDiscount,
-  lookupInjectedPriorMultiplier,
-} from './injected-prior-discount.ts';
-import {
   type ConfidenceDecision,
   computePipelineConfidence,
   deriveConfidenceDecision,
@@ -42,6 +38,7 @@ import type {
   VerificationHint,
 } from '../types.ts';
 import { buildAgentSessionSummary, mergeForwardAndSelfModel } from './generate-helpers.ts';
+import { applyInjectedPriorDiscount, lookupInjectedPriorMultiplier } from './injected-prior-discount.ts';
 import type {
   PhaseContext,
   PhaseContinue,
@@ -197,9 +194,7 @@ export async function executeVerifyPhase(
   const injectLookup = lookupInjectedPriorMultiplier({
     taskId: input.id,
     ...(input.parentTaskId ? { parentTaskId: input.parentTaskId } : {}),
-    ...(deps.injectDependencyRegistry
-      ? { injectDependencyRegistry: deps.injectDependencyRegistry }
-      : {}),
+    ...(deps.injectDependencyRegistry ? { injectDependencyRegistry: deps.injectDependencyRegistry } : {}),
     ...(deps.taskEventStore ? { taskEventStore: deps.taskEventStore } : {}),
     ...(deps.parameterStore ? { parameterStore: deps.parameterStore } : {}),
   });
@@ -226,6 +221,35 @@ export async function executeVerifyPhase(
     });
     if (verdict.verified) passedOracles.push(oracleName);
     else failedOracles.push(oracleName);
+  }
+
+  // ── Phase C1: persona fact-citation ledger ──────────────────────
+  // Append one row per (verified verdict × file-target × persona)
+  // when both the persona and the verdict's fileHashes are present.
+  // The DelusionDetector (Phase C2) compares these hashes against
+  // current source hashes to detect persona beliefs that have grown
+  // stale — A4 content-addressed truth extended to persona-derived
+  // beliefs. No-op when input.agentId is unset (legacy task without
+  // a persona) or the store isn't wired (test fixtures sans DB) or
+  // the verdict didn't anchor file hashes (some oracles don't).
+  if (deps.personaFactCitationsStore && input.agentId) {
+    const claimExcerpt = (workerResult.proposedContent ?? input.goal ?? '').trim();
+    for (const [oracleName, verdict] of Object.entries(verification.verdicts)) {
+      if (!verdict.verified) continue;
+      const fileHashes = verdict.fileHashes;
+      if (!fileHashes) continue;
+      for (const [path, hash] of Object.entries(fileHashes)) {
+        if (typeof hash !== 'string' || hash.length === 0) continue;
+        deps.personaFactCitationsStore.recordCitation({
+          personaId: input.agentId,
+          factId: path,
+          citedAtHash: hash,
+          taskId: input.id,
+          phase: 'verify',
+          claimExcerpt: claimExcerpt.length > 0 ? claimExcerpt : `[${oracleName}] ${path}`,
+        });
+      }
+    }
   }
 
   // ── Contradiction detection (A1: surface epistemic disagreements) ──

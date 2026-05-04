@@ -3580,12 +3580,26 @@ async function executeTaskCore(
               // worker self-grade vs deterministic verdict so the critic
               // gets a calibration warning when the worker was overconfident.
               const priorPredictionError = workingMemory.getLastPredictionError();
+              // T3 (Yinyan critic-augmented verification): surface the kernel's
+              // selection margin into the critic context so the debate-router
+              // can fire on near-tie selections even when risk score is low.
+              // The margin lives on `WorkerOutput.selectionMargin` (set by
+              // worker-pool when the multi-hypothesis path ran). When absent
+              // (single-shot dispatch / kernel dormant), the field stays
+              // undefined and the legacy risk-only trigger is the only path.
+              // The threshold is read from the parameter store
+              // (`critic.debate_margin_threshold`); falls back to the registry
+              // default when the store is unwired in a particular deployment.
+              const selectionMargin = (workerResult as { selectionMargin?: number }).selectionMargin;
+              const marginThreshold = deps.parameterStore?.getNumber('critic.debate_margin_threshold');
               const baseCriticContext = {
                 riskScore: routing.riskScore,
                 routingLevel: routing.level,
                 ...(priorGrade ? { priorAccountabilityGrade: priorGrade } : {}),
                 ...(priorBlockers.length > 0 ? { priorBlockerCategories: priorBlockers } : {}),
                 ...(priorPredictionError ? { priorPredictionError } : {}),
+                ...(selectionMargin !== undefined ? { selectionMargin } : {}),
+                ...(marginThreshold !== undefined ? { marginThreshold } : {}),
               };
               // C1: optionally hydrate with historical-adversary data so the
               // reviewer can pressure-test against prior failures + base-rate.

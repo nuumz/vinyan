@@ -110,6 +110,7 @@ import { ComprehensionCalibrator } from './comprehension/learning/calibrator.ts'
 import { newLlmComprehender } from './comprehension/llm-comprehender.ts';
 import { DefaultConcurrentDispatcher } from './concurrent-dispatcher.ts';
 import { executeTask, type OrchestratorDeps } from './core-loop.ts';
+import { checkCrossFamily } from './critic/cross-family-guard.ts';
 import { DebateBudgetGuard } from './critic/debate-budget-guard.ts';
 import { ArchitectureDebateCritic, DebateRouterCritic } from './critic/debate-mode.ts';
 import { LLMCriticImpl } from './critic/llm-critic-impl.ts';
@@ -1387,6 +1388,30 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   const criticProvider = registry.selectByTier('powerful') ?? registry.selectByTier('balanced');
   const baselineCritic = criticProvider ? new LLMCriticImpl(criticProvider) : undefined;
 
+  // T3 (Yinyan critic-augmented verification): A1 cross-family check.
+  // Compare the critic provider against the runtime generator provider
+  // (the same one selected for L2+ worker dispatch). When both share a
+  // vendor family, emit `console.warn` + a governance-provenance audit
+  // entry — the soft enforcement policy chosen for PR #47 land time.
+  // Promotion to a hard throw is a follow-up after one week of
+  // provenance observation.
+  if (criticProvider) {
+    const generatorProvider =
+      registry.selectByTier('balanced') ?? registry.selectByTier('powerful') ?? registry.selectByTier('fast');
+    if (generatorProvider) {
+      const outcome = checkCrossFamily(generatorProvider, criticProvider);
+      if (outcome.kind === 'warn') {
+        console.warn(`[vinyan] ${outcome.message}`);
+        bus?.emit('critic:cross_family_violation', {
+          generatorId: generatorProvider.id,
+          criticId: criticProvider.id,
+          family: outcome.criticFamily,
+          policy: 'warn',
+        });
+      }
+    }
+  }
+
   // Book-integration Wave 2.1: Architecture Debate Mode — 3-agent critic
   // hardening. Wired as a DebateRouterCritic that delegates to the baseline
   // critic by default and fires the 3-agent debate only when the risk-based
@@ -2204,8 +2229,14 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
         })
       : undefined,
     // Extensible Thinking — 2D routing grid compiler (Phase 2.1)
+    // T3 — pass `parameterStore` so the compiler can consult the
+    // `thinking.multi_hypothesis_enabled` kill-switch on every compile.
+    // When the kill-switch is on AND the task lands in Profile-D, the
+    // compiler emits `multi-hypothesis` config that activates the kernel
+    // from PR #44. Default-false (registry default) preserves the
+    // pre-T3 byte-identical behavior.
     thinkingPolicyCompiler: extensibleThinkingEnabled
-      ? new DefaultThinkingPolicyCompiler(extensibleThinkingConfig)
+      ? new DefaultThinkingPolicyCompiler({ ...extensibleThinkingConfig, parameterStore })
       : undefined,
     // Wave 1: Goal-Satisfaction Outer Loop — evaluator is instantiated only
     // when goalLoop is enabled in config; the wrapper in executeTask uses

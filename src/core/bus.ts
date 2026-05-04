@@ -69,6 +69,20 @@ export interface VinyanBusEvents {
     taskCount: number;
     dayCount: number;
   };
+  // Yinyan T3: emitted by the factory when the active critic provider
+  // shares a vendor family with the active generator provider — the soft
+  // A1 (Epistemic Separation) policy. `policy: 'warn'` indicates the
+  // soft-enforcement build; a future hard-enforcement build will emit
+  // `policy: 'throw'` immediately before raising. Operators / dashboards
+  // tail this to know when their configuration violates A1 so they can
+  // declare a different-family critic without waiting for the policy
+  // promotion. Payload kept flat for offline analysis tooling.
+  'critic:cross_family_violation': {
+    generatorId: string;
+    criticId: string;
+    family: 'anthropic' | 'openai-compat';
+    policy: 'warn' | 'throw';
+  };
   'trace:record': { trace: ExecutionTrace };
   'trace:write_failed': { taskId: string; traceId: string; error: string };
   'grounding:checked': GoalGroundingCheck;

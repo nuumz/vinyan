@@ -48,8 +48,20 @@ export class LLMCriticImpl implements CriticEngine {
     const passedCount = parsed.aspects.filter((a) => a.passed).length;
     const confidence = parsed.aspects.length > 0 ? passedCount / parsed.aspects.length : 0.3;
 
+    // T3 (Yinyan critic-augmented verification): emit `verdict: 'abstain'`
+    // when the response is degenerate — empty aspects array OR every aspect
+    // ships with an empty explanation. The kernel pre-check bridge then
+    // omits this hypothesis from `PreCheckVerdict[]`, leaving it to survive
+    // to the selector's Wilson-LB / cost tiebreakers rather than being
+    // killed by a critic that didn't actually look at it. Distinct from
+    // `failClosedResult` (which fires on parse failure / network error and
+    // is rejection-equivalent) — abstain means "the model returned, but
+    // did not produce reviewable signal".
+    const verdict = deriveVerdict(parsed);
+
     return {
       approved: parsed.approved,
+      verdict,
       confidence,
       aspects: parsed.aspects,
       reason: parsed.reason,
@@ -57,6 +69,19 @@ export class LLMCriticImpl implements CriticEngine {
       tokensUsed,
     };
   }
+}
+
+/**
+ * Map a successfully-parsed response to the ternary verdict. Abstain fires
+ * when the model returned the schema but produced no reviewable content —
+ * either zero aspects or every aspect has an empty explanation. Caller has
+ * already validated the JSON shape; this only concerns semantic emptiness.
+ */
+function deriveVerdict(parsed: ParsedCriticResponse): import('./critic-engine.ts').CriticVerdict {
+  if (parsed.aspects.length === 0) return 'abstain';
+  const allEmpty = parsed.aspects.every((a) => a.explanation.trim().length === 0);
+  if (allEmpty) return 'abstain';
+  return parsed.approved ? 'approved' : 'rejected';
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +301,12 @@ const RUBRIC_ASPECTS = [
 function failClosedResult(tokensUsed = { input: 0, output: 0 }): CriticResult {
   return {
     approved: false,
+    // T3: fail-closed is rejection (NOT abstain) — the critic was supposed
+    // to review and could not deliver a parseable response, which under A2
+    // is treated as "no approval". Abstain is reserved for the case where
+    // the model returned schema-valid output but produced no reviewable
+    // signal (see `deriveVerdict` above).
+    verdict: 'rejected',
     confidence: 0.3,
     aspects: RUBRIC_ASPECTS.map((name) => ({ name, passed: false, explanation: 'critic unavailable — fail-closed' })),
     reason: 'Critic response could not be parsed — fail-closed per A2 (uncertainty is not approval)',

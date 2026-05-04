@@ -33,6 +33,7 @@ import { PersonaOverclaimStore } from '../db/persona-overclaim-store.ts';
 import { PredictionLedger } from '../db/prediction-ledger.ts';
 import { migratePredictionLedgerSchema } from '../db/prediction-ledger-schema.ts';
 import { ProviderTrustStore } from '../db/provider-trust-store.ts';
+import { RealityAnchorAuditStore } from '../db/reality-anchor-audit-store.ts';
 import { RejectedApproachStore } from '../db/rejected-approach-store.ts';
 import { RoleProtocolRunStore } from '../db/role-protocol-run-store.ts';
 import { RoomStore } from '../db/room-store.ts';
@@ -97,6 +98,7 @@ import { createAgentRouter } from './agent-router.ts';
 import { LocalHubAcquirer } from './agents/local-hub-acquirer.ts';
 import { scanAgentMarkdown, soulsByIdFrom } from './agents/markdown-loader.ts';
 import { PsychosisMonitor } from './agents/reality-anchor/psychosis-monitor.ts';
+import { RealityAnchorReGrounder } from './agents/reality-anchor/regrounder.ts';
 import { loadAgentRegistry } from './agents/registry.ts';
 import { registerBuiltinProtocols } from './agents/role-protocols/builtin/researcher-investigate.ts';
 import { NullSkillAcquirer, type SkillAcquirer } from './agents/skill-acquirer.ts';
@@ -568,6 +570,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   let skillOutcomeStore: SkillOutcomeStore | undefined;
   let roleProtocolRunStore: import('../db/role-protocol-run-store.ts').RoleProtocolRunStore | undefined;
   let personaFactCitationsStore: PersonaFactCitationsStore | undefined;
+  let realityAnchorAuditStore: RealityAnchorAuditStore | undefined;
+  let realityAnchorReGrounder: RealityAnchorReGrounder | undefined;
   // Phase-6: skill acquirer; defaults to NullSkillAcquirer when no DB/workspace
   // path so deps consumers can call `.acquireForGap` unconditionally.
   let skillAcquirer: SkillAcquirer = NullSkillAcquirer;
@@ -597,6 +601,11 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     // row per `verified` oracle verdict for personas with `agentId` set;
     // DelusionDetector (C2) reads it to detect stale beliefs.
     personaFactCitationsStore = new PersonaFactCitationsStore(db.getDb());
+    // Phase C4 — reality-anchor audit store. RealityAnchorReGrounder
+    // (wired below, after parameterStore) writes one row per state
+    // transition + sub-action stage. Operator dashboards + boot-time
+    // state hydration both read from this table.
+    realityAnchorAuditStore = new RealityAnchorAuditStore(db.getDb());
 
     // Phase-6: skill acquirer scans `.vinyan/skills/` for skills that match
     // a runtime gap. Phase-15 (Item 1) layers an optional hub-fetch path
@@ -1976,6 +1985,23 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     trackBusListener(monitor.attach());
   }
 
+  // Phase C4 — RealityAnchorReGrounder consumes `psychosis:trigger`
+  // and walks the persona through the recovery state machine
+  // (quarantined → rebuilding → shadow-mode → active). Subscribes to
+  // `trace:record` to count clean shadow traces and trigger reentry
+  // once the streak is met. Hydrates persona states from the audit
+  // table on attach. When the audit store is unavailable (no DB),
+  // skip wiring entirely — the C4 stack is DB-bound by design (audit
+  // is the durable state).
+  if (realityAnchorAuditStore) {
+    realityAnchorReGrounder = new RealityAnchorReGrounder({
+      bus,
+      auditStore: realityAnchorAuditStore,
+      parameterStore,
+    });
+    trackBusListener(realityAnchorReGrounder.attach());
+  }
+
   // GAP#1 — instantiate comprehension calibrator + LLM stage-2 engine
   // BEFORE `deps` construction so both can be injected.
   // Without these, the P2.C hybrid pipeline in core-loop is unreachable
@@ -2052,6 +2078,10 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     roleProtocolRunStore,
     // Phase C1: per-(persona, fact-target, hash) citation ledger
     personaFactCitationsStore,
+    // Phase C4: re-grounding state machine — exposed for callers that
+    // want to gate dispatch on persona state (e.g. capability router
+    // returning `unknown` for quarantined personas).
+    realityAnchorReGrounder,
     // Phase-6: runtime skill acquirer (LocalHubAcquirer / NullSkillAcquirer)
     skillAcquirer,
     // Adaptive parameter store — runtime-tunable ceilings (A10 freshness, etc.).

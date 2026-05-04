@@ -42,15 +42,17 @@ function predictionError(composite: number): PredictionError {
   return {
     taskId: 't',
     predicted: {
-      taskTypeSignature: 's',
+      taskId: 't',
+      timestamp: 0,
+      expectedTestResults: 'pass',
+      expectedBlastRadius: 0,
+      expectedDuration: 0,
+      expectedQualityScore: 0,
+      uncertainAreas: [],
       confidence: 0.5,
-      pPass: 0.5,
-      blastRadius: 0,
-      effortMs: 0,
-      qualityScore: 0,
-      modelUsed: 'mock',
+      metaConfidence: 0.5,
+      basis: 'static-heuristic',
       calibrationDataPoints: 0,
-      formulaVersion: 'v1',
     },
     actual: { testResults: 'pass', blastRadius: 0, duration: 0, qualityScore: 0 },
     error: {
@@ -63,7 +65,7 @@ function predictionError(composite: number): PredictionError {
   };
 }
 
-function trace(overrides: Partial<ExecutionTrace> & { agentId?: string }): ExecutionTrace {
+function trace(overrides: Omit<Partial<ExecutionTrace>, 'agentId'> & { agentId?: string }): ExecutionTrace {
   return {
     id: `t-${Math.random().toString(36).slice(2, 8)}`,
     taskId: 'task',

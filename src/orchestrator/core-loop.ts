@@ -227,6 +227,14 @@ export interface OrchestratorDeps {
    */
   personaFactCitationsStore?: import('../db/persona-fact-citations-store.ts').PersonaFactCitationsStore;
   /**
+   * Phase C4 — reality-anchor re-grounding state machine. Operator
+   * dashboards + dispatch-gating callers read persona state via
+   * `regrounder.getState(personaId)` / `canDispatch(personaId)`.
+   * Subscribed to `psychosis:trigger` and `trace:record` by the
+   * factory's `attach()` call. Unset when DB unavailable.
+   */
+  realityAnchorReGrounder?: import('./agents/reality-anchor/regrounder.ts').RealityAnchorReGrounder;
+  /**
    * Phase-6: runtime skill acquirer. When present, the worker pool checks
    * task gaps before dispatch and asks the acquirer to fill them with
    * skills already cached in `.vinyan/skills/`. Defaults to NullSkillAcquirer

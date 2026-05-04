@@ -378,6 +378,19 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
       'enforcement lands when the re-grounding state machine consumes it.',
     tunable: true,
   },
+  {
+    key: 'reality_anchor.shadow_clean_streak_required',
+    type: 'integer',
+    default: 5,
+    range: [1, 50],
+    axiom: 'A7',
+    owner: 'reality-anchor',
+    description:
+      'Number of consecutive clean traces (success outcome AND no delusion) a persona ' +
+      'in `shadow-mode` must accumulate before the regrounder transitions them back to ' +
+      '`active`. Lower = faster reentry but riskier; higher = stricter A4-honest recovery.',
+    tunable: true,
+  },
 
   // ── Skill admission (A3 governance) ──
   {

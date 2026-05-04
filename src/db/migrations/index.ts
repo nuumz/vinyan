@@ -35,6 +35,7 @@ import { migration039 } from './039_task_events_parent_task_id.ts';
 import { migration040 } from './040_skill_admission_audit.ts';
 import { migration041 } from './041_role_protocol_run.ts';
 import { migration042 } from './042_persona_fact_citations.ts';
+import { migration043 } from './043_reality_anchor_audit.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -49,4 +50,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration040,
   migration041,
   migration042,
+  migration043,
 ];

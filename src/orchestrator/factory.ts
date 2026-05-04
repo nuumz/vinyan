@@ -101,6 +101,7 @@ import { PsychosisMonitor } from './agents/reality-anchor/psychosis-monitor.ts';
 import { RealityAnchorReGrounder } from './agents/reality-anchor/regrounder.ts';
 import { loadAgentRegistry } from './agents/registry.ts';
 import { registerBuiltinProtocols } from './agents/role-protocols/builtin/researcher-investigate.ts';
+import { listRoleProtocolIds } from './agents/role-protocols/registry.ts';
 import { NullSkillAcquirer, type SkillAcquirer } from './agents/skill-acquirer.ts';
 import { buildSkillDiscoveryWiring } from './agents/skill-discovery-wiring.ts';
 import { evaluateOverclaim, SkillUsageTracker } from './agents/skill-usage-tracker.ts';
@@ -1814,6 +1815,19 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     });
   }
 
+  // Phase A3-followup: role-protocol step EMA mining hook. Sleep-cycle
+  // reads `role_protocol_run` rows once per cycle for each registered
+  // protocol id and emits `role-protocol:step_ema` per qualifying
+  // tuple. Defer to the registry list at wire time so any built-in
+  // protocols added by `registerBuiltinProtocols()` are picked up.
+  if (sleepCycleRunner && roleProtocolRunStore) {
+    sleepCycleRunner.setRoleProtocolEma({
+      runStore: roleProtocolRunStore,
+      protocolIds: listRoleProtocolIds(),
+      bus,
+    });
+  }
+
   // Phase-15 (Item 4): hook the skill TIER graduation promoter alongside
   // the scope promoter. Distinct concerns — scope = acquired↔bound; tier
   // = speculative↔deterministic. Both share the same outcome store but
@@ -1998,6 +2012,13 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       bus,
       auditStore: realityAnchorAuditStore,
       parameterStore,
+      // Phase C4-followup: real sub-action work bodies. citationsStore
+      // backs the `rebuild` stage (drops stale citations); traceStore
+      // backs the `replay` stage (counts delusion-flagged traces).
+      // Both are optional — when missing, the corresponding stage
+      // emits its audit row with a "skipped (no store)" reason.
+      ...(personaFactCitationsStore ? { citationsStore: personaFactCitationsStore } : {}),
+      ...(traceStore ? { traceStore } : {}),
     });
     trackBusListener(realityAnchorReGrounder.attach());
   }

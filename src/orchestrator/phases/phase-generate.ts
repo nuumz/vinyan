@@ -83,6 +83,67 @@ export async function executeGeneratePhase(
   // unavailable (legacy registry, no skill resolver wired) so existing
   // deployments are unaffected.
   const agent = input.agentId ? deps.agentRegistry?.getAgent(input.agentId) : undefined;
+
+  // ── Phase C4-followup: dispatch enforcement ─────────────────────
+  // Block dispatch when the persona is in quarantine or active
+  // rebuilding — the recovery workflow needs the persona out of
+  // production until the audit ledger says they've graduated through
+  // shadow-mode back to active. Returning here surfaces a clear
+  // failed TaskResult so the user knows the persona is unavailable
+  // rather than silently letting tasks pile up in a paused persona.
+  //
+  // Honesty guards: only fires when both agentId AND regrounder are
+  // wired. Legacy callers without a persona, and test fixtures
+  // without a regrounder, behave byte-identically to pre-followup.
+  if (input.agentId && deps.realityAnchorReGrounder) {
+    const personaId = input.agentId;
+    if (!deps.realityAnchorReGrounder.canDispatch(personaId)) {
+      const state = deps.realityAnchorReGrounder.getState(personaId);
+      // canDispatch returns false only for 'quarantined' or 'rebuilding'
+      // states, but narrow defensively.
+      if (state === 'quarantined' || state === 'rebuilding') {
+        deps.bus?.emit('reality-anchor:dispatch_blocked', {
+          taskId: input.id,
+          personaId,
+          state,
+        });
+        const blockedTrace: ExecutionTrace = applyRoutingGovernance(
+          {
+            id: `trace-${input.id}-reality-anchor-blocked`,
+            taskId: input.id,
+            workerId: routing.workerId ?? routing.model ?? 'unknown',
+            agentId: input.agentId,
+            timestamp: Date.now(),
+            routingLevel: routing.level,
+            approach: 'reality-anchor-dispatch-blocked',
+            oracleVerdicts: {},
+            modelUsed: routing.model ?? 'none',
+            tokensConsumed: 0,
+            durationMs: Date.now() - startTime,
+            outcome: 'failure',
+            failureReason: `persona ${personaId} state=${state}; reality-anchor recovery in progress`,
+            affectedFiles: input.targetFiles ?? [],
+          },
+          routing,
+        );
+        await deps.traceCollector.record(blockedTrace);
+        deps.bus?.emit('trace:record', { trace: blockedTrace });
+        const blockedResult: TaskResult = {
+          id: input.id,
+          status: 'failed',
+          mutations: [],
+          trace: blockedTrace,
+          notes: [
+            `Persona "${personaId}" is in reality-anchor recovery (state=${state}); dispatch blocked. ` +
+              `Recovery completes once the persona accumulates the configured clean shadow-trace streak (see 'reentry' audit row).`,
+          ],
+        };
+        deps.bus?.emit('task:complete', { result: blockedResult });
+        return Phase.return(blockedResult);
+      }
+    }
+  }
+
   const derived = input.agentId ? deps.agentRegistry?.getDerivedCapabilities(input.agentId) : undefined;
   const effectiveOverrides = derived?.effectiveAcl ?? agent?.capabilityOverrides;
   const agentAcl = agent ? { allowedTools: agent.allowedTools, capabilityOverrides: effectiveOverrides } : undefined;

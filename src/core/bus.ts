@@ -1812,6 +1812,33 @@ export interface VinyanBusEvents {
     attenuation: number;
   };
 
+  // Phase C4-followup — fired by phase-generate when a dispatch is
+  // blocked because the persona is quarantined or rebuilding. Operators
+  // see this in observability dashboards; the orchestrator returns a
+  // failed TaskResult so the user gets a clear "persona unavailable"
+  // message instead of silently routing nowhere.
+  'reality-anchor:dispatch_blocked': {
+    taskId: string;
+    personaId: string;
+    /** Persona's state at the moment dispatch was attempted. */
+    state: 'quarantined' | 'rebuilding';
+  };
+
+  // Phase A3-followup — emitted by sleep-cycle once per cycle for each
+  // (personaId, protocolId, stepId) tuple that meets the observation
+  // threshold. Operators consume this on dashboards to spot protocol
+  // steps whose success rate is degrading over time.
+  'role-protocol:step_ema': {
+    personaId: string;
+    protocolId: string;
+    stepId: string;
+    /** EMA value in [0, 1]. Higher = recent successes dominate. */
+    ema: number;
+    /** Total rows consumed (excludes 'skipped' outcomes). */
+    observations: number;
+    successes: number;
+  };
+
   // Phase C3 — PsychosisMonitor trigger. Fires when ≥1 of the rolling
   // per-persona signals breaches its ceiling for the first time after the
   // window warmup. Subscribed by sleep-cycle (Phase C4) which starts

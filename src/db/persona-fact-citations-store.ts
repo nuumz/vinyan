@@ -178,6 +178,20 @@ export class PersonaFactCitationsStore {
     return Number(result.changes ?? 0);
   }
 
+  /**
+   * Delete citations older than `cutoffTs` belonging to a single persona.
+   * Used by Phase C4's `rebuild` sub-action — when a persona enters
+   * recovery, citations older than the rebuild horizon are dropped so
+   * the next verify cycle writes fresh ones at current hashes.
+   * Returns the row count removed.
+   */
+  pruneOlderThanForPersona(personaId: string, cutoffTs: number): number {
+    const result = this.db
+      .prepare('DELETE FROM persona_fact_citations WHERE persona_id = ? AND cited_at_ts < ?')
+      .run(personaId, cutoffTs);
+    return Number(result.changes ?? 0);
+  }
+
   /** Total citation count for a persona — cheap summary for sleep-cycle health checks. */
   countForPersona(personaId: string): number {
     const row = this.db

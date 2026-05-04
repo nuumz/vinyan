@@ -53,6 +53,130 @@ function trace(overrides: Omit<Partial<ExecutionTrace>, 'agentId'> & { agentId?:
   } as ExecutionTrace;
 }
 
+describe('RealityAnchorReGrounder — sub-action work bodies (Phase C4-followup)', () => {
+  test('rebuild work drops citations older than rebuildHorizonMs for the persona', async () => {
+    const { PersonaFactCitationsStore } = await import('../../../../src/db/persona-fact-citations-store.ts');
+    const citationsStore = new PersonaFactCitationsStore(db);
+    // Seed 3 old + 2 new citations for persona 'p', plus 1 each for 'q'
+    let ts = 1_000_000;
+    for (const factId of ['old-a', 'old-b', 'old-c']) {
+      citationsStore.recordCitation({
+        personaId: 'p',
+        factId,
+        citedAtHash: 'h',
+        taskId: 't',
+        phase: 'verify',
+        claimExcerpt: 'x',
+        citedAtTs: ts,
+      });
+      ts += 1;
+    }
+    // 8 days later (clock will be at 9 days from start)
+    const newTs = ts + 8 * 24 * 60 * 60 * 1000;
+    for (const factId of ['new-a', 'new-b']) {
+      citationsStore.recordCitation({
+        personaId: 'p',
+        factId,
+        citedAtHash: 'h',
+        taskId: 't',
+        phase: 'verify',
+        claimExcerpt: 'x',
+        citedAtTs: newTs,
+      });
+    }
+    citationsStore.recordCitation({
+      personaId: 'q',
+      factId: 'q-old',
+      citedAtHash: 'h',
+      taskId: 't',
+      phase: 'verify',
+      claimExcerpt: 'x',
+      citedAtTs: 1_000_000,
+    });
+
+    // Clock at newTs + 1 day → cutoff = clock - 7 days = newTs - 6 days, which
+    // is AFTER the 'old-*' citations (1_000_000) and BEFORE the 'new-*' (newTs).
+    // So the old citations get dropped, the new ones survive.
+    const clockNow = newTs + 24 * 60 * 60 * 1000;
+    const r = new RealityAnchorReGrounder({
+      bus,
+      auditStore,
+      citationsStore,
+      clock: () => clockNow,
+    });
+    r.startRegrounding('p', 'test');
+
+    // Persona 'p' lost the old citations
+    const remaining = citationsStore.listForPersona('p').map((c) => c.factId);
+    expect(remaining.sort()).toEqual(['new-a', 'new-b']);
+    // Persona 'q' citations untouched (rebuild scoped to 'p')
+    expect(citationsStore.listForPersona('q')).toHaveLength(1);
+
+    // Audit reason captures the drop count
+    const auditRows = auditStore.listForPersona('p');
+    const rebuildRow = auditRows.find((row) => row.stage === 'rebuild');
+    expect(rebuildRow?.reason).toContain('rebuild=dropped 3');
+  });
+
+  test('rebuild reports skipped when citationsStore is unwired', () => {
+    const r = new RealityAnchorReGrounder({ bus, auditStore });
+    r.startRegrounding('p', 'test');
+    const rebuildRow = auditStore.listForPersona('p').find((row) => row.stage === 'rebuild');
+    expect(rebuildRow?.reason).toContain('rebuild=skipped');
+  });
+
+  test('prune is deferred (real work requires world-graph persona linkage)', () => {
+    const r = new RealityAnchorReGrounder({ bus, auditStore });
+    r.startRegrounding('p', 'test');
+    const pruneRow = auditStore.listForPersona('p').find((row) => row.stage === 'prune');
+    expect(pruneRow?.reason).toContain('prune=deferred');
+  });
+
+  test('replay scans recent traces and counts delusion-flagged outcomes', async () => {
+    // Stub TraceStore-shape — real TraceStore couples to additional
+    // schema columns that ALL_MIGRATIONS in :memory: tests doesn't ship
+    // (pre-existing migration drift outside C4's scope). The regrounder
+    // only consumes `findByAgent`, so a minimal stub is honest here.
+    const seeded = [
+      { id: 't1', delusionResult: { kind: 'delusion' as const, falsifiedCount: 1 } },
+      { id: 't2' },
+      { id: 't3', delusionResult: { kind: 'delusion' as const, falsifiedCount: 1 } },
+    ];
+    const traceStore = {
+      findByAgent: () =>
+        seeded.map((t) => ({
+          id: t.id,
+          taskId: t.id,
+          timestamp: 1000,
+          routingLevel: 1 as const,
+          approach: 'a',
+          oracleVerdicts: { ast: true },
+          modelUsed: 'm',
+          tokensConsumed: 0,
+          durationMs: 0,
+          outcome: 'success' as const,
+          affectedFiles: [],
+          ...(t.delusionResult ? { delusionResult: t.delusionResult } : {}),
+        })),
+      // biome-ignore lint/suspicious/noExplicitAny: stub for unused TraceStore methods
+    } as any;
+
+    const r = new RealityAnchorReGrounder({ bus, auditStore, traceStore });
+    r.startRegrounding('p', 'test');
+
+    const replayRow = auditStore.listForPersona('p').find((row) => row.stage === 'replay');
+    expect(replayRow?.reason).toContain('replay=scanned 3');
+    expect(replayRow?.reason).toContain('2 delusion-flagged');
+  });
+
+  test('replay reports skipped when traceStore is unwired', () => {
+    const r = new RealityAnchorReGrounder({ bus, auditStore });
+    r.startRegrounding('p', 'test');
+    const replayRow = auditStore.listForPersona('p').find((row) => row.stage === 'replay');
+    expect(replayRow?.reason).toContain('replay=skipped');
+  });
+});
+
 describe('RealityAnchorReGrounder — defaults', () => {
   test('unseen persona is active', () => {
     const r = new RealityAnchorReGrounder({ bus, auditStore });
@@ -62,7 +186,7 @@ describe('RealityAnchorReGrounder — defaults', () => {
 });
 
 describe('RealityAnchorReGrounder — startRegrounding', () => {
-  test('fires 5 audit stages in order and lands in shadow-mode', () => {
+  test('fires 4 audit stages (quarantine/rebuild/prune/replay) and lands in shadow-mode', () => {
     let now = 1000;
     const r = new RealityAnchorReGrounder({ bus, auditStore, clock: () => now++ });
     r.startRegrounding('researcher', 'manual op-trigger');
@@ -72,14 +196,13 @@ describe('RealityAnchorReGrounder — startRegrounding', () => {
     const rows = auditStore.listForPersona('researcher');
     // listForPersona is newest-first; reverse for chronological.
     const stages = rows.map((row) => row.stage).reverse();
-    expect(stages).toEqual(['quarantine', 'rebuild', 'prune', 'replay', 'replay']);
-    // (the final 'replay' is the rebuilding→shadow-mode transition; the prior
-    // 'replay' is the in-rebuilding sub-action — both labeled 'replay' per
-    // the documented stage mapping)
+    // 4 audit rows on recovery start; the 5th stage 'reentry' fires
+    // later when the persona graduates from shadow-mode back to active.
+    expect(stages).toEqual(['quarantine', 'rebuild', 'prune', 'replay']);
   });
 
   test('audit timestamps are strictly monotonic per persona (no PK collision)', () => {
-    // Clock returns the SAME value for all 5 calls — exercise the
+    // Clock returns the SAME value for all 4 calls — exercise the
     // monotonic-ts guard in nextTs.
     const r = new RealityAnchorReGrounder({ bus, auditStore, clock: () => 1000 });
     r.startRegrounding('researcher', 'r');
@@ -87,8 +210,8 @@ describe('RealityAnchorReGrounder — startRegrounding', () => {
     const ts = rows.map((row) => row.recordedAt).sort((a, b) => a - b);
     // All distinct
     expect(new Set(ts).size).toBe(ts.length);
-    // 5 rows
-    expect(ts).toHaveLength(5);
+    // 4 rows
+    expect(ts).toHaveLength(4);
   });
 
   test('canDispatch is false during quarantined / rebuilding', () => {
@@ -121,7 +244,7 @@ describe('RealityAnchorReGrounder — psychosis:trigger reaction', () => {
     });
     expect(r.getState('researcher')).toBe('shadow-mode');
     const rows = auditStore.listForPersona('researcher');
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(4);
     expect(rows[rows.length - 1]?.stage).toBe('quarantine');
     expect(rows[rows.length - 1]?.reason).toContain('delusion');
   });
@@ -246,7 +369,8 @@ describe('RealityAnchorReGrounder — bounce on fresh trigger during recovery', 
     });
     expect(r.getState('p')).toBe('shadow-mode');
     // 10 audit rows total (5 + 5)
-    expect(auditStore.listForPersona('p')).toHaveLength(10);
+    // 4 audit rows × 2 recovery cycles = 8 total
+    expect(auditStore.listForPersona('p')).toHaveLength(8);
   });
 });
 

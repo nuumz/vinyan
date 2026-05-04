@@ -1407,6 +1407,19 @@ export interface VinyanBusEvents {
   };
   // Phase 2.2+: Emitted by counterfactual retry handler when re-attempting with deeper thinking
   'thinking:counterfactual-retry': { taskId: string; routingLevel: number; retryCount: number; failureReason: string };
+  // Yinyan T&R Kernel: emitted by worker-pool when the multi-hypothesis
+  // path runs end-to-end. `outcome` is the kernel verdict — 'select' (a
+  // winner emerged) or 'unknown' (A2 first-class uncertainty). Payload is
+  // intentionally flat so dashboards / offline tooling can consume it
+  // without pulling in kernel-internal types.
+  'reasoning:kernel': {
+    taskId: string;
+    outcome: 'select' | 'unknown';
+    attempted: number;
+    accepted: number;
+    rejected: number;
+    durationMs: number;
+  };
   // Phase 2.2+: Emitted when escalation chooses lateral (model swap), vertical (budget increase), or refuse
   'thinking:escalation-path-chosen': {
     taskId: string;

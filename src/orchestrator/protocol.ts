@@ -443,6 +443,14 @@ export const WorkerInputSchema = z.object({
       }),
     )
     .optional(),
+  /**
+   * Phase A2.6 — per-step prompt augmentation from RoleProtocolDriver.
+   * The subprocess worker prepends this to its assembled systemPrompt so
+   * L2+ protocol steps see the same step-scoped prompt the in-process
+   * L0/L1 path delivers. Absent for non-protocol tasks (legacy callers
+   * never set this; subprocess no-ops).
+   */
+  systemPromptAugmentation: z.string().optional(),
 });
 
 // ── WorkerOutput (worker → stdout) ───────────────────────────────────

@@ -1790,6 +1790,44 @@ export interface VinyanBusEvents {
   'hms:risk_scored': { taskId: string; risk: number; primary_signal: string };
   'hms:cross_validation_complete': { taskId: string; consistency: number; probes_sent: number };
 
+  // Phase A1 (RoleProtocol) — observability for the inert framework. Phase A2
+  // adds activation/step-level events when the driver is wired into dispatch.
+  'role-protocol:resolved': {
+    taskId: string;
+    personaId: string;
+    protocolId: string;
+    /** True when the task is a conversational short-circuit; driver bypassed. */
+    conversational: boolean;
+  };
+
+  // Phase C2 — DelusionDetector verdict per verify cycle. Emitted only when
+  // the detector found ≥1 stale citation; consistent-result runs are silent.
+  'reality-anchor:delusion': {
+    taskId: string;
+    personaId: string;
+    falsifiedCount: number;
+    scopedCount: number;
+    delusionRate: number;
+    /** Attenuation factor applied to verificationConfidence in this cycle. */
+    attenuation: number;
+  };
+
+  // Phase C3 — PsychosisMonitor trigger. Fires when ≥1 of the rolling
+  // per-persona signals breaches its ceiling for the first time after the
+  // window warmup. Subscribed by sleep-cycle (Phase C4) which starts
+  // re-grounding for the affected persona.
+  'psychosis:trigger': {
+    personaId: string;
+    /** Which signal breached. */
+    signal: 'prediction_error' | 'contradiction' | 'goal_drift' | 'delusion';
+    /** Observed value of the signal at trigger time. */
+    value: number;
+    /** Ceiling that was crossed. */
+    ceiling: number;
+    /** Window size at trigger. */
+    windowSize: number;
+  };
+
   // Economy OS activation events
   'human:review_requested': { taskId: string; prompt: string; timeoutMs: number };
   'human:review_completed': { taskId: string; content: string; reviewerId?: string };

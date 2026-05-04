@@ -86,8 +86,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [1_000, 24 * 60 * 60 * 1000],
     axiom: 'A4',
     owner: 'intent-resolver',
-    description:
-      'How long an intent classification stays in the LRU+TTL cache before re-resolution.',
+    description: 'How long an intent classification stays in the LRU+TTL cache before re-resolution.',
     tunable: true,
   },
   {
@@ -97,8 +96,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [0, 1],
     axiom: 'A2',
     owner: 'intent-merge',
-    description:
-      'LLM confidence below which the merge result is flagged uncertain (clarification candidate).',
+    description: 'LLM confidence below which the merge result is flagged uncertain (clarification candidate).',
     tunable: true,
   },
 
@@ -122,8 +120,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [1, 1000],
     axiom: 'A7',
     owner: 'sleep-cycle',
-    description:
-      'Minimum number of supporting observations before a pattern is eligible for promotion.',
+    description: 'Minimum number of supporting observations before a pattern is eligible for promotion.',
     tunable: true,
   },
   {
@@ -133,8 +130,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [0, 1],
     axiom: 'A7',
     owner: 'sleep-cycle',
-    description:
-      'Minimum Wilson lower-bound confidence required for a pattern to promote.',
+    description: 'Minimum Wilson lower-bound confidence required for a pattern to promote.',
     tunable: true,
   },
 
@@ -262,8 +258,7 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     range: [10_000, 60 * 60 * 1000],
     axiom: 'A6',
     owner: 'approval-gate',
-    description:
-      'Default time window for human approval before auto-reject. UI/operator deployments may want longer.',
+    description: 'Default time window for human approval before auto-reject. UI/operator deployments may want longer.',
     tunable: true,
   },
 
@@ -297,6 +292,121 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
       'because file-hash drift correlates with elapsed time.',
     tunable: true,
   },
+  // ── Role protocol — exit + retry tuning (A2/A6) ──
+  {
+    key: 'role.exit.confidence_floor',
+    type: 'number',
+    default: 0.85,
+    range: [0.7, 0.95],
+    axiom: 'A2',
+    owner: 'role-protocol',
+    description:
+      'Override threshold for any `evidence-confidence` exit criterion in a role protocol. ' +
+      'When set, replaces the per-criterion threshold at run time so operators can tighten ' +
+      "or loosen exit thresholds without rewriting the protocol declaration. The protocol's " +
+      'declared threshold is used when this override is at its default ceiling (i.e. when ' +
+      "RoleProtocolRunOptions doesn't pass an override).",
+    tunable: true,
+  },
+  {
+    key: 'role.step.retry_max',
+    type: 'integer',
+    default: 0,
+    range: [0, 5],
+    axiom: 'A6',
+    owner: 'role-protocol',
+    description:
+      'Default `retryMax` for protocol steps that do not declare one. A blocking-oracle ' +
+      'failure on such a step is retried up to this many times before being marked ' +
+      'oracle-blocked. Higher values cost tokens; lower values fail-fast on systematic ' +
+      'miswriting.',
+    tunable: true,
+  },
+
+  // ── Reality anchoring — DelusionDetector + PsychosisMonitor (A4 + A7) ──
+  {
+    key: 'psychosis.delusion_ceiling',
+    type: 'number',
+    default: 0.15,
+    range: [0.05, 0.5],
+    axiom: 'A4',
+    owner: 'reality-anchor',
+    description:
+      'Per-trace delusion-rate ceiling that PsychosisMonitor treats as a trigger. ' +
+      'When the fraction of stale citations in a verify cycle exceeds this, the ' +
+      'persona enters quarantine candidacy. Lower = stricter (more re-grounding); ' +
+      'higher = more tolerant of A4 hash drift.',
+    tunable: true,
+  },
+  {
+    key: 'psychosis.prediction_error_ceiling',
+    type: 'number',
+    default: 0.4,
+    range: [0.1, 0.8],
+    axiom: 'A7',
+    owner: 'reality-anchor',
+    description:
+      'Mean prediction-error magnitude (over the rolling per-persona window) above ' +
+      'which PsychosisMonitor fires. A7 — sustained gap between persona predictions ' +
+      'and oracle outcomes is a learning-loop signal, not a single-task one.',
+    tunable: true,
+  },
+  {
+    key: 'psychosis.contradiction_ceiling',
+    type: 'number',
+    default: 0.2,
+    range: [0.05, 0.5],
+    axiom: 'A1',
+    owner: 'reality-anchor',
+    description:
+      'Mean fraction of failing oracles per trace (over the persona window) above ' +
+      'which PsychosisMonitor fires. Multiple oracles disagreeing with a persona ' +
+      'across many tasks is an A1-violation-class signal.',
+    tunable: true,
+  },
+  {
+    key: 'psychosis.goal_drift_ceiling',
+    type: 'number',
+    default: 0.3,
+    range: [0.1, 0.6],
+    axiom: 'A10',
+    owner: 'reality-anchor',
+    description:
+      'Reserved for A10 goal-grounding integration in Phase C4. Fraction of traces ' +
+      'in the window whose goal-grounding action ≠ "continue" — i.e. goal drift / ' +
+      're-clarify / abort. Defined in the registry now so C3 can reference the key; ' +
+      'enforcement lands when the re-grounding state machine consumes it.',
+    tunable: true,
+  },
+  {
+    key: 'reality_anchor.shadow_clean_streak_required',
+    type: 'integer',
+    default: 5,
+    range: [1, 50],
+    axiom: 'A7',
+    owner: 'reality-anchor',
+    description:
+      'Number of consecutive clean traces (success outcome AND no delusion) a persona ' +
+      'in `shadow-mode` must accumulate before the regrounder transitions them back to ' +
+      '`active`. Lower = faster reentry but riskier; higher = stricter A4-honest recovery.',
+    tunable: true,
+  },
+
+  // ── Skill admission (A3 governance) ──
+  {
+    key: 'skill.admission.min_overlap_ratio',
+    type: 'number',
+    default: 0,
+    range: [0, 1],
+    axiom: 'A3',
+    owner: 'skill-admission',
+    description:
+      "Minimum fraction of a skill's tags that must match the persona's acquirableSkillTags " +
+      'for the skill to be promoted to `bound`. Default 0 means boolean match suffices ' +
+      '(any-tag-matches-any-pattern). Raise post-MVP to tighten admission without code changes.',
+    tunable: true,
+  },
+
   // ── World-graph retention (A4) ──
   {
     key: 'world_graph.retention_max_age_days',

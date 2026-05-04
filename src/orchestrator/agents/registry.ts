@@ -203,6 +203,10 @@ export function loadAgentRegistry(
       roles: cfg.roles ?? existing?.roles,
       baseSkills: existing?.baseSkills,
       acquirableSkillTags: existing?.acquirableSkillTags,
+      // Phase A1: config-supplied role_protocol wins over the built-in
+      // default (lets workspace authors swap a researcher's protocol
+      // without redefining the whole persona).
+      roleProtocolId: cfg.role_protocol ?? existing?.roleProtocolId,
       builtin: existing?.builtin ?? false,
       // Preserve built-in soul string; soul file on disk takes precedence at load time
       soul: existing?.soul,

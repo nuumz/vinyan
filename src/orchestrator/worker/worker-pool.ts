@@ -549,7 +549,8 @@ export class WorkerPoolImpl implements WorkerPool {
       // Lazy require to avoid pulling matcher into call paths that don't have
       // a registry. The test surface uses the explicit `skillsFromInput`
       // branch above so this path is only hit at production dispatch.
-      const matcherModule = require('../../skills/simple/matcher.ts') as typeof import('../../skills/simple/matcher.ts');
+      const matcherModule =
+        require('../../skills/simple/matcher.ts') as typeof import('../../skills/simple/matcher.ts');
       const explicit = matcherModule.detectExplicitInvocation(goal, snapshot);
       if (explicit) {
         matchedBodies = [explicit];
@@ -886,11 +887,7 @@ export class WorkerPoolImpl implements WorkerPool {
     // outcomes against the matched names regardless of dispatch mode. The
     // agentId argument enforces per-persona visibility — agent X never sees
     // agent Y's per-agent skills.
-    const { simpleSkills, simpleSkillBodies } = this.resolveSimpleSkillsForTask(
-      input.goal,
-      input.id,
-      input.agentId,
-    );
+    const { simpleSkills, simpleSkillBodies } = this.resolveSimpleSkillsForTask(input.goal, input.id, input.agentId);
 
     return {
       taskId: input.id,
@@ -927,9 +924,11 @@ export class WorkerPoolImpl implements WorkerPool {
       // session-cached `simple-skill-descriptions` block, bodies for
       // the per-task `simple-skill-bodies` block.
       ...(simpleSkills && simpleSkills.length > 0 ? { simpleSkills: [...simpleSkills] } : {}),
-      ...(simpleSkillBodies && simpleSkillBodies.length > 0
-        ? { simpleSkillBodies: [...simpleSkillBodies] }
-        : {}),
+      ...(simpleSkillBodies && simpleSkillBodies.length > 0 ? { simpleSkillBodies: [...simpleSkillBodies] } : {}),
+      // Phase A2.5: per-step prompt augmentation from RoleProtocolDriver.
+      // Forwarded verbatim into the in-process prompt prepend (and IPC
+      // payload for subprocess workers — A2.6 territory).
+      ...(input.systemPromptAugmentation ? { systemPromptAugmentation: input.systemPromptAugmentation } : {}),
     };
   }
 
@@ -1013,7 +1012,11 @@ export class WorkerPoolImpl implements WorkerPool {
       workerInput.simpleSkillBodies,
     );
 
-    const { systemPrompt, userPrompt, tiers } = assemblePrompt(
+    const {
+      systemPrompt: assembledSystemPrompt,
+      userPrompt,
+      tiers,
+    } = assemblePrompt(
       workerInput.goal,
       workerInput.perception,
       workerInput.workingMemory,
@@ -1032,6 +1035,15 @@ export class WorkerPoolImpl implements WorkerPool {
       simpleSkills, // Hybrid: Claude-Code-style descriptions (eager)
       simpleSkillBodies, // Hybrid: bodies for matched skills (lazy)
     );
+    // Phase A2.5: prepend per-step role-protocol augmentation to the
+    // assembled system prompt. Augmentation is set by RoleProtocolDriver
+    // when it dispatches a single protocol step; absent for normal tasks.
+    // Prepending (rather than splicing into a section) keeps prompt-cache
+    // breakpoints intact for the rest of the prompt — only the prepended
+    // bytes are unique per-step.
+    const systemPrompt = workerInput.systemPromptAugmentation
+      ? `${workerInput.systemPromptAugmentation}\n\n${assembledSystemPrompt}`
+      : assembledSystemPrompt;
 
     const startTime = performance.now();
 

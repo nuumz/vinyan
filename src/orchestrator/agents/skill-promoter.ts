@@ -20,11 +20,14 @@
  *   3. Skill not already bound to the persona (idempotency)
  */
 
+import type { SkillAdmissionStore } from '../../db/skill-admission-store.ts';
 import type { SkillOutcomeStore } from '../../db/skill-outcome-store.ts';
 import { wilsonLowerBound } from '../../sleep-cycle/wilson.ts';
 import type { SkillRef } from '../types.ts';
+import type { SyncSkillResolver } from './derive-persona-capabilities.ts';
 import { loadBoundSkills, saveBoundSkills } from './persona-skill-loader.ts';
 import type { AgentRegistry } from './registry.ts';
+import { decideAdmission } from './skill-admission.ts';
 
 /**
  * Minimum number of recorded outcomes before a promotion is considered.
@@ -51,6 +54,31 @@ export interface PromotionProposal {
 }
 
 /**
+ * Optional admission-gate dependencies for `proposeAcquiredToBoundPromotions`.
+ *
+ * When supplied, every (persona, skill) pair that has cleared the
+ * `MIN_TRIALS_FOR_PROMOTION` floor is run through `decideAdmission`. Rejected
+ * pairs do NOT enter the proposal list, an audit row is appended (when
+ * `auditStore` is provided), and the Wilson check is short-circuited.
+ *
+ * Backwards compat: when `admission` is omitted (or `skillResolver` is) the
+ * gate is bypassed — preserves byte-identical behavior for existing callers.
+ *
+ * The resolver may return `null` when a SKILL.md no longer exists on disk
+ * (e.g. retired between acquisition and promotion). Such skills are treated
+ * as conservative-skip: no proposal, no audit row, no error — matches the
+ * acquirer's "can't parse → skip" stance (`local-hub-acquirer.ts:183`).
+ */
+export interface AdmissionDeps {
+  readonly skillResolver: SyncSkillResolver;
+  readonly auditStore?: SkillAdmissionStore;
+  /** Live ceiling for admission-overlap floor; default 0 (boolean match suffices). */
+  readonly minOverlapRatio?: number;
+  /** Test-injectable clock for the audit timestamp. */
+  readonly now?: () => number;
+}
+
+/**
  * Aggregate per-(persona, skill) outcomes from the store and propose
  * promotions whose evidence clears the gates. Pure read — does not mutate
  * `.vinyan/agents/<id>/skills.json`. Pair with `applyPromotions` to persist.
@@ -64,8 +92,11 @@ export function proposeAcquiredToBoundPromotions(
   store: SkillOutcomeStore,
   registry: AgentRegistry,
   workspace: string,
+  admission?: AdmissionDeps,
 ): PromotionProposal[] {
   const proposals: PromotionProposal[] = [];
+  const admissionClock = admission?.now ?? Date.now;
+  const minOverlapRatio = admission?.minOverlapRatio ?? 0;
 
   for (const persona of registry.listAgents()) {
     const rows = store.listForPersona(persona.id);
@@ -100,6 +131,28 @@ export function proposeAcquiredToBoundPromotions(
     for (const [skillId, agg] of bySkill) {
       const total = agg.successes + agg.failures;
       if (total < MIN_TRIALS_FOR_PROMOTION) continue;
+
+      // Phase B admission gate: refuse to promote skills whose tags do not
+      // overlap the persona's `acquirableSkillTags`. Active only when an
+      // `admission` deps object is supplied — preserves backwards compat.
+      // Conservative-skip on resolver miss (mirrors local-hub-acquirer:183).
+      if (admission) {
+        const record = admission.skillResolver.resolve({ id: skillId });
+        if (!record) continue;
+        const decision = decideAdmission(persona.acquirableSkillTags, record.frontmatter.tags, minOverlapRatio);
+        if (admission.auditStore) {
+          admission.auditStore.recordVerdict(
+            persona.id,
+            skillId,
+            decision.verdict,
+            decision.overlapRatio,
+            decision.reason ?? null,
+            admissionClock(),
+          );
+        }
+        if (decision.verdict === 'reject') continue;
+      }
+
       // Aggregate Wilson LB on the persona+skill grand total.
       const aggregateLB = wilsonLowerBound(agg.successes, total);
       if (aggregateLB < WILSON_LB_FOR_PROMOTION) continue;

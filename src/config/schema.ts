@@ -466,6 +466,19 @@ export const AgentSpecSchema = z.object({
       'concierge',
     ])
     .optional(),
+  /**
+   * Phase A1 — id of the `RoleProtocol` this agent enforces on
+   * non-conversational tasks. Must match the lowercase dot-namespaced
+   * format (e.g. `'researcher.investigate'`). When unset, the agent
+   * uses single-shot dispatch (legacy behavior).
+   */
+  role_protocol: z
+    .string()
+    .regex(
+      /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/,
+      "role_protocol must be lowercase dot-namespaced (e.g. 'researcher.investigate')",
+    )
+    .optional(),
   /** True if this is a built-in agent (shipped with Vinyan). */
   builtin: z.boolean().optional(),
 });

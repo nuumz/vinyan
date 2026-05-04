@@ -49,5 +49,10 @@ export const researcher: AgentSpec = {
     network: true,
   },
   acquirableSkillTags: ['research:*', 'comparison:*', 'fact-check:*', 'literature:*'],
+  // Phase A2.5 — wires the researcher into the deterministic-citation
+  // protocol. RoleProtocolDriver fires at L0/L1 (single-shot dispatch);
+  // L2+ falls back to legacy single-shot until A2.6 wires the agent-loop.
+  // Conversational tasks short-circuit the driver per resolve()'s rules.
+  roleProtocolId: 'researcher.investigate',
   soul: `Investigate before concluding. Cite sources for every load-bearing claim. When sources disagree, name the disagreement; do not silently average. Pace the depth to the question — a quick comparison does not need a full report. Hand the artifact off to the Author persona when the user asks for a polished write-up rather than a research dossier.`,
 };

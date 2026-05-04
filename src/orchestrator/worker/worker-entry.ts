@@ -99,7 +99,7 @@ async function processTask(
     };
   }
 
-  const { systemPrompt, userPrompt } = assemblePrompt(
+  const { systemPrompt: assembledSystemPrompt, userPrompt } = assemblePrompt(
     input.goal,
     input.perception,
     input.workingMemory,
@@ -132,6 +132,16 @@ async function processTask(
     input.simpleSkills,
     input.simpleSkillBodies,
   );
+
+  // Phase A2.6 — honor per-step prompt augmentation in the subprocess
+  // path. Shipped through WorkerInput by RoleProtocolDriver's
+  // dispatchUnderlying; mirrors the prepend logic in worker-pool.ts:
+  // dispatchInProcess so subprocess (L2+) and in-process (L0/L1) workers
+  // build the same system prompt for the same protocol step. Absent for
+  // non-protocol tasks (`undefined` → no-op).
+  const systemPrompt = input.systemPromptAugmentation
+    ? `${input.systemPromptAugmentation}\n\n${assembledSystemPrompt}`
+    : assembledSystemPrompt;
 
   const startTime = performance.now();
   // Temperature: reasoning tasks use 0.3 for variance control, code tasks use 0.2 for precision

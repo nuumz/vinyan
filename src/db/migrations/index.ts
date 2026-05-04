@@ -32,6 +32,10 @@ import { migration034 } from './034_skill_proposal_revisions_rebackfill.ts';
 import { migration035 } from './035_task_events_cross_task_session_backfill.ts';
 import { migration036 } from './036_session_jsonl_index.ts';
 import { migration039 } from './039_task_events_parent_task_id.ts';
+import { migration040 } from './040_skill_admission_audit.ts';
+import { migration041 } from './041_role_protocol_run.ts';
+import { migration042 } from './042_persona_fact_citations.ts';
+import { migration043 } from './043_reality_anchor_audit.ts';
 import type { Migration } from './migration-runner.ts';
 
 /** All migrations in version order. */
@@ -43,4 +47,8 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration035,
   migration036,
   migration039,
+  migration040,
+  migration041,
+  migration042,
+  migration043,
 ];

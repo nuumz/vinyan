@@ -1087,7 +1087,10 @@ export class WorkerPoolImpl implements WorkerPool {
         // A2 first-class uncertainty — surface as empty output so the
         // outer phase routes to retry/escalate instead of fabricating a
         // winner. Token spend on rejected branches is still recorded.
-        const out = emptyOutput(workerInput.taskId, kernelResult.audit.totalTokens.input + kernelResult.audit.totalTokens.output);
+        const out = emptyOutput(
+          workerInput.taskId,
+          kernelResult.audit.totalTokens.input + kernelResult.audit.totalTokens.output,
+        );
         return out;
       }
       const winner = kernelResult.winner;
@@ -1103,7 +1106,15 @@ export class WorkerPoolImpl implements WorkerPool {
         terminationReason: winner.terminationReason,
       };
       const durationMs = Math.round(performance.now() - startTime);
-      return parseWorkerOutputFromRE(workerInput.taskId, synthesizedRE, durationMs);
+      const parsed = parseWorkerOutputFromRE(workerInput.taskId, synthesizedRE, durationMs);
+      // T3 — surface the selector margin on the WorkerOutput so core-loop
+      // can forward it to `CriticContext.selectionMargin`, enabling the
+      // margin-based debate trigger. Undefined when the selector chose
+      // by stable-order or cost-only tiebreaker (no Wilson-LB margin).
+      if (kernelResult.verdict.margin !== undefined) {
+        parsed.selectionMargin = kernelResult.verdict.margin;
+      }
+      return parsed;
     }
 
     // Race: RE execute vs timeout

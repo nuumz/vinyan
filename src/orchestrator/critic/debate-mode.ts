@@ -360,13 +360,40 @@ export interface DebateTriggerInput {
   manualOverride?: 'force' | 'skip';
   /** Defaults to 0.7 per overview §8 Q1. */
   threshold?: number;
+  /**
+   * T3 (Yinyan critic-augmented verification): selection margin from the
+   * kernel's hypothesis selector — the gap between winner and runner-up
+   * Wilson-LB scores. When provided AND below `marginThreshold`, debate
+   * fires regardless of risk score because a near-tie selection is
+   * exactly the case where independent adjudication adds the most value.
+   *
+   * Threading is informational — when the kernel did not run (single-shot
+   * dispatch, L0/L1) `selectionMargin` is undefined and the legacy
+   * risk-based rule is the only trigger.
+   */
+  selectionMargin?: number;
+  /**
+   * Default 0.05. Tunable via the parameter store
+   * (`critic.debate_margin_threshold`) so T5's calibrator can later
+   * narrow / widen the band per task type.
+   */
+  marginThreshold?: number;
 }
 
 export function shouldDebate(input: DebateTriggerInput): boolean {
   if (input.manualOverride === 'skip') return false;
   if (input.manualOverride === 'force') return true;
   const threshold = input.threshold ?? 0.7;
-  return (input.riskScore ?? 0) >= threshold;
+  if ((input.riskScore ?? 0) >= threshold) return true;
+  // T3 — selection-margin trigger. Fires on top of (not instead of) the
+  // risk-based rule so a high-risk task always escalates to debate even
+  // when the selector was confident, and a low-risk task with a near-tie
+  // selection also escalates because the kernel itself was uncertain.
+  if (input.selectionMargin !== undefined) {
+    const marginThreshold = input.marginThreshold ?? 0.05;
+    if (input.selectionMargin < marginThreshold) return true;
+  }
+  return false;
 }
 
 /**
@@ -441,10 +468,16 @@ export class DebateRouterCritic implements CriticEngine {
     // baseline — the router must never elevate a fuzzy task input
     // to debate mode silently.
     const riskScore = context?.riskScore;
+    // T3 — selection-margin trigger. When the kernel reports a near-tie
+    // selection (margin < threshold), debate fires regardless of risk
+    // score. Threading is purely additive: when context omits margin,
+    // the legacy risk-only path is unchanged.
     const fire = shouldDebate({
       manualOverride: manual,
       riskScore,
       ...(this.options.threshold !== undefined ? { threshold: this.options.threshold } : {}),
+      ...(context?.selectionMargin !== undefined ? { selectionMargin: context.selectionMargin } : {}),
+      ...(context?.marginThreshold !== undefined ? { marginThreshold: context.marginThreshold } : {}),
     });
 
     if (fire) {

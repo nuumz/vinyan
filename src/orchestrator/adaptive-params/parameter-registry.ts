@@ -20,7 +20,7 @@
  * `docs/foundation/concept.md`.
  */
 
-export const PARAMETER_TYPES = ['number', 'integer', 'duration-ms', 'number-record'] as const;
+export const PARAMETER_TYPES = ['number', 'integer', 'duration-ms', 'number-record', 'boolean'] as const;
 export type ParameterType = (typeof PARAMETER_TYPES)[number];
 
 export const AXIOM_CATEGORIES = [
@@ -48,8 +48,11 @@ export type AxiomCategory = (typeof AXIOM_CATEGORIES)[number];
 export interface ParameterDef {
   readonly key: string;
   readonly type: ParameterType;
-  /** Default literal value. For `number-record`, an object of number values. */
-  readonly default: number | Readonly<Record<string, number>>;
+  /**
+   * Default literal value. For `number-record`, an object of number
+   * values; for `boolean`, a literal `true`/`false`.
+   */
+  readonly default: number | boolean | Readonly<Record<string, number>>;
   /** Optional inclusive range (applies to `number`, `integer`, `duration-ms`). */
   readonly range?: readonly [number, number];
   readonly axiom: AxiomCategory;
@@ -428,6 +431,29 @@ const PARAMETERS_DEF: readonly ParameterDef[] = [
     description: 'Hard cap on total facts before retention triggers.',
     tunable: true,
   },
+
+  // ── Yinyan T3 (critic-augmented verification + kernel activation) ──
+  {
+    key: 'thinking.multi_hypothesis_enabled',
+    type: 'boolean',
+    default: false,
+    axiom: 'A1',
+    owner: 'orchestrator',
+    description:
+      'Kill-switch for the multi-hypothesis kernel from PR #44. Default false: the kernel substrate is wired but dormant. T5 calibrator may flip this true once per-task-type backtests show positive Wilson-LB lift over single-shot.',
+    tunable: true,
+  },
+  {
+    key: 'critic.debate_margin_threshold',
+    type: 'number',
+    default: 0.05,
+    range: [0.01, 0.5],
+    axiom: 'A1',
+    owner: 'critic',
+    description:
+      'When the kernel selector reports a winner-vs-runnerUp margin below this threshold, the debate-router fires regardless of risk score. Tunable per task type by T5 calibrator.',
+    tunable: true,
+  },
 ];
 
 const REGISTRY: ReadonlyMap<string, ParameterDef> = (() => {
@@ -496,6 +522,12 @@ export function validateParameterValue(
         if (typeof v !== 'number' || !Number.isFinite(v)) {
           return { ok: false, reason: `field "${key}" must be a finite number` };
         }
+      }
+      return { ok: true };
+    }
+    case 'boolean': {
+      if (typeof value !== 'boolean') {
+        return { ok: false, reason: 'expected boolean' };
       }
       return { ok: true };
     }

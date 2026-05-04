@@ -1646,6 +1646,15 @@ export interface WorkerOutput {
   proposedContent?: string;
   /** When set, indicates a permanent error that should not be retried or escalated. */
   nonRetryableError?: string;
+  /**
+   * T3 (Yinyan critic-augmented verification): when the multi-hypothesis
+   * kernel from PR #44 ran for this dispatch, this carries the selector's
+   * margin (winner Wilson-LB minus runner-up Wilson-LB). Undefined for
+   * single-shot dispatch and any path the kernel didn't take. Core-loop
+   * forwards it onto `CriticContext.selectionMargin` so a near-tie
+   * selection triggers debate even on low-risk tasks.
+   */
+  selectionMargin?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1681,6 +1690,19 @@ export type OnTextDelta = (delta: { text: string }) => void;
 export interface LLMProvider {
   id: string;
   tier: 'fast' | 'balanced' | 'powerful' | 'tool-uses';
+  /**
+   * T3 (Yinyan critic-augmented verification): provider family for A1
+   * cross-family enforcement. The factory MAY warn when the active critic
+   * shares this value with the active generator — same family means the
+   * critic is biased toward repeating the generator's failure modes.
+   *
+   * Optional + lazy: providers that haven't declared a family fall back to
+   * legacy convention (`'anthropic'` for Anthropic, `'openai-compat'` for
+   * everything else routed through OpenRouter / OpenAI-shape APIs). The
+   * factory's `inferProviderFamily` helper resolves the same value either
+   * way so legacy provider implementations need no migration to opt in.
+   */
+  family?: import('./llm/provider-format.ts').ProviderFamily;
   capabilities?: string[]; // e.g., ['tool_use', 'vision', 'long_context']
   maxContextTokens?: number; // Provider's context window size
   supportsToolUse?: boolean; // Whether provider supports tool_use stop reason

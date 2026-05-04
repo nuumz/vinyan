@@ -25,22 +25,26 @@ interface ProfileSpec {
 }
 
 const PROFILE_DEFINITIONS: Record<ThinkingProfileId, ProfileSpec> = {
-  A: { // Low-risk, Low-uncertainty → L0 reflex
+  A: {
+    // Low-risk, Low-uncertainty → L0 reflex
     thinking: { type: 'disabled' },
     oraclePriority: [],
     baseBudget: 0,
   },
-  B: { // Low-risk, High-uncertainty → Deep think, light verify
+  B: {
+    // Low-risk, High-uncertainty → Deep think, light verify
     thinking: { type: 'adaptive', effort: 'high', display: 'summarized' },
     oraclePriority: ['ast', 'lint'],
     baseBudget: 60_000,
   },
-  C: { // High-risk, Low-uncertainty → Light think, deep verify
+  C: {
+    // High-risk, Low-uncertainty → Light think, deep verify
     thinking: { type: 'adaptive', effort: 'low', display: 'omitted' },
     oraclePriority: ['ast', 'type', 'dep', 'lint', 'test'],
     baseBudget: 10_000,
   },
-  D: { // High-risk, High-uncertainty → Deep think + deep verify
+  D: {
+    // High-risk, High-uncertainty → Deep think + deep verify
     thinking: { type: 'adaptive', effort: 'max', display: 'summarized' },
     oraclePriority: ['ast', 'type', 'dep', 'lint', 'test'],
     baseBudget: 100_000,
@@ -80,8 +84,8 @@ export function computeThinkingCeiling(
   if (confidence >= 0.85) {
     // A2 fix: retain 10% budget floor + audit sampling
     return rng() < auditSampleRate
-      ? base                           // audit sample: full budget
-      : Math.ceil(base * 0.10);       // minimal reinvestigation
+      ? base // audit sample: full budget
+      : Math.ceil(base * 0.1); // minimal reinvestigation
   }
   return Math.ceil(base * (1 - confidence));
 }
@@ -97,30 +101,36 @@ async function hashFileContent(filePath: string): Promise<string> {
   }
 }
 
-export async function buildObservationKey(
-  taskTypeSignature: string,
-  targetFiles: string[],
-): Promise<string> {
+export async function buildObservationKey(taskTypeSignature: string, targetFiles: string[]): Promise<string> {
   if (targetFiles.length === 0) {
     const hash = createHash('sha256').update(taskTypeSignature).digest('hex').slice(0, 16);
     return `${taskTypeSignature}:${hash}`;
   }
   const targetHashes = await Promise.all(targetFiles.map(hashFileContent));
-  const contentHash = createHash('sha256')
-    .update(targetHashes.sort().join(';'))
-    .digest('hex')
-    .slice(0, 16);
+  const contentHash = createHash('sha256').update(targetHashes.sort().join(';')).digest('hex').slice(0, 16);
   return `${taskTypeSignature}:${contentHash}`;
 }
 
 // ── Main Compiler Function ──────────────────────────────────────────────
 
+/**
+ * T3 (Yinyan kernel activation): when `multiHypothesisEnabled === true`
+ * and Profile-D is selected, the compiler emits the multi-hypothesis
+ * config that activates the dormant kernel from PR #44. Default-false
+ * preserves byte-identical pre-T3 behavior; the calibrator (T5) is the
+ * eventual decision-maker that flips this on per task type.
+ */
+export interface CompilerActivationOptions {
+  /** Read from ParameterStore by `DefaultThinkingPolicyCompiler`. */
+  multiHypothesisEnabled?: boolean;
+}
+
 export async function compileThinkingPolicy(
-  input: ThinkingPolicyInput & { auditSampleRate?: number },
+  input: ThinkingPolicyInput & { auditSampleRate?: number; activation?: CompilerActivationOptions },
 ): Promise<ThinkingPolicy> {
   const { riskScore, uncertaintySignal, taskTypeSignature } = input;
   const confidence = input.selfModelConfidence ?? 0.0;
-  const thresholds = input.thresholds ?? { riskBoundary: 0.35, uncertaintyBoundary: 0.50 };
+  const thresholds = input.thresholds ?? { riskBoundary: 0.35, uncertaintyBoundary: 0.5 };
 
   // 1. Select profile from 2D grid (configurable thresholds)
   const profileId = selectProfile(riskScore, uncertaintySignal.score, thresholds);
@@ -130,13 +140,28 @@ export async function compileThinkingPolicy(
   const ceiling = computeThinkingCeiling(profileId, confidence, input.auditSampleRate);
 
   // 3. Build content-addressed observation key (A4)
-  const observationKey = await buildObservationKey(
-    taskTypeSignature, input.taskInput.targetFiles ?? [],
-  );
+  const observationKey = await buildObservationKey(taskTypeSignature, input.taskInput.targetFiles ?? []);
+
+  // 4. T3 — multi-hypothesis activation. ONLY for Profile-D (highRisk +
+  // highUncertainty) AND ONLY when the kill-switch parameter is true. The
+  // kernel is wired through PR #44; this branch is what makes it actually
+  // fire in production. Other profiles continue with their adaptive /
+  // disabled config unchanged.
+  let thinking: ThinkingPolicy['thinking'] = profile.thinking;
+  if (profileId === 'D' && input.activation?.multiHypothesisEnabled) {
+    thinking = {
+      type: 'multi-hypothesis',
+      branches: 3,
+      diversityConstraint: 'different-resources',
+      selectionRule: 'highest-oracle-confidence',
+      allFailBehavior: 'escalate-level',
+      tieBreaker: 'lowest-token-cost',
+    };
+  }
 
   return {
     policyBasis: confidence >= 0.4 ? 'calibrated' : 'default',
-    thinking: profile.thinking,
+    thinking,
     profileId,
     uncertaintyScore: uncertaintySignal.score,
     riskScore,
@@ -146,8 +171,7 @@ export async function compileThinkingPolicy(
     taskTypeCalibration: {
       taskTypeSignature,
       minObservationCount: 0,
-      basis: confidence >= 0.85 ? 'calibrated'
-        : confidence >= 0.4 ? 'emerging' : 'insufficient',
+      basis: confidence >= 0.85 ? 'calibrated' : confidence >= 0.4 ? 'emerging' : 'insufficient',
     },
   };
 }
@@ -157,21 +181,33 @@ export async function compileThinkingPolicy(
 export class DefaultThinkingPolicyCompiler implements ThinkingPolicyCompiler {
   private readonly thresholds?: { riskBoundary: number; uncertaintyBoundary: number };
   private readonly auditSampleRate?: number;
+  /**
+   * T3 — when supplied, the compiler reads
+   * `thinking.multi_hypothesis_enabled` from this store on every compile
+   * and gates Profile-D's `multi-hypothesis` emission on the result. When
+   * absent, the kill-switch defaults to OFF — Profile-D continues to emit
+   * the legacy `adaptive` config and the kernel stays dormant.
+   */
+  private readonly parameterStore?: import('../adaptive-params/parameter-store.ts').ParameterStore;
 
   constructor(config?: {
     thresholds?: { riskBoundary: number; uncertaintyBoundary: number };
     auditSampleRate?: number;
+    parameterStore?: import('../adaptive-params/parameter-store.ts').ParameterStore;
   }) {
     this.thresholds = config?.thresholds;
     this.auditSampleRate = config?.auditSampleRate;
+    this.parameterStore = config?.parameterStore;
   }
 
   compile(input: ThinkingPolicyInput): Promise<ThinkingPolicy> {
     // Merge config-level thresholds as defaults (input can still override)
+    const multiHypothesisEnabled = this.parameterStore?.getBoolean('thinking.multi_hypothesis_enabled') ?? false;
     const merged = {
       ...input,
       thresholds: input.thresholds ?? this.thresholds,
       auditSampleRate: this.auditSampleRate,
+      activation: { multiHypothesisEnabled },
     };
     return compileThinkingPolicy(merged);
   }

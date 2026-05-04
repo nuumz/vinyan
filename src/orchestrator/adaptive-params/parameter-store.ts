@@ -22,12 +22,7 @@
  */
 import type { VinyanBus } from '../../core/bus.ts';
 import type { ParameterLedger } from './parameter-ledger.ts';
-import {
-  getParameterDef,
-  listParameterDefs,
-  type ParameterDef,
-  validateParameterValue,
-} from './parameter-registry.ts';
+import { getParameterDef, listParameterDefs, type ParameterDef, validateParameterValue } from './parameter-registry.ts';
 
 export interface ParameterStoreOptions {
   readonly ledger?: ParameterLedger;
@@ -73,6 +68,13 @@ export class ParameterStore {
     const raw = this.resolveValue(def);
     if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return raw;
     return def.default as number;
+  }
+
+  getBoolean(key: string): boolean {
+    const def = this.requireDef(key, ['boolean']);
+    const raw = this.resolveValue(def);
+    if (typeof raw === 'boolean') return raw;
+    return def.default as boolean;
   }
 
   getRecord(key: string): Readonly<Record<string, number>> {
@@ -123,12 +125,7 @@ export class ParameterStore {
    * Returns a typed result rather than throwing so callers can surface
    * the rejection reason in their own audit trail.
    */
-  set(
-    key: string,
-    newValue: unknown,
-    reason: string,
-    ownerModule: string,
-  ): ParameterSetResult {
+  set(key: string, newValue: unknown, reason: string, ownerModule: string): ParameterSetResult {
     const def = getParameterDef(key);
     if (!def) return { ok: false, reason: `unknown parameter "${key}"` };
     if (!def.tunable) return { ok: false, reason: `parameter "${key}" is not tunable` };
@@ -170,9 +167,7 @@ export class ParameterStore {
       throw new Error(`parameter-store: unknown parameter "${key}". Register it in parameter-registry.ts.`);
     }
     if (expectedTypes && !expectedTypes.includes(def.type)) {
-      throw new Error(
-        `parameter-store: "${key}" has type "${def.type}", expected one of ${expectedTypes.join(', ')}`,
-      );
+      throw new Error(`parameter-store: "${key}" has type "${def.type}", expected one of ${expectedTypes.join(', ')}`);
     }
     return def;
   }
@@ -203,7 +198,12 @@ export class ParameterStore {
   }
 
   /** Return a snapshot of every registered parameter with its current value. */
-  snapshot(): Array<{ key: string; def: ParameterDef; currentValue: unknown; source: 'override' | 'ledger' | 'default' }> {
+  snapshot(): Array<{
+    key: string;
+    def: ParameterDef;
+    currentValue: unknown;
+    source: 'override' | 'ledger' | 'default';
+  }> {
     return listParameterDefs().map((def) => {
       const d = this.describe(def.key);
       return { key: def.key, def, currentValue: d.currentValue, source: d.source };

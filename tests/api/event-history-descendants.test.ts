@@ -154,15 +154,13 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
       toolName: 'Read',
     });
 
-    const res = await serverWithStore.handleRequest(
-      req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`),
-    );
+    const res = await serverWithStore.handleRequest(req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       taskId: string;
       rootTaskId: string;
       taskIds: string[];
-      events: Array<{ eventType: string; taskId: string; ts: number }>;
+      events: Array<{ eventType: string; taskId: string; ts: number; scope?: 'parent' | 'descendant' }>;
       nextCursor?: string;
       truncated: boolean;
     };
@@ -179,10 +177,66 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
     const toolTs = body.events.find((e) => e.eventType === 'agent:tool_executed')?.ts ?? -Infinity;
     expect(dispatchTs).toBeLessThan(toolTs);
 
-    const childToolEvent = body.events.find(
-      (e) => e.taskId === 'tree-B-c1' && e.eventType === 'agent:tool_executed',
-    );
+    const childToolEvent = body.events.find((e) => e.taskId === 'tree-B-c1' && e.eventType === 'agent:tool_executed');
     expect(childToolEvent).toBeDefined();
+    // Scope annotation contract — parent rows tagged 'parent', child rows
+    // 'descendant'. The replay reducer reads this to drop child terminal
+    // events (e.g. a sub-agent's `task:complete`) that would otherwise
+    // overwrite the parent's lifecycle/status and break tool routing.
+    expect(childToolEvent?.scope).toBe('descendant');
+    const dispatchEvent = body.events.find((e) => e.taskId === T && e.eventType === 'workflow:delegate_dispatched');
+    expect(dispatchEvent?.scope).toBe('parent');
+  });
+
+  test('scope annotation present on every recorded child event kind (tool_started/executed/turn_complete)', async () => {
+    // Pin: every child agent:tool_* / agent:turn_complete event the
+    // recorder writes under a sub-task's taskId comes back tagged
+    // `scope: 'descendant'`. Without this, the UI replay reducer cannot
+    // tell parent terminal events apart from child terminal events and
+    // collapses every sub-agent row into "Reasoning-only delegate".
+    const T = 'tree-Scope';
+    const Session = 'sess-Scope';
+    const C1 = 'tree-Scope-c1';
+    taskEventStore.append({
+      taskId: T,
+      sessionId: Session,
+      eventType: 'workflow:delegate_dispatched',
+      payload: { taskId: T, stepId: 's1', subTaskId: C1, agentId: 'researcher' },
+      ts: 100,
+    });
+    taskEventStore.append({
+      taskId: C1,
+      sessionId: Session,
+      eventType: 'agent:tool_started',
+      payload: { taskId: C1, toolCallId: 'tc-1', toolName: 'Read' },
+      ts: 110,
+    });
+    taskEventStore.append({
+      taskId: C1,
+      sessionId: Session,
+      eventType: 'agent:tool_executed',
+      payload: { taskId: C1, toolCallId: 'tc-1', toolName: 'Read', durationMs: 5 },
+      ts: 120,
+    });
+    taskEventStore.append({
+      taskId: C1,
+      sessionId: Session,
+      eventType: 'agent:turn_complete',
+      payload: { taskId: C1, tokensConsumed: 42 },
+      ts: 130,
+    });
+
+    const res = await serverWithStore.handleRequest(req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      events: Array<{ eventType: string; taskId: string; scope?: 'parent' | 'descendant' }>;
+    };
+    for (const eventType of ['agent:tool_started', 'agent:tool_executed', 'agent:turn_complete']) {
+      const ev = body.events.find((e) => e.eventType === eventType && e.taskId === C1);
+      expect(ev?.scope).toBe('descendant');
+    }
+    const dispatchEv = body.events.find((e) => e.eventType === 'workflow:delegate_dispatched' && e.taskId === T);
+    expect(dispatchEv?.scope).toBe('parent');
   });
 
   test('depth limit honored — maxDepth bounds tree expansion', async () => {
@@ -335,9 +389,7 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
       ts: 2,
     });
 
-    const res = await serverWithStore.handleRequest(
-      req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`),
-    );
+    const res = await serverWithStore.handleRequest(req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`));
     const body = (await res.json()) as {
       taskIds: string[];
       events: Array<{ taskId: string; eventType: string }>;
@@ -346,9 +398,7 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
     // appears in `taskIds`, but the session-guard SQL clause keeps c1's
     // cross-session row out of `events`.
     expect(body.taskIds).toContain('tree-Xs-c1');
-    const childToolEvent = body.events.find(
-      (e) => e.taskId === 'tree-Xs-c1' && e.eventType === 'agent:tool_executed',
-    );
+    const childToolEvent = body.events.find((e) => e.taskId === 'tree-Xs-c1' && e.eventType === 'agent:tool_executed');
     expect(childToolEvent).toBeUndefined();
   });
 
@@ -365,9 +415,7 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
       });
     }
 
-    const res = await serverWithStore.handleRequest(
-      req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`),
-    );
+    const res = await serverWithStore.handleRequest(req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`));
     const body = (await res.json()) as { taskIds: string[]; truncated: boolean };
     expect(body.taskIds.length).toBe(TREE_TASKID_CAP);
     expect(body.truncated).toBe(true);
@@ -392,21 +440,21 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
     // attribution and (ts, id) ordering. The cross-session guard remains
     // in force.
     const T = 'multi-A';
-    const SESSION = 'sess-multi-A';
+    const Session = 'sess-multi-A';
     const C1 = 'multi-A-delegate-step1_researcher';
     const C2 = 'multi-A-delegate-step2_author';
 
     // Parent kickoff
     taskEventStore.append({
       taskId: T,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'task:start',
-      payload: { input: { id: T, sessionId: SESSION, goal: 'compare strategies' } },
+      payload: { input: { id: T, sessionId: Session, goal: 'compare strategies' } },
       ts: 100,
     });
     taskEventStore.append({
       taskId: T,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'workflow:subtasks_planned',
       payload: {
         taskId: T,
@@ -422,7 +470,7 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
     // Parent dispatches researcher (child C1)
     taskEventStore.append({
       taskId: T,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'workflow:delegate_dispatched',
       payload: { taskId: T, stepId: 'step1_researcher', subTaskId: C1, agentId: 'researcher' },
       ts: 200,
@@ -430,28 +478,35 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
     // Researcher emits its own tool + stream rows under its own taskId
     taskEventStore.append({
       taskId: C1,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'agent:tool_started',
       payload: { taskId: C1, turnId: 'turn-r-1', toolCallId: 'tc-r-1', toolName: 'Read' },
       ts: 220,
     });
     taskEventStore.append({
       taskId: C1,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'agent:tool_executed',
-      payload: { taskId: C1, turnId: 'turn-r-1', toolCallId: 'tc-r-1', toolName: 'Read', durationMs: 12, isError: false },
+      payload: {
+        taskId: C1,
+        turnId: 'turn-r-1',
+        toolCallId: 'tc-r-1',
+        toolName: 'Read',
+        durationMs: 12,
+        isError: false,
+      },
       ts: 230,
     });
     taskEventStore.append({
       taskId: C1,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'llm:stream_delta',
       payload: { taskId: C1, turnId: 'turn-r-1', kind: 'content', text: 'researcher answer body…' },
       ts: 240,
     });
     taskEventStore.append({
       taskId: T,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'workflow:delegate_completed',
       payload: {
         taskId: T,
@@ -467,28 +522,28 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
     // Parent dispatches author (child C2)
     taskEventStore.append({
       taskId: T,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'workflow:delegate_dispatched',
       payload: { taskId: T, stepId: 'step2_author', subTaskId: C2, agentId: 'author' },
       ts: 300,
     });
     taskEventStore.append({
       taskId: C2,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'agent:tool_started',
       payload: { taskId: C2, turnId: 'turn-a-1', toolCallId: 'tc-a-1', toolName: 'Grep' },
       ts: 320,
     });
     taskEventStore.append({
       taskId: C2,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'llm:stream_delta',
       payload: { taskId: C2, turnId: 'turn-a-1', kind: 'content', text: 'author narrative…' },
       ts: 340,
     });
     taskEventStore.append({
       taskId: T,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'workflow:delegate_completed',
       payload: {
         taskId: T,
@@ -505,15 +560,13 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
     // payload.result.id. The replay path must still attribute correctly.
     taskEventStore.append({
       taskId: T,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'task:complete',
       payload: { result: { id: T, status: 'partial', content: 'comparison synthesis' } },
       ts: 400,
     });
 
-    const res = await serverWithStore.handleRequest(
-      req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`),
-    );
+    const res = await serverWithStore.handleRequest(req(`/api/v1/tasks/${T}/event-history?includeDescendants=true`));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       taskId: string;
@@ -552,19 +605,19 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
     // so the `taskIds` discovery still finds C1/C2 via parent's
     // `delegate_dispatched`, but the cross-session row is filtered at
     // query time.
-    const C_LEAK = 'multi-A-delegate-step3_leak';
+    const CLeak = 'multi-A-delegate-step3_leak';
     taskEventStore.append({
       taskId: T,
-      sessionId: SESSION,
+      sessionId: Session,
       eventType: 'workflow:delegate_dispatched',
-      payload: { taskId: T, stepId: 'step3_leak', subTaskId: C_LEAK, agentId: 'mentor' },
+      payload: { taskId: T, stepId: 'step3_leak', subTaskId: CLeak, agentId: 'mentor' },
       ts: 500,
     });
     taskEventStore.append({
-      taskId: C_LEAK,
+      taskId: CLeak,
       sessionId: 'sess-OTHER',
       eventType: 'agent:tool_executed',
-      payload: { taskId: C_LEAK, toolName: 'Read', durationMs: 1, isError: false },
+      payload: { taskId: CLeak, toolName: 'Read', durationMs: 1, isError: false },
       ts: 510,
     });
 
@@ -575,10 +628,8 @@ describe('GET /api/v1/tasks/:id/event-history — descendants mode', () => {
       taskIds: string[];
       events: Array<{ taskId: string; eventType: string }>;
     };
-    expect(body2.taskIds).toContain(C_LEAK); // discovered via parent dispatch
-    const leakedToolEvent = body2.events.find(
-      (e) => e.taskId === C_LEAK && e.eventType === 'agent:tool_executed',
-    );
+    expect(body2.taskIds).toContain(CLeak); // discovered via parent dispatch
+    const leakedToolEvent = body2.events.find((e) => e.taskId === CLeak && e.eventType === 'agent:tool_executed');
     expect(leakedToolEvent).toBeUndefined(); // session guard suppressed it
   });
 });

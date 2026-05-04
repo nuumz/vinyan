@@ -888,11 +888,31 @@ export class TaskProcessProjectionService {
             stepId,
             round,
             status: typeof p.status === 'string' ? p.status : (existing?.status ?? 'unknown'),
-            ...(typeof p.agentId === 'string' ? { agentId: p.agentId } : existing?.agentId ? { agentId: existing.agentId } : {}),
-            ...(typeof p.outputPreview === 'string' ? { outputPreview: p.outputPreview } : existing?.outputPreview ? { outputPreview: existing.outputPreview } : {}),
-            ...(typeof p.tokensConsumed === 'number' ? { tokensConsumed: p.tokensConsumed } : existing?.tokensConsumed !== undefined ? { tokensConsumed: existing.tokensConsumed } : {}),
-            ...(typeof p.startedAt === 'number' ? { startedAt: p.startedAt } : existing?.startedAt !== undefined ? { startedAt: existing.startedAt } : {}),
-            ...(typeof p.completedAt === 'number' ? { completedAt: p.completedAt } : existing?.completedAt !== undefined ? { completedAt: existing.completedAt } : {}),
+            ...(typeof p.agentId === 'string'
+              ? { agentId: p.agentId }
+              : existing?.agentId
+                ? { agentId: existing.agentId }
+                : {}),
+            ...(typeof p.outputPreview === 'string'
+              ? { outputPreview: p.outputPreview }
+              : existing?.outputPreview
+                ? { outputPreview: existing.outputPreview }
+                : {}),
+            ...(typeof p.tokensConsumed === 'number'
+              ? { tokensConsumed: p.tokensConsumed }
+              : existing?.tokensConsumed !== undefined
+                ? { tokensConsumed: existing.tokensConsumed }
+                : {}),
+            ...(typeof p.startedAt === 'number'
+              ? { startedAt: p.startedAt }
+              : existing?.startedAt !== undefined
+                ? { startedAt: existing.startedAt }
+                : {}),
+            ...(typeof p.completedAt === 'number'
+              ? { completedAt: p.completedAt }
+              : existing?.completedAt !== undefined
+                ? { completedAt: existing.completedAt }
+                : {}),
           });
           break;
         }
@@ -1164,9 +1184,7 @@ export class TaskProcessProjectionService {
         ...existing,
         status: 'completed',
         finishedAt: ts,
-        ...(typeof durationMs === 'number'
-          ? { durationMs }
-          : { durationMs: Math.max(0, ts - existing.startedAt) }),
+        ...(typeof durationMs === 'number' ? { durationMs } : { durationMs: Math.max(0, ts - existing.startedAt) }),
       });
     };
 
@@ -1375,11 +1393,7 @@ export class TaskProcessProjectionService {
         if (ev.eventType === 'workflow:collaboration_round') return true;
         if (ev.eventType === 'workflow:subtasks_planned') {
           const p = (ev.payload ?? {}) as { groupMode?: unknown };
-          if (
-            p.groupMode === 'debate' ||
-            p.groupMode === 'parallel' ||
-            p.groupMode === 'comparison'
-          ) {
+          if (p.groupMode === 'debate' || p.groupMode === 'parallel' || p.groupMode === 'comparison') {
             return true;
           }
         }
@@ -1387,42 +1401,104 @@ export class TaskProcessProjectionService {
       return false;
     })();
 
-    const childThoughtCap = 200;
-    const childThoughts: AuditEntry[] = [];
-    let childThoughtsTruncated = false;
+    // ─── Descendant audit roll-up ────────────────────────────────────
+    //
+    // Collaboration parents (debate / parallel / comparison) host the
+    // operator's view of every sub-agent's audit trail — without rolling
+    // up the children's audit:entry rows the parent surface shows
+    // nothing and the operator has to navigate per-child to read what
+    // each agent actually did.
+    //
+    // Phase 2.7 expanded the rollup beyond `kind:'thought'` to the full
+    // set of work-unit / persona / final / session lifecycle rows.
+    // Decision / verdict / plan_step / gate / workflow rows stay
+    // parent-only on purpose — those are governance state belonging to
+    // the parent's surface; rolling them up would double-count.
+    //
+    // Each kind has its own per-child cap so a chatty sub-agent (long
+    // chain-of-thought) can't starve out other kinds. Truncation is
+    // surfaced honestly via the `completenessBySection.truncated` flag.
+    //
+    // Wrapper fields (`taskId`, `subTaskId`, `subAgentId`, `sessionId`)
+    // ride along on every entry — the UI groups by child via those
+    // existing fields, no new metadata required.
+    const ROLLED_UP_KINDS: ReadonlySet<AuditEntry['kind']> = new Set([
+      'thought',
+      'tool_call',
+      'final',
+      'subtask',
+      'subagent',
+      'delegate',
+      'session',
+    ]);
+    /**
+     * Per-kind cap on rolled-up child entries. `thought` keeps its
+     * original 200/child budget for back-compat with operators expecting
+     * full chain-of-thought visibility on debate parents. Other kinds
+     * use a smaller cap because they are typically O(steps), not O(tokens).
+     */
+    const PER_KIND_CAP: Record<AuditEntry['kind'], number> = {
+      thought: 200,
+      tool_call: 200,
+      final: 50,
+      subtask: 50,
+      subagent: 50,
+      delegate: 50,
+      session: 25,
+      // Not rolled up — capped at 0 for safety.
+      decision: 0,
+      verdict: 0,
+      plan_step: 0,
+      workflow: 0,
+      gate: 0,
+    };
+    /**
+     * Per-child read budget — each child's `listForTask` returns at most
+     * this many events. 4x the largest cap leaves headroom for non-audit
+     * rows interleaved with audit:entry rows; a saturated read still
+     * captures every kind we want to roll up.
+     */
+    const childReadLimit = 200 * 4;
+    const childEntries: AuditEntry[] = [];
+    const truncatedKinds = new Set<AuditEntry['kind']>();
     if (isCollaborationParent && descendantTaskIds.length > 0 && this.deps.taskEventStore) {
       const store = this.deps.taskEventStore;
       for (const childId of descendantTaskIds) {
         let childEvents: PersistedTaskEvent[] = [];
         try {
-          childEvents = store.listForTask(childId, { limit: childThoughtCap * 4 });
+          childEvents = store.listForTask(childId, { limit: childReadLimit });
         } catch {
           continue;
         }
-        let perChild = 0;
+        const perChildPerKind: Partial<Record<AuditEntry['kind'], number>> = {};
         for (const ev of childEvents) {
           if (ev.eventType !== 'audit:entry') continue;
           const result = safeParseAuditEntry(ev.payload);
           if (!result.ok) continue;
-          if (result.entry.kind !== 'thought') continue;
-          if (perChild >= childThoughtCap) {
-            childThoughtsTruncated = true;
-            break;
+          const kind = result.entry.kind;
+          if (!ROLLED_UP_KINDS.has(kind)) continue;
+          const seenForKind = perChildPerKind[kind] ?? 0;
+          const cap = PER_KIND_CAP[kind] ?? 0;
+          if (seenForKind >= cap) {
+            truncatedKinds.add(kind);
+            continue;
           }
-          childThoughts.push(result.entry);
-          perChild++;
+          childEntries.push(result.entry);
+          perChildPerKind[kind] = seenForKind + 1;
         }
       }
     }
+    const childThoughtsTruncated = truncatedKinds.has('thought');
 
-    const allEntries = childThoughts.length > 0 ? entries.concat(childThoughts) : entries;
-    if (childThoughts.length > 0) {
+    const allEntries = childEntries.length > 0 ? entries.concat(childEntries) : entries;
+    if (childEntries.length > 0) {
       allEntries.sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
     }
 
     const completenessBySection = computeAuditCompleteness(allEntries, events, {
       descendantTaskIds,
       childThoughtsTruncated,
+      truncatedKinds,
     });
 
     return {
@@ -2028,6 +2104,14 @@ function computeAuditCompleteness(
     descendantTaskIds?: readonly string[];
     /** True when child-thought rollup hit the per-child cap. */
     childThoughtsTruncated?: boolean;
+    /**
+     * Set of audit kinds whose descendant rollup was capped per-child.
+     * Drives the `truncated: true` flag on the matching section, so the
+     * UI can surface "we capped this rollup" honestly instead of letting
+     * a 200-thought sub-agent silently swallow other kinds. Optional —
+     * pre-Phase-2.7 callers omit it; the section flag stays unset.
+     */
+    truncatedKinds?: ReadonlySet<AuditEntry['kind']>;
   },
 ): TaskProcessSectionCompleteness[] {
   const counts: Record<AuditSection, number> = {
@@ -2106,9 +2190,7 @@ function computeAuditCompleteness(
       // When we have rolled-up child thoughts, the cap-truncation
       // signal is the only honest reason to surface; otherwise no
       // reason needed.
-      return context?.childThoughtsTruncated
-        ? 'child-thought rollup capped at 200 per child'
-        : undefined;
+      return context?.childThoughtsTruncated ? 'child-thought rollup capped at 200 per child' : undefined;
     }
     if ((context?.descendantTaskIds?.length ?? 0) > 0) {
       return 'thoughts emitted on child tasks (delegation / multi-agent debate)';
@@ -2116,10 +2198,7 @@ function computeAuditCompleteness(
     let routingLevel: number | undefined;
     for (const ev of events) {
       const p = (ev.payload ?? {}) as Record<string, unknown>;
-      if (
-        (ev.eventType === 'task:start' || ev.eventType === 'agent:routed') &&
-        typeof p.routingLevel === 'number'
-      ) {
+      if ((ev.eventType === 'task:start' || ev.eventType === 'agent:routed') && typeof p.routingLevel === 'number') {
         routingLevel = p.routingLevel;
       }
     }
@@ -2135,11 +2214,28 @@ function computeAuditCompleteness(
     ...(thoughtsReason ? { reason: thoughtsReason } : {}),
     ...(context?.childThoughtsTruncated ? { truncated: true } : {}),
   });
+  // Map audit kinds → section names for the truncation lookup.
+  const TRUNCATION_KIND_TO_SECTION: Partial<Record<AuditEntry['kind'], AuditSection>> = {
+    tool_call: 'toolCalls',
+    final: 'finals',
+    subtask: 'subTasks',
+    subagent: 'subAgents',
+    delegate: 'delegates',
+    session: 'sessionEvents',
+  };
+  const sectionTruncated = (section: AuditSection): boolean => {
+    if (!context?.truncatedKinds) return false;
+    for (const [kind, sec] of Object.entries(TRUNCATION_KIND_TO_SECTION) as Array<[AuditEntry['kind'], AuditSection]>) {
+      if (sec === section && context.truncatedKinds.has(kind)) return true;
+    }
+    return false;
+  };
   result.push({
     section: 'toolCalls',
     kind: orphanStarted > 0 ? 'partial' : 'complete',
     count: counts.toolCalls,
     ...(orphanStarted > 0 ? { reason: `${orphanStarted} tool_started without tool_executed` } : {}),
+    ...(sectionTruncated('toolCalls') ? { truncated: true } : {}),
   });
   for (const section of [
     'decisions',
@@ -2153,7 +2249,12 @@ function computeAuditCompleteness(
     'gates',
     'finals',
   ] as const) {
-    result.push({ section, kind: 'complete', count: counts[section] });
+    result.push({
+      section,
+      kind: 'complete',
+      count: counts[section],
+      ...(sectionTruncated(section) ? { truncated: true } : {}),
+    });
   }
   return result;
 }

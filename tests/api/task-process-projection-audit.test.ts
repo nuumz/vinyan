@@ -345,9 +345,7 @@ describe('buildAuditLog — per-section completeness', () => {
     const thoughts = proj?.completenessBySection?.find((c) => c.section === 'thoughts');
     expect(thoughts?.kind).toBe('unclassifiable');
     expect(thoughts?.count).toBe(0);
-    expect(thoughts?.reason).toBe(
-      'thoughts emitted on child tasks (delegation / multi-agent debate)',
-    );
+    expect(thoughts?.reason).toBe('thoughts emitted on child tasks (delegation / multi-agent debate)');
   });
 
   test('parent collaboration task rolls up child kind:thought audit rows', () => {
@@ -366,7 +364,12 @@ describe('buildAuditLog — per-section completeness', () => {
       {
         groupMode: 'debate',
         subtasks: [
-          { subtaskId: 'parent-debate-delegate-p-researcher-r0', stepId: 'p-researcher', status: 'planned', agentId: 'researcher' },
+          {
+            subtaskId: 'parent-debate-delegate-p-researcher-r0',
+            stepId: 'p-researcher',
+            status: 'planned',
+            agentId: 'researcher',
+          },
           { subtaskId: 'parent-debate-delegate-p-mentor-r0', stepId: 'p-mentor', status: 'planned', agentId: 'mentor' },
         ],
       },
@@ -425,12 +428,7 @@ describe('buildAuditLog — per-section completeness', () => {
     // child thoughts up — those belong to the child's own surface.
     plantTaskRow('parent-generic');
     plantTaskRow('parent-generic-child');
-    append(
-      'parent-generic',
-      'workflow:delegate_dispatched',
-      { stepId: 's1', subTaskId: 'parent-generic-child' },
-      1100,
-    );
+    append('parent-generic', 'workflow:delegate_dispatched', { stepId: 's1', subTaskId: 'parent-generic-child' }, 1100);
     append(
       'parent-generic-child',
       'audit:entry',
@@ -449,9 +447,7 @@ describe('buildAuditLog — per-section completeness', () => {
     // Reason still credits delegated children — descendantTaskIds is set.
     const cb = proj?.completenessBySection?.find((c) => c.section === 'thoughts');
     expect(cb?.kind).toBe('unclassifiable');
-    expect(cb?.reason).toBe(
-      'thoughts emitted on child tasks (delegation / multi-agent debate)',
-    );
+    expect(cb?.reason).toBe('thoughts emitted on child tasks (delegation / multi-agent debate)');
   });
 
   test('legacy workflow:delegate_dispatched synthesizes paired subtask + subagent rows', () => {
@@ -641,6 +637,236 @@ describe('buildAuditLog — Phase 2.7 new sections', () => {
     expect(wf.length).toBe(1);
     if (wf[0]?.kind !== 'workflow') throw new Error('expected workflow');
     expect(wf[0].phase).toBe('planned');
+  });
+});
+
+describe('buildAuditLog — descendant rollup beyond `thought`', () => {
+  // Pre-2.7 the parent collaboration rollup only folded child `kind:'thought'`
+  // entries. Process Replay therefore showed empty bySection.toolCalls /
+  // subTasks / subAgents / finals on a debate parent even when the children
+  // had emitted real tool_call / final / subtask / subagent rows. Rolling
+  // those up keeps the parent's audit surface honest. Wrapper fields
+  // (subTaskId / subAgentId / sessionId / taskId) ride along on every
+  // entry — the UI groups by child via those existing fields.
+  function buildDebateParent(): { parentId: string; childIds: [string, string] } {
+    const parentId = 'parent-rollup';
+    const childIds: [string, string] = ['parent-rollup-child-r', 'parent-rollup-child-m'];
+    plantTaskRow(parentId);
+    plantTaskRow(childIds[0]);
+    plantTaskRow(childIds[1]);
+    append(
+      parentId,
+      'workflow:subtasks_planned',
+      {
+        groupMode: 'debate',
+        subtasks: [
+          { subtaskId: childIds[0], stepId: 'p-r', status: 'planned', agentId: 'researcher' },
+          { subtaskId: childIds[1], stepId: 'p-m', status: 'planned', agentId: 'mentor' },
+        ],
+      },
+      1100,
+    );
+    append(parentId, 'workflow:delegate_dispatched', { stepId: 'p-r', subTaskId: childIds[0] }, 1110);
+    append(parentId, 'workflow:delegate_dispatched', { stepId: 'p-m', subTaskId: childIds[1] }, 1115);
+    return { parentId, childIds };
+  }
+
+  test('parent collaboration rolls up child kind:"tool_call" rows beyond thoughts', () => {
+    const { parentId, childIds } = buildDebateParent();
+    for (const childId of childIds) {
+      append(
+        childId,
+        'audit:entry',
+        buildAuditEntryPayload({
+          id: `${childId}-tc-1`,
+          taskId: childId,
+          kind: 'tool_call',
+          actor: { type: 'worker', id: 'w' },
+          ts: 1200,
+          lifecycle: 'executed',
+          toolId: 'Read',
+          argsHash: 'a'.repeat(64),
+          argsRedacted: { path: 'src/foo.ts' },
+          subTaskId: childId,
+          subAgentId: childId,
+        } as Partial<AuditEntry> & { kind: 'tool_call' }),
+        1200,
+      );
+    }
+    const proj = makeService().build(parentId);
+    const toolCalls = proj?.bySection?.toolCalls ?? [];
+    expect(toolCalls.length).toBe(2);
+    // Each rolled-up entry carries the child's taskId (wrapper). The UI
+    // uses this to group by sub-agent without any new metadata.
+    const taskIds = new Set(toolCalls.map((t) => t.taskId));
+    expect(taskIds.has(childIds[0])).toBe(true);
+    expect(taskIds.has(childIds[1])).toBe(true);
+    // subTaskId / subAgentId rode along — grouping by delegate works.
+    const subTaskIds = new Set(toolCalls.map((t) => t.subTaskId));
+    expect(subTaskIds.has(childIds[0])).toBe(true);
+    expect(subTaskIds.has(childIds[1])).toBe(true);
+  });
+
+  test('parent collaboration rolls up child kind:"final" / "subtask" / "subagent" / "session" rows', () => {
+    const { parentId, childIds } = buildDebateParent();
+    const childId = childIds[0];
+    append(
+      childId,
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: `${childId}-final-1`,
+        taskId: childId,
+        kind: 'final',
+        actor: { type: 'worker', id: 'w' },
+        ts: 1300,
+        contentHash: 'b'.repeat(64),
+        contentRedactedPreview: 'agent answer',
+        assembledFromStepIds: [],
+        assembledFromDelegateIds: [],
+        subTaskId: childId,
+      } as Partial<AuditEntry> & { kind: 'final' }),
+      1300,
+    );
+    append(
+      childId,
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: `${childId}-st-1`,
+        taskId: childId,
+        kind: 'subtask',
+        actor: { type: 'orchestrator' },
+        ts: 1310,
+        subTaskId: childId,
+        phase: 'return',
+      } as Partial<AuditEntry> & { kind: 'subtask' }),
+      1310,
+    );
+    append(
+      childId,
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: `${childId}-sa-1`,
+        taskId: childId,
+        kind: 'subagent',
+        actor: { type: 'orchestrator' },
+        ts: 1320,
+        subAgentId: childId,
+        phase: 'return',
+      } as Partial<AuditEntry> & { kind: 'subagent' }),
+      1320,
+    );
+    append(
+      childId,
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: `${childId}-sess-1`,
+        taskId: childId,
+        kind: 'session',
+        actor: { type: 'orchestrator' },
+        ts: 1330,
+        phase: 'message',
+      } as Partial<AuditEntry> & { kind: 'session' }),
+      1330,
+    );
+    const proj = makeService().build(parentId);
+    expect((proj?.bySection?.finals ?? []).length).toBeGreaterThanOrEqual(1);
+    expect((proj?.bySection?.subTasks ?? []).length).toBeGreaterThanOrEqual(1);
+    expect((proj?.bySection?.subAgents ?? []).length).toBeGreaterThanOrEqual(1);
+    expect((proj?.bySection?.sessionEvents ?? []).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('regression: descendant tool_call rolls up after parent task is done', () => {
+    // Concrete repro for the historical Process Replay bug — a parent
+    // with a delegated child that emits a tool_call AFTER the parent
+    // has completed (synthesis-first race) must still surface the
+    // child's tool_call in the parent's bySection.toolCalls roll-up so
+    // the operator can audit what the sub-agent actually did.
+    const { parentId, childIds } = buildDebateParent();
+    // Parent terminal first (simulates synthesis-first race).
+    append(parentId, 'task:complete', { result: { id: parentId, status: 'completed' } }, 1500);
+    // Child tool_call lands afterwards.
+    append(
+      childIds[0],
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: `${childIds[0]}-late-tc`,
+        taskId: childIds[0],
+        kind: 'tool_call',
+        actor: { type: 'worker', id: 'w' },
+        ts: 1600,
+        lifecycle: 'executed',
+        toolId: 'Read',
+        argsHash: 'a'.repeat(64),
+        argsRedacted: { path: 'src/late.ts' },
+        subTaskId: childIds[0],
+      } as Partial<AuditEntry> & { kind: 'tool_call' }),
+      1600,
+    );
+    const proj = makeService().build(parentId);
+    const toolCalls = proj?.bySection?.toolCalls ?? [];
+    const lateEntry = toolCalls.find((t) => t.id === `${childIds[0]}-late-tc`);
+    expect(lateEntry).toBeDefined();
+    expect(lateEntry?.taskId).toBe(childIds[0]);
+  });
+
+  test('per-kind rollup cap is honored and reported as truncated honestly', () => {
+    // The parent rollup must cap a chatty child so a single sub-agent
+    // can't blow the projection's response budget. `final` is capped at
+    // 50 per child — emit 60 and assert the section reports
+    // `truncated: true` so the UI can label the partial roll-up.
+    const { parentId, childIds } = buildDebateParent();
+    const childId = childIds[0];
+    for (let i = 0; i < 60; i++) {
+      append(
+        childId,
+        'audit:entry',
+        buildAuditEntryPayload({
+          id: `${childId}-final-${i}`,
+          taskId: childId,
+          kind: 'final',
+          actor: { type: 'worker', id: 'w' },
+          ts: 1400 + i,
+          contentHash: 'b'.repeat(64),
+          contentRedactedPreview: `final ${i}`,
+          assembledFromStepIds: [],
+          assembledFromDelegateIds: [],
+          subTaskId: childId,
+        } as Partial<AuditEntry> & { kind: 'final' }),
+        1400 + i,
+      );
+    }
+    const proj = makeService().build(parentId);
+    const finals = proj?.bySection?.finals ?? [];
+    expect(finals.length).toBe(50);
+    const cb = proj?.completenessBySection?.find((c) => c.section === 'finals');
+    expect(cb?.truncated).toBe(true);
+  });
+
+  test('non-rolled-up kinds (decision/verdict/plan_step/workflow/gate) stay parent-only', () => {
+    // Parent-scope governance state must NOT be doubled by child rollup —
+    // a child's `decision` entry belongs to the child's own surface, not
+    // the parent's. The negative gate keeps the rollup focused on
+    // work-unit / persona / final / session lifecycle kinds.
+    const { parentId, childIds } = buildDebateParent();
+    const childId = childIds[0];
+    append(
+      childId,
+      'audit:entry',
+      buildAuditEntryPayload({
+        id: `${childId}-dec-1`,
+        taskId: childId,
+        kind: 'decision',
+        actor: { type: 'orchestrator' },
+        ts: 1700,
+        decisionType: 'route',
+        verdict: 'L1',
+        rationale: 'child routing',
+      } as Partial<AuditEntry> & { kind: 'decision' }),
+      1700,
+    );
+    const proj = makeService().build(parentId);
+    const decisions = proj?.bySection?.decisions ?? [];
+    expect(decisions.find((d) => d.taskId === childId)).toBeUndefined();
   });
 });
 

@@ -123,6 +123,15 @@ export async function buildObservationKey(taskTypeSignature: string, targetFiles
 export interface CompilerActivationOptions {
   /** Read from ParameterStore by `DefaultThinkingPolicyCompiler`. */
   multiHypothesisEnabled?: boolean;
+  /**
+   * T5 (Yinyan per-task-type calibration): snapshot of the
+   * `thinking.budget_table` parameter at compile time. Keyed by
+   * `${taskTypeSignature}:adaptive:${effort}`. Values are token budgets.
+   * When an entry exists for the active `(taskType, mode)` pair the
+   * compiler overrides the confidence-decay ceiling with the entry's
+   * value. Absent → ceiling falls through to the legacy heuristic.
+   */
+  budgetTable?: Readonly<Record<string, number>>;
 }
 
 export async function compileThinkingPolicy(
@@ -159,19 +168,46 @@ export async function compileThinkingPolicy(
     };
   }
 
+  // 5. T5 — per-task-type budget table override. When the calibrator has
+  // promoted a `(taskType, mode)` entry, that value supersedes the
+  // confidence-decay ceiling computed in step 2. The compiler always
+  // honors the table because the calibrator's walk-forward backtest +
+  // monotonicity guard already enforced safety; the kernel cannot make
+  // a more conservative choice here without re-running the backtest.
+  // When no entry exists for this `(taskType, mode)` pair the ceiling
+  // from step 2 stands unchanged — pre-T5 behavior preserved.
+  let calibratedCeiling: number | undefined;
+  if (input.activation?.budgetTable && thinking.type === 'adaptive') {
+    const key = `${taskTypeSignature}:adaptive:${thinking.effort}`;
+    const v = input.activation.budgetTable[key];
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+      calibratedCeiling = v;
+    }
+  }
+
   return {
-    policyBasis: confidence >= 0.4 ? 'calibrated' : 'default',
+    policyBasis: calibratedCeiling !== undefined ? 'calibrated' : confidence >= 0.4 ? 'calibrated' : 'default',
     thinking,
     profileId,
     uncertaintyScore: uncertaintySignal.score,
     riskScore,
     selfModelConfidence: confidence,
     observationKey,
-    thinkingCeiling: ceiling,
+    // T5 wins when the calibrator has a verified per-task-type entry —
+    // that ceiling carries the walk-forward + monotonicity guarantees
+    // the confidence-decay heuristic cannot replicate.
+    thinkingCeiling: calibratedCeiling ?? ceiling,
     taskTypeCalibration: {
       taskTypeSignature,
       minObservationCount: 0,
-      basis: confidence >= 0.85 ? 'calibrated' : confidence >= 0.4 ? 'emerging' : 'insufficient',
+      basis:
+        calibratedCeiling !== undefined
+          ? 'calibrated'
+          : confidence >= 0.85
+            ? 'calibrated'
+            : confidence >= 0.4
+              ? 'emerging'
+              : 'insufficient',
     },
   };
 }
@@ -203,11 +239,15 @@ export class DefaultThinkingPolicyCompiler implements ThinkingPolicyCompiler {
   compile(input: ThinkingPolicyInput): Promise<ThinkingPolicy> {
     // Merge config-level thresholds as defaults (input can still override)
     const multiHypothesisEnabled = this.parameterStore?.getBoolean('thinking.multi_hypothesis_enabled') ?? false;
+    // T5 — budget table snapshot. Empty record when no calibrator has run
+    // yet (default registry value). The compiler treats absence as
+    // "no override" and falls through to the legacy ceiling heuristic.
+    const budgetTable = this.parameterStore?.getRecord('thinking.budget_table');
     const merged = {
       ...input,
       thresholds: input.thresholds ?? this.thresholds,
       auditSampleRate: this.auditSampleRate,
-      activation: { multiHypothesisEnabled },
+      activation: { multiHypothesisEnabled, budgetTable },
     };
     return compileThinkingPolicy(merged);
   }

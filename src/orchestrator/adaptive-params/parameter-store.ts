@@ -94,7 +94,21 @@ export class ParameterStore {
           break;
         }
       }
-      if (allOk) return out;
+      if (!allOk) return def.default as Readonly<Record<string, number>>;
+      // T5: sparse-record support — when the registry default has no keys
+      // (e.g. `thinking.budget_table` whose keys are dynamic per-task-type),
+      // surface every numeric field present on `candidate`. Existing
+      // fixed-schema records (e.g. `risk_router.thresholds`) retain
+      // byte-identical semantics because their default declares all keys
+      // and the loop above already populated them.
+      for (const k of Object.keys(candidate)) {
+        if (k in out) continue; // already populated from the strict pass
+        const v = candidate[k];
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          out[k] = v;
+        }
+      }
+      return out;
     }
     return def.default as Readonly<Record<string, number>>;
   }

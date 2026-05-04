@@ -1215,6 +1215,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           // Phase C2: rebuild `<workspace>/.vinyan/knowledge-index.md` at the
           // end of every cycle so the catalog stays current with code drift.
           knowledgeIndexWorkspace: workspace,
+          // T5 — `parameterStore` is wired later in this factory (declaration
+          // order pre-dates T5). The store is attached via
+          // `attachParameterStore` immediately after construction below.
         })
       : undefined;
 
@@ -2010,6 +2013,15 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       parameterLedger = undefined;
       parameterStore = undefined;
     }
+  }
+
+  // T5 — late-bind parameterStore on the SleepCycleRunner so the
+  // per-task-type budget calibrator can write `thinking.budget_table`
+  // entries at end-of-cycle. The runner was constructed earlier in
+  // this factory (declaration order pre-dates T5); the late-bind
+  // pattern avoids restructuring the entire factory.
+  if (parameterStore && sleepCycleRunner) {
+    sleepCycleRunner.attachParameterStore(parameterStore);
   }
 
   // Phase C3 — PsychosisMonitor subscribes to `trace:record` and emits

@@ -282,6 +282,17 @@ export class SleepCycleRunner {
      * Absent → no-op. See docs/design/knowledge-loop-rfc.md §6.
      */
     knowledgeIndexWorkspace?: string;
+    /**
+     * T5 (Yinyan per-task-type thinking calibration). When wired, after
+     * the global thinking-readiness gate runs, the calibrator promotes
+     * per-(taskType, mode) entries into `thinking.budget_table` via
+     * `parameterStore.set(...)`. Absent → no-op; the budget table stays
+     * empty and the compiler continues using profile defaults for every
+     * task type. Wiring is OPT-IN at construction so deployments without
+     * a wired ParameterStore (early-bring-up, in-memory tests) are
+     * unaffected.
+     */
+    parameterStore?: import('../orchestrator/adaptive-params/parameter-store.ts').ParameterStore;
   }) {
     this.traceStore = options.traceStore;
     this.patternStore = options.patternStore;
@@ -305,10 +316,26 @@ export class SleepCycleRunner {
     this.sentinelMaxNoopCycles = options.sentinelMaxNoopCycles ?? DEFAULT_SENTINEL_MAX_NOOP_CYCLES;
     this.commonsenseRegistry = options.commonsenseRegistry;
     this.knowledgeIndexWorkspace = options.knowledgeIndexWorkspace;
+    this.parameterStore = options.parameterStore;
+  }
+
+  /**
+   * T5 — late-bind the parameter store. Used by the orchestrator factory
+   * because the SleepCycleRunner is constructed BEFORE `ParameterStore`
+   * is wired (the factory has a layered init order that pre-dates T5).
+   * Idempotent: re-binding the same store is a no-op; binding a
+   * different store overwrites the previous reference. Calling this is
+   * the ONLY way to enable the per-task-type budget-table calibration
+   * after construction.
+   */
+  attachParameterStore(store: import('../orchestrator/adaptive-params/parameter-store.ts').ParameterStore): void {
+    this.parameterStore = store;
   }
 
   /** Phase C2: workspace root for periodic knowledge-index rebuild (optional). */
   private readonly knowledgeIndexWorkspace?: string;
+  /** T5 calibrator: optional parameter-store sink for the thinking budget table. */
+  private parameterStore?: import('../orchestrator/adaptive-params/parameter-store.ts').ParameterStore;
 
   /** M4.5 — registry handle, optional. Set via constructor or post-wiring. */
   private commonsenseRegistry?: CommonSenseRegistry;
@@ -1051,6 +1078,47 @@ export class SleepCycleRunner {
       }
     } catch {
       // Thinking readiness gate is non-critical — swallow errors to avoid disrupting sleep cycle
+    }
+
+    // T5 (Yinyan per-task-type thinking calibration). Runs after the
+    // global readiness gate. Pulls per-(taskType, mode) success rates,
+    // proposes budget-table updates, applies monotonicity guard, writes
+    // via ParameterStore.set() with `sleep-cycle-t5` owner attribution.
+    // Best-effort like the readiness gate — calibrator failures must not
+    // disrupt the rest of the sleep cycle.
+    if (this.parameterStore) {
+      try {
+        const perTypeStats = this.traceStore.getSuccessRateByThinkingModePerTaskType();
+        if (perTypeStats.length > 0) {
+          const { promoteThinkingBudgetTable } = await import('./thinking-budget-promotion.ts');
+          const { PROFILE_DEFINITIONS } = await import('../orchestrator/thinking/thinking-compiler.ts');
+          // Build a flat mode → baseBudget map so the calibrator does not
+          // need to know about ThinkingProfileId. Includes the (none) bucket
+          // mapping to 0 so the per-type readiness gate's baseline mode
+          // resolves cleanly.
+          const profileBudgets: Record<string, number> = { '(none)': 0, disabled: 0 };
+          for (const profile of Object.values(PROFILE_DEFINITIONS)) {
+            const cfg = profile.thinking;
+            if (cfg.type === 'adaptive') {
+              const key = `adaptive:${cfg.effort}`;
+              profileBudgets[key] = profile.baseBudget;
+            }
+          }
+          const result = promoteThinkingBudgetTable({
+            stats: perTypeStats,
+            traces,
+            parameterStore: this.parameterStore,
+            profileBudgets,
+          });
+          this.bus?.emit('thinking:budget-table-calibrated', {
+            applied: result.applied,
+            promotedCount: result.decisions.filter((d) => d.kind === 'promoted').length,
+            rejectedCount: result.decisions.filter((d) => d.kind === 'rejected').length,
+          });
+        }
+      } catch {
+        // T5 calibrator failure must not abort the sleep cycle.
+      }
     }
 
     // Comprehension mining (B1 engine-fit + label-drift, B2 stage-agreement,

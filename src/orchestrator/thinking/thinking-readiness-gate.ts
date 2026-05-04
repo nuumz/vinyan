@@ -143,3 +143,62 @@ export function evaluateThinkingReadiness(stats: ThinkingModeStats[]): ThinkingR
     stats,
   };
 }
+
+// ── T5: Per-task-type readiness gate ────────────────────────────────────
+
+/**
+ * T5 (Yinyan per-task-type calibration) — same gate, evaluated for ONE
+ * task-type signature in isolation. The calibrator passes only that
+ * type's `(thinkingMode, total, ...)` rows in `stats` and inspects the
+ * result before considering a budget-table mutation for that type.
+ *
+ * Crucially this re-uses the same constants (`MIN_TRACES`, `MIN_SUCCESS_DELTA`,
+ * `MAX_QUALITY_REGRESSION`) so a per-type unlock has the same statistical
+ * rigor as the global unlock — just scoped tighter. The verdict shape is
+ * identical to `ThinkingReadinessVerdict`, so existing dashboards consume
+ * either flavor unchanged.
+ */
+export interface PerTaskTypeReadinessInput {
+  taskType: string;
+  stats: ThinkingModeStats[];
+}
+
+export type PerTaskTypeReadinessVerdict = ThinkingReadinessVerdict & { taskType: string };
+
+export function evaluateThinkingReadinessForTaskType(input: PerTaskTypeReadinessInput): PerTaskTypeReadinessVerdict {
+  const inner = evaluateThinkingReadiness(input.stats);
+  return { ...inner, taskType: input.taskType } as PerTaskTypeReadinessVerdict;
+}
+
+/**
+ * Aggregate per-task-type verdicts into a single map keyed by taskType.
+ * Helper for the calibrator + dashboards — does NOT change the global
+ * `evaluateThinkingReadiness()` semantics.
+ *
+ * Input is the flat shape returned by
+ * `TraceStore.getSuccessRateByThinkingModePerTaskType()`. Output preserves
+ * insertion order via Map<> so consumers can iterate deterministically.
+ */
+export function evaluateAllTaskTypes(
+  rows: Array<ThinkingModeStats & { taskType: string }>,
+): Map<string, PerTaskTypeReadinessVerdict> {
+  const grouped = new Map<string, ThinkingModeStats[]>();
+  for (const row of rows) {
+    const bucket = grouped.get(row.taskType);
+    const stat: ThinkingModeStats = {
+      thinkingMode: row.thinkingMode,
+      total: row.total,
+      successes: row.successes,
+      failures: row.failures,
+      successRate: row.successRate,
+      avgQualityComposite: row.avgQualityComposite,
+    };
+    if (bucket) bucket.push(stat);
+    else grouped.set(row.taskType, [stat]);
+  }
+  const out = new Map<string, PerTaskTypeReadinessVerdict>();
+  for (const [taskType, stats] of grouped) {
+    out.set(taskType, evaluateThinkingReadinessForTaskType({ taskType, stats }));
+  }
+  return out;
+}

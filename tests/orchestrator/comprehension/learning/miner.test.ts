@@ -11,16 +11,13 @@
 
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import {
-  ComprehensionStore,
-  type ComprehensionRecordRow,
-} from '../../../../src/db/comprehension-store.ts';
+import { type ComprehensionRecordRow, ComprehensionStore } from '../../../../src/db/comprehension-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../../../src/db/migrations/index.ts';
 import { ComprehensionCalibrator } from '../../../../src/orchestrator/comprehension/learning/calibrator.ts';
 import {
-  mineComprehension,
   type CorrectionCascadeInsight,
   type EngineFitInsight,
+  mineComprehension,
 } from '../../../../src/orchestrator/comprehension/learning/miner.ts';
 import type { ComprehendedTaskMessage } from '../../../../src/orchestrator/comprehension/types.ts';
 
@@ -41,10 +38,7 @@ afterEach(() => {
   db.close();
 });
 
-function makeEnvelope(
-  inputHash: string,
-  confidence: number,
-): ComprehendedTaskMessage {
+function makeEnvelope(inputHash: string, confidence: number): ComprehendedTaskMessage {
   return {
     jsonrpc: '2.0',
     method: 'comprehension.result',
@@ -185,9 +179,9 @@ describe('mineComprehension', () => {
     }
 
     const result = mineComprehension({ store, calibrator });
-    const cascade = result.insights.find(
-      (i) => i.kind === 'correction-cascade',
-    ) as CorrectionCascadeInsight | undefined;
+    const cascade = result.insights.find((i) => i.kind === 'correction-cascade') as
+      | CorrectionCascadeInsight
+      | undefined;
     expect(cascade).toBeDefined();
     expect(cascade!.pairedTurns).toBe(3);
     expect(cascade!.insufficient).toBe(true);
@@ -207,9 +201,7 @@ describe('mineComprehension', () => {
     store.markOutcome(hash, { outcome: 'confirmed', evidence: {} });
 
     const result = mineComprehension({ store, calibrator });
-    const cascade = result.insights.find(
-      (i) => i.kind === 'correction-cascade',
-    ) as CorrectionCascadeInsight;
+    const cascade = result.insights.find((i) => i.kind === 'correction-cascade') as CorrectionCascadeInsight;
     expect(cascade.pairedTurns).toBe(0);
     expect(cascade.agreed).toBe(0);
     // A single engine-fit entry for the rule bucket.
@@ -249,10 +241,7 @@ describe('mineComprehension', () => {
     const all = store.outcomedInWindow(0, 10) as ComprehensionRecordRow[];
     expect(all.length).toBe(1);
 
-    const result = mineComprehension(
-      { store, calibrator },
-      { now: () => now },
-    );
+    const result = mineComprehension({ store, calibrator }, { now: () => now });
     // Default window = 7 days → the 30-day-old row is out of range.
     expect(result.rowsScanned).toBe(0);
   });

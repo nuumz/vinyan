@@ -10,15 +10,15 @@
  *   - too few personas → DebateRoomBuildFailure
  */
 import { describe, expect, it } from 'bun:test';
+import type { AgentRegistry } from '../../../../src/orchestrator/agents/registry.ts';
+import type { CollaborationDirective } from '../../../../src/orchestrator/intent/collaboration-parser.ts';
 import {
   buildDebateRoomContract,
   DEBATE_ROOM_DEFAULTS,
   DebateRoomBuildFailure,
 } from '../../../../src/orchestrator/room/presets/debate-room.ts';
-import type { CollaborationDirective } from '../../../../src/orchestrator/intent/collaboration-parser.ts';
-import type { AgentRegistry } from '../../../../src/orchestrator/agents/registry.ts';
-import type { AgentSpec } from '../../../../src/orchestrator/types.ts';
 import { effectiveRoleClass } from '../../../../src/orchestrator/room/types.ts';
+import type { AgentSpec } from '../../../../src/orchestrator/types.ts';
 
 function agentSpec(id: string, role: AgentSpec['role'], description = id): AgentSpec {
   return { id, name: id, description, role } as AgentSpec;
@@ -37,8 +37,7 @@ function makeRegistry(agents: AgentSpec[], canonicalVerifierId?: string): AgentR
     unregisterAgentsForTask: () => [],
     mergeCapabilityClaims: () => false,
     getDerivedCapabilities: () => null,
-    findCanonicalVerifier: () =>
-      canonicalVerifierId ? (byId.get(canonicalVerifierId) ?? null) : null,
+    findCanonicalVerifier: () => (canonicalVerifierId ? (byId.get(canonicalVerifierId) ?? null) : null),
     assertA1Pair: () => ({ ok: true }),
   } as unknown as AgentRegistry;
 }
@@ -80,15 +79,9 @@ describe('buildDebateRoomContract — basic shape', () => {
       registry,
     });
 
-    const primaryCount = bundle.contract.roles.filter(
-      (r) => effectiveRoleClass(r) === 'primary-participant',
-    ).length;
-    const oversightCount = bundle.contract.roles.filter(
-      (r) => effectiveRoleClass(r) === 'oversight',
-    ).length;
-    const integratorCount = bundle.contract.roles.filter(
-      (r) => effectiveRoleClass(r) === 'integrator',
-    ).length;
+    const primaryCount = bundle.contract.roles.filter((r) => effectiveRoleClass(r) === 'primary-participant').length;
+    const oversightCount = bundle.contract.roles.filter((r) => effectiveRoleClass(r) === 'oversight').length;
+    const integratorCount = bundle.contract.roles.filter((r) => effectiveRoleClass(r) === 'integrator').length;
 
     expect(primaryCount).toBe(3);
     expect(oversightCount).toBe(0);
@@ -113,12 +106,8 @@ describe('buildDebateRoomContract — basic shape', () => {
       registry,
     });
 
-    const primaryCount = bundle.contract.roles.filter(
-      (r) => effectiveRoleClass(r) === 'primary-participant',
-    ).length;
-    const oversightCount = bundle.contract.roles.filter(
-      (r) => effectiveRoleClass(r) === 'oversight',
-    ).length;
+    const primaryCount = bundle.contract.roles.filter((r) => effectiveRoleClass(r) === 'primary-participant').length;
+    const oversightCount = bundle.contract.roles.filter((r) => effectiveRoleClass(r) === 'oversight').length;
     expect(primaryCount).toBe(3);
     expect(oversightCount).toBe(1);
     expect(String(bundle.oversightParticipantId)).toBe('reviewer');
@@ -133,9 +122,7 @@ describe('buildDebateRoomContract — basic shape', () => {
       registry,
     });
 
-    const integratorCount = bundle.contract.roles.filter(
-      (r) => effectiveRoleClass(r) === 'integrator',
-    ).length;
+    const integratorCount = bundle.contract.roles.filter((r) => effectiveRoleClass(r) === 'integrator').length;
     expect(integratorCount).toBe(0);
     expect(bundle.integratorParticipantId).toBeNull();
     // Without integrator: maxRounds = 1 + 0 = 1.
@@ -150,9 +137,7 @@ describe('buildDebateRoomContract — basic shape', () => {
       directive: directive(),
       registry,
     });
-    const primaries = bundle.contract.roles.filter(
-      (r) => effectiveRoleClass(r) === 'primary-participant',
-    );
+    const primaries = bundle.contract.roles.filter((r) => effectiveRoleClass(r) === 'primary-participant');
     for (const r of primaries) {
       expect(r.personaId).toBeDefined();
       expect(String(r.personaId)).toBe(r.name);

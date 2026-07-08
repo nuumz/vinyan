@@ -10,9 +10,12 @@ describe('WriteQueue', () => {
 
   beforeEach(() => {
     flushed = [];
-    queue = new WriteQueue<number>((batch) => {
-      flushed.push([...batch]);
-    }, { flushIntervalMs: 50, maxBatchSize: 5 });
+    queue = new WriteQueue<number>(
+      (batch) => {
+        flushed.push([...batch]);
+      },
+      { flushIntervalMs: 50, maxBatchSize: 5 },
+    );
   });
 
   afterEach(() => {

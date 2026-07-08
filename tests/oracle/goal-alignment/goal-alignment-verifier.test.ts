@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import type { HypothesisTuple } from '../../../src/core/types.ts';
-import type { TaskUnderstanding } from '../../../src/orchestrator/types.ts';
-import { verify } from '../../../src/oracle/goal-alignment/goal-alignment-verifier.ts';
 import { isAbstention } from '../../../src/core/types.ts';
+import { verify } from '../../../src/oracle/goal-alignment/goal-alignment-verifier.ts';
+import type { TaskUnderstanding } from '../../../src/orchestrator/types.ts';
 
 // ── Helpers ────────────────────────────────────────────────────
 

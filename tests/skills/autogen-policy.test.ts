@@ -16,8 +16,8 @@
 import { Database } from 'bun:sqlite';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
-import { ParameterLedger } from '../../src/orchestrator/adaptive-params/parameter-ledger.ts';
 import { SkillProposalStore } from '../../src/db/skill-proposal-store.ts';
+import { ParameterLedger } from '../../src/orchestrator/adaptive-params/parameter-ledger.ts';
 import {
   AUTOGEN_THRESHOLD_PARAM_NAME,
   computeAdaptiveThreshold,

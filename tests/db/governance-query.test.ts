@@ -155,7 +155,10 @@ describe('TraceStore — governance query/replay', () => {
     store.insert(
       makeTrace({
         id: 't2',
-        governanceProvenance: makeProvenance({ policyVersion: 'goal-time-grounding:v1', attributedTo: 'goal-grounding' }),
+        governanceProvenance: makeProvenance({
+          policyVersion: 'goal-time-grounding:v1',
+          attributedTo: 'goal-grounding',
+        }),
       }),
     );
     const v1 = store.queryGovernance({ policyVersion: 'orchestrator-governance:v1' });

@@ -10,8 +10,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { GateRequest, GateVerdict } from '../../../src/gate/gate.ts';
-import type { ImporterGateRequest } from '../../../src/skills/hub/importer.ts';
 import { buildImporterGateFn } from '../../../src/skills/hub/gate-adapter.ts';
+import type { ImporterGateRequest } from '../../../src/skills/hub/importer.ts';
 
 const IMPORTER_REQ: ImporterGateRequest = {
   tool: 'import_skill_dry_run',
@@ -75,7 +75,9 @@ describe('buildImporterGateFn', () => {
   });
 
   test('allow-with-caveats passes through epistemic decision', async () => {
-    const stub = stubGate(baseVerdict({ decision: 'allow', epistemicDecision: 'allow-with-caveats', aggregateConfidence: 0.71 }));
+    const stub = stubGate(
+      baseVerdict({ decision: 'allow', epistemicDecision: 'allow-with-caveats', aggregateConfidence: 0.71 }),
+    );
     const gate = buildImporterGateFn({ runGate: stub.run, workspace: '/tmp/ws' });
     const v = await gate(IMPORTER_REQ);
     expect(v.decision).toBe('allow');

@@ -119,9 +119,7 @@ describe('FTS5 task search (mig 028)', () => {
     await submit(sid, 'investigate retry-flow stalls');
     await submit(sid, 'unrelated routine cleanup');
 
-    const res = await server.handleRequest(
-      req(`/api/v1/tasks?sessionId=${sid}&search=retry&searchMode=fts`),
-    );
+    const res = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&search=retry&searchMode=fts`));
     const body = (await res.json()) as { tasks: Array<{ goal?: string }>; total: number };
     expect(body.total).toBeGreaterThanOrEqual(1);
     expect(body.tasks.every((t) => t.goal?.includes('retry'))).toBe(true);
@@ -152,9 +150,7 @@ describe('FTS5 task search (mig 028)', () => {
     await submit(sid, 'fix retry-flow path');
     await submit(sid, 'fix retry chain unrelated');
 
-    const res = await server.handleRequest(
-      req(`/api/v1/tasks?sessionId=${sid}&search=retry-flow&searchMode=fts`),
-    );
+    const res = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&search=retry-flow&searchMode=fts`));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { tasks: Array<{ goal?: string }>; total: number };
     // The first row contains the literal hyphenated phrase; the second
@@ -209,9 +205,7 @@ describe('FTS5 task search (mig 028)', () => {
 
     // INSERT path: the FTS row was created by the AFTER INSERT trigger.
     const direct = db
-      .query(
-        "SELECT count(*) AS c FROM session_tasks_fts WHERE session_tasks_fts MATCH 'searchabletoken'",
-      )
+      .query("SELECT count(*) AS c FROM session_tasks_fts WHERE session_tasks_fts MATCH 'searchabletoken'")
       .get() as { c: number };
     expect(direct.c).toBe(1);
 
@@ -226,9 +220,7 @@ describe('FTS5 task search (mig 028)', () => {
     });
     sessionManager.cancelTask(sid, taskId, 'unit test');
     const updated = db
-      .query(
-        "SELECT status FROM session_tasks_fts WHERE searchable_text MATCH 'cancellabletoken'",
-      )
+      .query("SELECT status FROM session_tasks_fts WHERE searchable_text MATCH 'cancellabletoken'")
       .get() as { status: string } | undefined;
     expect(updated?.status).toBe('cancelled');
   });

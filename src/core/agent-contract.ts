@@ -134,10 +134,7 @@ export interface AgentAclOverlay {
  *   - `capabilityOverrides.readAny = false` → drop `file_read`
  *   - `capabilityOverrides.network = false` → drop `mcp_call` + `llm_call`
  */
-function applyAgentAcl(
-  capabilities: Capability[],
-  acl?: AgentAclOverlay,
-): Capability[] {
+function applyAgentAcl(capabilities: Capability[], acl?: AgentAclOverlay): Capability[] {
   if (!acl) return capabilities;
   const drop = new Set<Capability['type']>();
   const overrides = acl.capabilityOverrides;
@@ -182,11 +179,7 @@ function applyAgentAcl(
  * Optional `agentAcl` narrows routing-level defaults via intersection —
  * never widens privilege (A6: least privilege preserved).
  */
-export function createContract(
-  task: TaskInput,
-  routing: RoutingDecision,
-  agentAcl?: AgentAclOverlay,
-): AgentContract {
+export function createContract(task: TaskInput, routing: RoutingDecision, agentAcl?: AgentAclOverlay): AgentContract {
   const level = routing.level;
   const maxToolCalls = MAX_TOOL_CALLS_BY_LEVEL[level] ?? 50;
   const baseCapabilities = DEFAULT_CAPABILITIES[level] ?? [];

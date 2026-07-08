@@ -118,9 +118,7 @@ afterAll(() => {
 describe('POST /api/v1/scheduler/jobs (create)', () => {
   test('creates a job from a raw cron expression', async () => {
     const events: Array<{ name: string; payload: unknown }> = [];
-    const off = bus.on('scheduler:job_created', (payload) =>
-      events.push({ name: 'scheduler:job_created', payload }),
-    );
+    const off = bus.on('scheduler:job_created', (payload) => events.push({ name: 'scheduler:job_created', payload }));
     const res = await server.handleRequest(
       authedReq('/api/v1/scheduler/jobs', {
         method: 'POST',
@@ -261,9 +259,7 @@ describe('lifecycle: pause / resume / patch / delete', () => {
       }),
     );
     const job = (await create.json()) as { job: { id: string } };
-    await server.handleRequest(
-      authedReq(`/api/v1/scheduler/jobs/${job.job.id}/pause`, { method: 'POST' }),
-    );
+    await server.handleRequest(authedReq(`/api/v1/scheduler/jobs/${job.job.id}/pause`, { method: 'POST' }));
 
     const events: unknown[] = [];
     const off = bus.on('scheduler:job_resumed', (p) => events.push(p));
@@ -314,9 +310,7 @@ describe('lifecycle: pause / resume / patch / delete', () => {
 
     const events: unknown[] = [];
     const off = bus.on('scheduler:job_deleted', (p) => events.push(p));
-    const del = await server.handleRequest(
-      authedReq(`/api/v1/scheduler/jobs/${job.job.id}`, { method: 'DELETE' }),
-    );
+    const del = await server.handleRequest(authedReq(`/api/v1/scheduler/jobs/${job.job.id}`, { method: 'DELETE' }));
     off();
     expect(del.status).toBe(200);
     const after = (await del.json()) as { deleted: boolean };
@@ -343,16 +337,10 @@ describe('run-now (POST /:id/run)', () => {
     const startedEvents: Array<{ taskId: string }> = [];
     const completedEvents: Array<{ outcome: string }> = [];
     const offDue = bus.on('scheduler:job_due', (p) => dueEvents.push(p));
-    const offStarted = bus.on('scheduler:job_started', (p) =>
-      startedEvents.push(p as { taskId: string }),
-    );
-    const offCompleted = bus.on('scheduler:job_completed', (p) =>
-      completedEvents.push(p as { outcome: string }),
-    );
+    const offStarted = bus.on('scheduler:job_started', (p) => startedEvents.push(p as { taskId: string }));
+    const offCompleted = bus.on('scheduler:job_completed', (p) => completedEvents.push(p as { outcome: string }));
 
-    const run = await server.handleRequest(
-      authedReq(`/api/v1/scheduler/jobs/${job.job.id}/run`, { method: 'POST' }),
-    );
+    const run = await server.handleRequest(authedReq(`/api/v1/scheduler/jobs/${job.job.id}/run`, { method: 'POST' }));
     expect(run.status).toBe(202);
     const body = (await run.json()) as { taskId: string; status: string };
     expect(body.status).toBe('started');
@@ -371,9 +359,7 @@ describe('run-now (POST /:id/run)', () => {
 describe('recursion guard', () => {
   test('rejects scheduler-mutation when X-Vinyan-Origin is gateway-cron', async () => {
     const events: Array<{ blockedPath: string }> = [];
-    const off = bus.on('scheduler:recursion_blocked', (p) =>
-      events.push(p as { blockedPath: string }),
-    );
+    const off = bus.on('scheduler:recursion_blocked', (p) => events.push(p as { blockedPath: string }));
     const res = await server.handleRequest(
       authedReq('/api/v1/scheduler/jobs', {
         method: 'POST',

@@ -1,19 +1,19 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import {
-  selectProfile,
-  computeThinkingCeiling,
   buildObservationKey,
   compileThinkingPolicy,
-  PROFILE_DEFINITIONS,
+  computeThinkingCeiling,
   DefaultThinkingPolicyCompiler,
+  PROFILE_DEFINITIONS,
+  selectProfile,
 } from '../../src/orchestrator/thinking/thinking-compiler.ts';
-import { computeTaskUncertainty } from '../../src/orchestrator/thinking/uncertainty-computer.ts';
 import type { TaskUncertaintySignal } from '../../src/orchestrator/thinking/thinking-policy.ts';
+import { computeTaskUncertainty } from '../../src/orchestrator/thinking/uncertainty-computer.ts';
 
 // ── selectProfile ─────────────────────────────────────────────────────
 
 describe('selectProfile', () => {
-  const thresholds = { riskBoundary: 0.35, uncertaintyBoundary: 0.50 };
+  const thresholds = { riskBoundary: 0.35, uncertaintyBoundary: 0.5 };
 
   test('Profile A: low-risk, low-uncertainty', () => {
     expect(selectProfile(0.1, 0.2, thresholds)).toBe('A');
@@ -23,7 +23,7 @@ describe('selectProfile', () => {
 
   test('Profile B: low-risk, high-uncertainty', () => {
     expect(selectProfile(0.1, 0.8, thresholds)).toBe('B');
-    expect(selectProfile(0.0, 0.50, thresholds)).toBe('B');
+    expect(selectProfile(0.0, 0.5, thresholds)).toBe('B');
     expect(selectProfile(0.34, 1.0, thresholds)).toBe('B');
   });
 
@@ -35,12 +35,12 @@ describe('selectProfile', () => {
 
   test('Profile D: high-risk, high-uncertainty', () => {
     expect(selectProfile(0.8, 0.8, thresholds)).toBe('D');
-    expect(selectProfile(0.35, 0.50, thresholds)).toBe('D');
+    expect(selectProfile(0.35, 0.5, thresholds)).toBe('D');
     expect(selectProfile(1.0, 1.0, thresholds)).toBe('D');
   });
 
   test('exact boundary: risk=0.35, uncertainty=0.50 → D (>=)', () => {
-    expect(selectProfile(0.35, 0.50, thresholds)).toBe('D');
+    expect(selectProfile(0.35, 0.5, thresholds)).toBe('D');
   });
 
   test('gap-free: every (risk, uncertainty) pair yields a valid profile', () => {
@@ -166,7 +166,10 @@ describe('computeTaskUncertainty', () => {
   test('score is always within [0, 1]', () => {
     for (const n of [0, 1, 5, 25, 50, 100, 500]) {
       const signal = computeTaskUncertainty({
-        taskInput: { targetFiles: Array.from({ length: 30 }, (_, i) => `f${i}.ts`), constraints: Array.from({ length: 10 }, () => 'c') },
+        taskInput: {
+          targetFiles: Array.from({ length: 30 }, (_, i) => `f${i}.ts`),
+          constraints: Array.from({ length: 10 }, () => 'c'),
+        },
         priorTraceCount: n,
       });
       expect(signal.score).toBeGreaterThanOrEqual(0);
@@ -248,7 +251,11 @@ describe('DefaultThinkingPolicyCompiler', () => {
     const policy = await compiler.compile({
       taskInput: { id: 't1', targetFiles: [], taskType: 'test', goal: 'test' },
       riskScore: 0.1,
-      uncertaintySignal: { score: 0.1, components: { planComplexity: 0.05, priorTraceCount: 0.1 }, basis: 'cold-start' },
+      uncertaintySignal: {
+        score: 0.1,
+        components: { planComplexity: 0.05, priorTraceCount: 0.1 },
+        basis: 'cold-start',
+      },
       routingLevel: 0,
       taskTypeSignature: 'test',
     });

@@ -1,7 +1,8 @@
 import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { OracleProfileStore } from '../../src/db/oracle-profile-store.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
+import { OracleProfileStore } from '../../src/db/oracle-profile-store.ts';
+
 function createDb(): Database {
   const db = new Database(':memory:');
   migration001.up(db);

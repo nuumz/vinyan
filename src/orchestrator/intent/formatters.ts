@@ -95,9 +95,7 @@ export function formatAgentCatalog(
     lines.push(
       `  - Emit \`capabilityRequirements\` as an array of { id, weight (0-1), fileExtensions?, actionVerbs?, domains?, frameworkMarkers?, role? }.`,
     );
-    lines.push(
-      `  - Use ONLY these ids (closed vocabulary, derived from the roster above): ${vocab}`,
-    );
+    lines.push(`  - Use ONLY these ids (closed vocabulary, derived from the roster above): ${vocab}`);
     lines.push(
       `  - Weight reflects importance to the task. Use multiple requirements when a task spans concerns (e.g. plot + drafting).`,
     );

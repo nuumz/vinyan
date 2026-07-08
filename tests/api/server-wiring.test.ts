@@ -21,8 +21,12 @@ import { SessionManager } from '../../src/api/session-manager.ts';
 import type { VinyanBus } from '../../src/core/bus.ts';
 import { createBus } from '../../src/core/bus.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
-import { migratePipelineConfidenceColumns, migrateThinkingColumns, migrateTranscriptColumns } from '../../src/db/trace-schema.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
+import {
+  migratePipelineConfidenceColumns,
+  migrateThinkingColumns,
+  migrateTranscriptColumns,
+} from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
 import { MetricsCollector } from '../../src/observability/metrics.ts';
 import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';

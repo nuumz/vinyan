@@ -14,11 +14,11 @@
  */
 
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { PluginAuditStore } from '../../src/db/plugin-audit-store.ts';
 import {

@@ -1,6 +1,6 @@
-import { describe, test, expect, beforeEach } from 'bun:test';
-import { HotFactIndex } from '../../src/world-graph/hot-fact-index.ts';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import type { Fact } from '../../src/core/types.ts';
+import { HotFactIndex } from '../../src/world-graph/hot-fact-index.ts';
 
 function makeFact(overrides: Partial<Fact> = {}): Fact {
   return {

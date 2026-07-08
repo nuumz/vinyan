@@ -63,8 +63,26 @@ function isReadOnlyCommand(detail: string): boolean {
   // Multiple commands joined → not read-only.
   if (/[;&|]/.test(trimmed)) return false;
   const head = trimmed.split(/\s+/, 1)[0] ?? '';
-  return ['cat', 'ls', 'pwd', 'echo', 'head', 'tail', 'wc', 'stat', 'file', 'which', 'whereis', 'find', 'grep', 'rg', 'awk', 'sed'].includes(head)
-    && !/--write|-i\b|>>|>/.test(trimmed);
+  return (
+    [
+      'cat',
+      'ls',
+      'pwd',
+      'echo',
+      'head',
+      'tail',
+      'wc',
+      'stat',
+      'file',
+      'which',
+      'whereis',
+      'find',
+      'grep',
+      'rg',
+      'awk',
+      'sed',
+    ].includes(head) && !/--write|-i\b|>>|>/.test(trimmed)
+  );
 }
 
 function detectGitMutation(detail: string): boolean {

@@ -181,7 +181,14 @@ describe('routeKeypress', () => {
 
   test('Space focuses notification when present', () => {
     const state = createInitialState();
-    pushNotification(state, { type: 'approval', taskId: 'task-1', message: 'test', priority: 1, timestamp: Date.now(), dismissed: false });
+    pushNotification(state, {
+      type: 'approval',
+      taskId: 'task-1',
+      message: 'test',
+      priority: 1,
+      timestamp: Date.now(),
+      dismissed: false,
+    });
     const action = routeKeypress(state, { name: 'space', sequence: ' ', ctrl: false, shift: false });
     expect(action.type).toBe('focus-notification');
   });
@@ -218,7 +225,14 @@ describe('routeKeypress', () => {
 
   test('a approves notification target when present', () => {
     const state = createInitialState();
-    pushNotification(state, { type: 'approval', taskId: 'task-99', message: 'test', priority: 1, timestamp: Date.now(), dismissed: false });
+    pushNotification(state, {
+      type: 'approval',
+      taskId: 'task-99',
+      message: 'test',
+      priority: 1,
+      timestamp: Date.now(),
+      dismissed: false,
+    });
     const action = routeKeypress(state, { name: 'a', sequence: 'a', ctrl: false, shift: false });
     expect(action).toEqual({ type: 'approve', taskId: 'task-99' });
   });
@@ -228,7 +242,14 @@ describe('routeKeypress', () => {
     // No notification → refresh
     expect(routeKeypress(state, { name: 'r', sequence: 'r', ctrl: false, shift: false }).type).toBe('refresh');
     // With notification → reject
-    pushNotification(state, { type: 'approval', taskId: 'task-99', message: 'test', priority: 1, timestamp: Date.now(), dismissed: false });
+    pushNotification(state, {
+      type: 'approval',
+      taskId: 'task-99',
+      message: 'test',
+      priority: 1,
+      timestamp: Date.now(),
+      dismissed: false,
+    });
     expect(routeKeypress(state, { name: 'r', sequence: 'r', ctrl: false, shift: false })).toEqual({
       type: 'reject',
       taskId: 'task-99',
@@ -237,7 +258,23 @@ describe('routeKeypress', () => {
 
   test('c cancels running task (with confirmation modal)', () => {
     const state = createInitialState();
-    state.tasks.set('t1', { id: 't1', goal: '', source: 'cli', routingLevel: 0, status: 'running', startedAt: 0, pipeline: { perceive: 'done', predict: 'done', plan: 'done', generate: 'running', verify: 'pending', learn: 'pending' }, oracleVerdicts: [] });
+    state.tasks.set('t1', {
+      id: 't1',
+      goal: '',
+      source: 'cli',
+      routingLevel: 0,
+      status: 'running',
+      startedAt: 0,
+      pipeline: {
+        perceive: 'done',
+        predict: 'done',
+        plan: 'done',
+        generate: 'running',
+        verify: 'pending',
+        learn: 'pending',
+      },
+      oracleVerdicts: [],
+    });
     state.selectedTaskId = 't1';
     const action = routeKeypress(state, { name: 'c', sequence: 'c', ctrl: false, shift: false });
     // Now opens a confirm-cancel modal instead of directly cancelling

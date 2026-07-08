@@ -1,13 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 
 import { TeamStore } from '../../../src/db/team-store.ts';
-import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 import { TeamManager } from '../../../src/orchestrator/ecosystem/team.ts';
+import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
@@ -93,12 +93,12 @@ describe('TeamBlackboardFs — sanitization', () => {
 
   it('rejects characters outside [A-Za-z0-9_\\-:.]', () => {
     const fs = new TeamBlackboardFs({ root: workspace });
-    expect(() =>
-      fs.write({ teamId: 't', key: 'bad space', value: 1, authorId: 'a', updatedAt: 1 }),
-    ).toThrow(/invalid key/);
-    expect(() =>
-      fs.write({ teamId: 'bad space', key: 'k', value: 1, authorId: 'a', updatedAt: 1 }),
-    ).toThrow(/invalid team/);
+    expect(() => fs.write({ teamId: 't', key: 'bad space', value: 1, authorId: 'a', updatedAt: 1 })).toThrow(
+      /invalid key/,
+    );
+    expect(() => fs.write({ teamId: 'bad space', key: 'k', value: 1, authorId: 'a', updatedAt: 1 })).toThrow(
+      /invalid team/,
+    );
   });
 
   it('hash-truncates names longer than 200 chars', () => {

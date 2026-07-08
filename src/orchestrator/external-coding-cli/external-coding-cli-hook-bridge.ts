@@ -26,7 +26,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
-import { HookEventSchema, type HookEvent, type HookBridgeMode, type CodingCliProviderId } from './types.ts';
+import { type CodingCliProviderId, type HookBridgeMode, type HookEvent, HookEventSchema } from './types.ts';
 
 export interface HookSinkOptions {
   path: string;
@@ -57,6 +57,7 @@ export class HookSink {
     const line = JSON.stringify(validated);
     if (line.length > this.maxLineBytes) {
       // Drop oversized payload but keep the event metadata for observability.
+      // biome-ignore lint/style/useNamingConvention: _truncated is a persisted hook-log wire marker, not an identifier
       const trimmed: HookEvent = { ...validated, raw: { _truncated: true, byteCount: line.length } };
       fs.appendFileSync(this.logPath, `${JSON.stringify(trimmed)}\n`);
       return;
@@ -144,6 +145,7 @@ export function synthWrapperEvent(input: WrapperEventInput): HookEvent {
     cwd: input.cwd,
     files: input.files,
     timestamp: input.timestamp ?? Date.now(),
+    // biome-ignore lint/style/useNamingConvention: _wrapperSynthesized is a persisted hook-log wire marker, not an identifier
     raw: input.raw ?? { _wrapperSynthesized: true },
   });
 }
@@ -253,6 +255,7 @@ export class HookBridge {
       hookName: 'workspace-watcher',
       eventType: 'file_changed',
       files: [filePath],
+      // biome-ignore lint/style/useNamingConvention: _wrapperSynthesized is a persisted hook-log wire marker, not an identifier
       raw: { changeType, _wrapperSynthesized: true, source: 'chokidar' },
       timestamp: now,
     });
@@ -290,7 +293,9 @@ export class HookBridge {
 
   async close(): Promise<void> {
     if (this.watcher) {
-      try { await this.watcher.close(); } catch {}
+      try {
+        await this.watcher.close();
+      } catch {}
       this.watcher = null;
       this.watchContext = null;
     }

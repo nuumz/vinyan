@@ -37,12 +37,7 @@
 
 import type { ComprehensionRecordRow, ComprehensionStore } from '../../../db/comprehension-store.ts';
 import type { ComprehensionEngineType } from '../types.ts';
-import {
-  type ComprehensionCalibrator,
-  DATA_GATE_MIN,
-  type DivergenceSignal,
-  wilson95,
-} from './calibrator.ts';
+import { type ComprehensionCalibrator, DATA_GATE_MIN, type DivergenceSignal, wilson95 } from './calibrator.ts';
 
 /** How far back to read by default — 7 days. Adjustable per call. */
 export const DEFAULT_MINING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -127,10 +122,7 @@ export interface DivergenceAttributionInsight {
   }>;
 }
 
-export type ComprehensionInsight =
-  | EngineFitInsight
-  | CorrectionCascadeInsight
-  | DivergenceAttributionInsight;
+export type ComprehensionInsight = EngineFitInsight | CorrectionCascadeInsight | DivergenceAttributionInsight;
 
 export interface MiningResult {
   readonly minedAt: number;
@@ -153,20 +145,14 @@ export interface MinerOptions {
 /** Read-side deps; the store + calibrator interfaces are enough. */
 export interface MinerDeps {
   readonly store: Pick<ComprehensionStore, 'outcomedInWindow'>;
-  readonly calibrator: Pick<
-    ComprehensionCalibrator,
-    'getEngineAccuracy' | 'detectDivergence'
-  >;
+  readonly calibrator: Pick<ComprehensionCalibrator, 'getEngineAccuracy' | 'detectDivergence'>;
 }
 
 /**
  * Run one mining pass over the store's recent outcomed records.
  * Pure function: same input → same output modulo `now()`.
  */
-export function mineComprehension(
-  deps: MinerDeps,
-  opts: MinerOptions = {},
-): MiningResult {
+export function mineComprehension(deps: MinerDeps, opts: MinerOptions = {}): MiningResult {
   const now = opts.now ?? Date.now;
   const windowMs = opts.windowMs ?? DEFAULT_MINING_WINDOW_MS;
   const rowCap = opts.rowCap ?? DEFAULT_MINING_ROW_CAP;
@@ -180,7 +166,10 @@ export function mineComprehension(
   // Group rows by (engineId, engineType). engineType can be null for
   // pre-migration-030 rows; we treat null as its own bucket to avoid
   // mixing it with typed rows.
-  const engineBuckets = new Map<string, { engineId: string; engineType: ComprehensionEngineType | null; rows: ComprehensionRecordRow[] }>();
+  const engineBuckets = new Map<
+    string,
+    { engineId: string; engineType: ComprehensionEngineType | null; rows: ComprehensionRecordRow[] }
+  >();
   for (const r of rows) {
     const key = `${r.engine_id}|${r.engine_type ?? ''}`;
     let bucket = engineBuckets.get(key);
@@ -196,15 +185,8 @@ export function mineComprehension(
   }
 
   for (const bucket of engineBuckets.values()) {
-    const acc = deps.calibrator.getEngineAccuracy(
-      bucket.engineId,
-      bucket.engineType ?? undefined,
-    );
-    const divergence = deps.calibrator.detectDivergence(
-      bucket.engineId,
-      undefined,
-      bucket.engineType ?? undefined,
-    );
+    const acc = deps.calibrator.getEngineAccuracy(bucket.engineId, bucket.engineType ?? undefined);
+    const divergence = deps.calibrator.detectDivergence(bucket.engineId, undefined, bucket.engineType ?? undefined);
     insights.push({
       kind: 'engine-fit',
       engineId: bucket.engineId,

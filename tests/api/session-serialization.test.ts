@@ -186,14 +186,7 @@ describe('Per-session message serialization', () => {
     const turns = sessionManager.getSessionStore().getTurns(session.id);
     // Expected: 3 user + 3 assistant, strictly alternating.
     expect(turns.length).toBe(6);
-    expect(turns.map((t) => t.role)).toEqual([
-      'user',
-      'assistant',
-      'user',
-      'assistant',
-      'user',
-      'assistant',
-    ]);
+    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
 
     // No duplicate assistant content (the original bug produced two
     // identical assistants answering both questions).

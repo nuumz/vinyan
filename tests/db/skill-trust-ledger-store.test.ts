@@ -1,10 +1,11 @@
 /**
  * SkillTrustLedgerStore tests — migration 008 + profile-scoped read/write.
  */
-import { describe, expect, test, beforeEach } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
-import { SkillTrustLedgerStore, type SkillTrustLedgerRecord } from '../../src/db/skill-trust-ledger-store.ts';
+import { type SkillTrustLedgerRecord, SkillTrustLedgerStore } from '../../src/db/skill-trust-ledger-store.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');

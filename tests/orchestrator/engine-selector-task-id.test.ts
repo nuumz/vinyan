@@ -14,8 +14,9 @@
  *
  * These tests are intentionally RED until Phase 1 lands.
  */
-import { describe, expect, it } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
+import { describe, expect, it } from 'bun:test';
 
 import { createBus } from '../../src/core/bus.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';

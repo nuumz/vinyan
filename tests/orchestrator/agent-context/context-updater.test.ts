@@ -2,7 +2,7 @@
  * Tests for AgentContextUpdater — post-task learning for agent context.
  */
 import { Database } from 'bun:sqlite';
-import { describe, expect, test, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import { AgentContextStore } from '../../../src/db/agent-context-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../../src/db/migrations/index.ts';
 import { AgentContextUpdater } from '../../../src/orchestrator/agent-context/context-updater.ts';
@@ -76,11 +76,14 @@ describe('AgentContextUpdater', () => {
   // via the soul-reflector path (covered in soul-reflector.test.ts).
 
   test('persists episode + proficiency on success (machine slice)', () => {
-    updater.updateAfterTask('worker-1', makeTrace({
-      outcome: 'success',
-      approach: 'extract-method',
-      taskTypeSignature: 'code:refactor:medium',
-    }));
+    updater.updateAfterTask(
+      'worker-1',
+      makeTrace({
+        outcome: 'success',
+        approach: 'extract-method',
+        taskTypeSignature: 'code:refactor:medium',
+      }),
+    );
 
     const ctx = store.findById('worker-1')!;
     expect(ctx.memory.episodes.length).toBeGreaterThan(0);
@@ -88,11 +91,14 @@ describe('AgentContextUpdater', () => {
   });
 
   test('persists episode on failure (machine slice)', () => {
-    updater.updateAfterTask('worker-1', makeTrace({
-      outcome: 'failure',
-      approach: 'inline-everything',
-      failureReason: 'type oracle failed: missing import',
-    }));
+    updater.updateAfterTask(
+      'worker-1',
+      makeTrace({
+        outcome: 'failure',
+        approach: 'inline-everything',
+        failureReason: 'type oracle failed: missing import',
+      }),
+    );
 
     const ctx = store.findById('worker-1')!;
     expect(ctx.memory.episodes.length).toBeGreaterThan(0);
@@ -102,11 +108,14 @@ describe('AgentContextUpdater', () => {
   test('updates skill proficiency from trace outcomes', () => {
     // 5 successes → should reach competent or expert
     for (let i = 0; i < 5; i++) {
-      updater.updateAfterTask('worker-1', makeTrace({
-        taskId: `task-${i}`,
-        outcome: 'success',
-        taskTypeSignature: 'code:refactor:medium',
-      }));
+      updater.updateAfterTask(
+        'worker-1',
+        makeTrace({
+          taskId: `task-${i}`,
+          outcome: 'success',
+          taskTypeSignature: 'code:refactor:medium',
+        }),
+      );
     }
 
     const ctx = store.findById('worker-1')!;

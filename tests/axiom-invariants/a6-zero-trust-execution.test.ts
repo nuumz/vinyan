@@ -6,14 +6,12 @@
  * be absolute, or land on a symlink. Two-pass fail-closed: if ANY path
  * fails preflight, NO writes happen.
  */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import {
-  commitArtifacts,
-  validateArtifactPath,
-} from '../../src/orchestrator/worker/artifact-commit.ts';
+import { commitArtifacts, validateArtifactPath } from '../../src/orchestrator/worker/artifact-commit.ts';
 
 let tmp: string;
 

@@ -4,10 +4,10 @@ import { createBus } from '../../src/core/bus.ts';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
-import { CapabilityModel } from '../../src/orchestrator/fleet/capability-model.ts';
 import type { DataGateStats, DataGateThresholds } from '../../src/orchestrator/data-gate.ts';
-import type { TaskFingerprint, EngineProfile } from '../../src/orchestrator/types.ts';
+import { CapabilityModel } from '../../src/orchestrator/fleet/capability-model.ts';
 import { WorkerSelector } from '../../src/orchestrator/fleet/worker-selector.ts';
+import type { EngineProfile, TaskFingerprint } from '../../src/orchestrator/types.ts';
 
 function createDb(): Database {
   const db = new Database(':memory:');

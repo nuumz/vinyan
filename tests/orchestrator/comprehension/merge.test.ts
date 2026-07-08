@@ -6,10 +6,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { mergeComprehensions } from '../../../src/orchestrator/comprehension/merge.ts';
-import type {
-  ComprehendedTaskMessage,
-  ComprehensionTier,
-} from '../../../src/orchestrator/comprehension/types.ts';
+import type { ComprehendedTaskMessage, ComprehensionTier } from '../../../src/orchestrator/comprehension/types.ts';
 
 function baseEnv(
   overrides: Partial<{
@@ -39,9 +36,7 @@ function baseEnv(
       type: t,
       confidence: conf,
       tier,
-      evidence_chain: [
-        { source: overrides.evidenceSource ?? 'rule:test', claim: 'test', confidence: 1 },
-      ],
+      evidence_chain: [{ source: overrides.evidenceSource ?? 'rule:test', claim: 'test', confidence: 1 }],
       falsifiable_by: ['test-falsifier'],
       temporal_context: { as_of: 1000, valid_until: 2000 },
       inputHash: overrides.inputHash ?? 'h1',
@@ -141,9 +136,9 @@ describe('mergeComprehensions', () => {
       literalGoal: 'ok',
       resolvedGoal: 'something completely different',
     });
-    expect(
-      mergeComprehensions(s1Anchored, s2Anchored).envelope.params.data?.resolvedGoal,
-    ).toBe('write a bedtime story');
+    expect(mergeComprehensions(s1Anchored, s2Anchored).envelope.params.data?.resolvedGoal).toBe(
+      'write a bedtime story',
+    );
 
     // Case 2: s1 couldn't anchor (resolvedGoal === literalGoal) → s2 wins.
     const s1Stuck = baseEnv({
@@ -156,9 +151,7 @@ describe('mergeComprehensions', () => {
       literalGoal: 'ok',
       resolvedGoal: 'resumed prior task', // LLM resolved it
     });
-    expect(
-      mergeComprehensions(s1Stuck, s2Helps).envelope.params.data?.resolvedGoal,
-    ).toBe('resumed prior task');
+    expect(mergeComprehensions(s1Stuck, s2Helps).envelope.params.data?.resolvedGoal).toBe('resumed prior task');
   });
 
   test('priorContextSummary: LLM enriches (longer one wins)', () => {
@@ -168,9 +161,9 @@ describe('mergeComprehensions', () => {
       confidence: 0.5,
       priorContextSummary: 'a much longer summary with more context',
     });
-    expect(
-      mergeComprehensions(s1, s2).envelope.params.data?.priorContextSummary,
-    ).toBe('a much longer summary with more context');
+    expect(mergeComprehensions(s1, s2).envelope.params.data?.priorContextSummary).toBe(
+      'a much longer summary with more context',
+    );
   });
 
   test('evidence chains from both sides concatenate', () => {

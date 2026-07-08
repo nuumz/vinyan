@@ -15,8 +15,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  classifyCollaborationIntent,
   COLLABORATION_PARSER_LIMITS,
+  classifyCollaborationIntent,
   parseCollaborationDirective,
 } from '../../../src/orchestrator/intent/collaboration-parser.ts';
 
@@ -37,9 +37,7 @@ describe('parseCollaborationDirective — user-canonical Thai prompts', () => {
   });
 
   it('parses "แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ"', () => {
-    const d = parseCollaborationDirective(
-      'แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ',
-    );
+    const d = parseCollaborationDirective('แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ');
     expect(d).not.toBeNull();
     expect(d!.requestedPrimaryParticipantCount).toBe(3);
     // Debate verb + rounds present → mode='debate' (rebuttal reshapes the
@@ -68,9 +66,7 @@ describe('parseCollaborationDirective — English prompts', () => {
   it('parses "split into multiple agents and let them compete" with default count', () => {
     const d = parseCollaborationDirective('split into multiple agents and let them compete');
     expect(d).not.toBeNull();
-    expect(d!.requestedPrimaryParticipantCount).toBe(
-      COLLABORATION_PARSER_LIMITS.DEFAULT_AMBIGUOUS_COUNT,
-    );
+    expect(d!.requestedPrimaryParticipantCount).toBe(COLLABORATION_PARSER_LIMITS.DEFAULT_AMBIGUOUS_COUNT);
     expect(d!.interactionMode).toBe('competition');
     expect(d!.emitCompetitionVerdict).toBe(true);
     expect(d!.rebuttalRounds).toBe(0);
@@ -103,9 +99,7 @@ describe('parseCollaborationDirective — reviewer / oversight policy', () => {
   });
 
   it('flips to explicit on Thai "คนตรวจ" / "กรรมการ"', () => {
-    const d = parseCollaborationDirective(
-      'แบ่ง Agent 3ตัว แข่งกันถามตอบ มีกรรมการตรวจให้คะแนน',
-    );
+    const d = parseCollaborationDirective('แบ่ง Agent 3ตัว แข่งกันถามตอบ มีกรรมการตรวจให้คะแนน');
     expect(d).not.toBeNull();
     expect(d!.reviewerPolicy).toBe('explicit');
     expect(d!.requestedPrimaryParticipantCount).toBe(3);
@@ -120,17 +114,13 @@ describe('parseCollaborationDirective — reviewer / oversight policy', () => {
 
 describe('parseCollaborationDirective — clarification policy', () => {
   it('disables manager clarification on explicit "ห้ามถาม"', () => {
-    const d = parseCollaborationDirective(
-      'แบ่ง Agent 3ตัว แข่งกันถามตอบ ห้ามถามผู้ใช้กลับ',
-    );
+    const d = parseCollaborationDirective('แบ่ง Agent 3ตัว แข่งกันถามตอบ ห้ามถามผู้ใช้กลับ');
     expect(d).not.toBeNull();
     expect(d!.managerClarificationAllowed).toBe(false);
   });
 
   it('disables manager clarification on English "no clarification"', () => {
-    const d = parseCollaborationDirective(
-      'have 3 agents debate, no clarification questions',
-    );
+    const d = parseCollaborationDirective('have 3 agents debate, no clarification questions');
     expect(d).not.toBeNull();
     expect(d!.managerClarificationAllowed).toBe(false);
   });
@@ -146,26 +136,20 @@ describe('parseCollaborationDirective — clamping', () => {
   it('clamps primary count to MAX_PARTICIPANT_COUNT', () => {
     const d = parseCollaborationDirective('have 50 agents debate');
     expect(d).not.toBeNull();
-    expect(d!.requestedPrimaryParticipantCount).toBe(
-      COLLABORATION_PARSER_LIMITS.MAX_PARTICIPANT_COUNT,
-    );
+    expect(d!.requestedPrimaryParticipantCount).toBe(COLLABORATION_PARSER_LIMITS.MAX_PARTICIPANT_COUNT);
   });
 
   it('clamps rebuttal rounds to MAX_REBUTTAL_ROUNDS', () => {
     // The Thai-rounds extractor scans before falling through to the English
     // path, so the round signal must be in the matching language for the
     // clamp test to be deterministic.
-    const d = parseCollaborationDirective(
-      'have 3 agents debate, 100 rebuttal rounds',
-    );
+    const d = parseCollaborationDirective('have 3 agents debate, 100 rebuttal rounds');
     expect(d).not.toBeNull();
     expect(d!.rebuttalRounds).toBe(COLLABORATION_PARSER_LIMITS.MAX_REBUTTAL_ROUNDS);
   });
 
   it('clamps Thai "100 รอบ" to MAX_REBUTTAL_ROUNDS', () => {
-    const d = parseCollaborationDirective(
-      'แบ่ง Agent 3ตัว แข่งกันถามตอบ อีก 100 รอบ',
-    );
+    const d = parseCollaborationDirective('แบ่ง Agent 3ตัว แข่งกันถามตอบ อีก 100 รอบ');
     expect(d).not.toBeNull();
     expect(d!.rebuttalRounds).toBe(COLLABORATION_PARSER_LIMITS.MAX_REBUTTAL_ROUNDS);
   });
@@ -211,17 +195,13 @@ describe('classifyCollaborationIntent — execute vs mention gate', () => {
     });
 
     it('"แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ"', () => {
-      expect(
-        classifyCollaborationIntent(
-          'แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ',
-        ),
-      ).toBe('execute');
+      expect(classifyCollaborationIntent('แบ่ง Agent 3ตัว แข่งกันถามตอบ และเพิ่มกระบวนการโต้แย้งกันเองได้อีก 2รอบ')).toBe(
+        'execute',
+      );
     });
 
     it('"have 3 agents debate the merits of microservices"', () => {
-      expect(classifyCollaborationIntent('have 3 agents debate the merits of microservices')).toBe(
-        'execute',
-      );
+      expect(classifyCollaborationIntent('have 3 agents debate the merits of microservices')).toBe('execute');
     });
 
     it('"have 3 agents compete and pick a winner"', () => {
@@ -239,11 +219,9 @@ describe('classifyCollaborationIntent — execute vs mention gate', () => {
 
   describe('mention (must NOT route to collaboration runner)', () => {
     it('quoted multi-agent phrase inside meta-discussion (Thai)', () => {
-      expect(
-        classifyCollaborationIntent(
-          'ช่วยแก้ logic สำหรับ analyze user prompt เช่น "แบ่ง Agent 3ตัว แข่งกันถามตอบ"',
-        ),
-      ).toBe('mention');
+      expect(classifyCollaborationIntent('ช่วยแก้ logic สำหรับ analyze user prompt เช่น "แบ่ง Agent 3ตัว แข่งกันถามตอบ"')).toBe(
+        'mention',
+      );
     });
 
     it('quoted multi-agent phrase inside implementation-plan request', () => {
@@ -255,49 +233,33 @@ describe('classifyCollaborationIntent — execute vs mention gate', () => {
     });
 
     it('unquoted multi-agent phrase but META-FRAMING words in prefix (parser/design)', () => {
-      expect(classifyCollaborationIntent('ออกแบบ parser ให้รองรับ have 3 agents debate')).toBe(
-        'mention',
-      );
+      expect(classifyCollaborationIntent('ออกแบบ parser ให้รองรับ have 3 agents debate')).toBe('mention');
     });
 
     it('quoted multi-agent phrase in interrogative ("ทำไม prompt … ถึง …")', () => {
-      expect(
-        classifyCollaborationIntent('ทำไม prompt "have 3 agents debate" ถึงถูก route ผิด'),
-      ).toBe('mention');
+      expect(classifyCollaborationIntent('ทำไม prompt "have 3 agents debate" ถึงถูก route ผิด')).toBe('mention');
     });
 
     it('quoted multi-agent phrase after "review the routing logic for prompts like"', () => {
-      expect(
-        classifyCollaborationIntent(
-          'review the routing logic for prompts like "แบ่ง Agent 3ตัว แข่งกันถามตอบ"',
-        ),
-      ).toBe('mention');
+      expect(classifyCollaborationIntent('review the routing logic for prompts like "แบ่ง Agent 3ตัว แข่งกันถามตอบ"')).toBe(
+        'mention',
+      );
     });
 
     it('curly double quotes around the multi-agent phrase', () => {
       // Prompts copied from Slack / chat clients often arrive with curly
       // quotes (U+201C/U+201D); the classifier must handle them like
       // straight quotes.
-      expect(
-        classifyCollaborationIntent(
-          'อธิบายว่า prompt “แบ่ง Agent 3ตัว แข่งกันถามตอบ” ถูกตีความอย่างไร',
-        ),
-      ).toBe('mention');
+      expect(classifyCollaborationIntent('อธิบายว่า prompt “แบ่ง Agent 3ตัว แข่งกันถามตอบ” ถูกตีความอย่างไร')).toBe('mention');
     });
 
     it('backtick code-span around the multi-agent phrase', () => {
       // Markdown / Slack / GitHub prompts often quote with backticks.
-      expect(
-        classifyCollaborationIntent(
-          'ปรับ classifier ให้รับ prompt `have 3 agents debate` ได้ดีขึ้น',
-        ),
-      ).toBe('mention');
+      expect(classifyCollaborationIntent('ปรับ classifier ให้รับ prompt `have 3 agents debate` ได้ดีขึ้น')).toBe('mention');
     });
 
     it('English meta-prefix "fix the parser to handle ..."', () => {
-      expect(
-        classifyCollaborationIntent('fix the parser to handle have 3 agents debate'),
-      ).toBe('mention');
+      expect(classifyCollaborationIntent('fix the parser to handle have 3 agents debate')).toBe('mention');
     });
   });
 
@@ -323,9 +285,7 @@ describe('parseCollaborationDirective — pure structure extraction', () => {
   // directive — that directive simply never gets attached to the
   // IntentResolution because the strategy layer's classifier blocks it.
   it('returns a structure for a mention prompt (parser is not the execute gate)', () => {
-    const d = parseCollaborationDirective(
-      'review the routing logic for prompts like "แบ่ง Agent 3ตัว แข่งกันถามตอบ"',
-    );
+    const d = parseCollaborationDirective('review the routing logic for prompts like "แบ่ง Agent 3ตัว แข่งกันถามตอบ"');
     // The English regex matches "3 agents" inside the wrapped quote (and
     // outside it via "agents debate" if present). Without the gate inside
     // the parser, a structure may or may not be extracted depending on
@@ -345,9 +305,7 @@ describe('parseCollaborationDirective — orthogonality', () => {
   // different consumers — the room dispatcher reads mode, the integrator
   // reads the verdict flag.
   it('keeps competition verdict emission when debate rounds are also present', () => {
-    const d = parseCollaborationDirective(
-      'have 3 agents compete, then debate 2 times to pick a winner',
-    );
+    const d = parseCollaborationDirective('have 3 agents compete, then debate 2 times to pick a winner');
     expect(d).not.toBeNull();
     expect(d!.interactionMode).toBe('debate');
     expect(d!.rebuttalRounds).toBe(2);

@@ -223,7 +223,14 @@ describe('switchTab resets event badge', () => {
 describe('pushNotification', () => {
   test('adds notification with auto-incrementing ID', () => {
     const state = createInitialState();
-    pushNotification(state, { type: 'approval', taskId: 'task-1', message: 'test', priority: 1, timestamp: Date.now(), dismissed: false });
+    pushNotification(state, {
+      type: 'approval',
+      taskId: 'task-1',
+      message: 'test',
+      priority: 1,
+      timestamp: Date.now(),
+      dismissed: false,
+    });
     expect(state.notifications).toHaveLength(1);
     expect(state.notifications[0]!.id).toBe(1);
     expect(state.notificationIdCounter).toBe(1);
@@ -232,7 +239,14 @@ describe('pushNotification', () => {
   test('sorts by priority (highest first)', () => {
     const state = createInitialState();
     pushNotification(state, { type: 'alert', message: 'low', priority: 4, timestamp: Date.now(), dismissed: false });
-    pushNotification(state, { type: 'approval', taskId: 't1', message: 'high', priority: 1, timestamp: Date.now(), dismissed: false });
+    pushNotification(state, {
+      type: 'approval',
+      taskId: 't1',
+      message: 'high',
+      priority: 1,
+      timestamp: Date.now(),
+      dismissed: false,
+    });
     expect(state.notifications[0]!.type).toBe('approval');
     expect(state.notifications[1]!.type).toBe('alert');
   });
@@ -312,8 +326,33 @@ describe('pushToast and cleanExpiredToasts', () => {
 describe('updateTabBadges', () => {
   test('computes task badges', () => {
     const state = createInitialState();
-    state.tasks.set('t1', { id: 't1', goal: '', source: 'cli', routingLevel: 0, status: 'running', startedAt: 0, pipeline: { perceive: 'done', predict: 'done', plan: 'done', generate: 'running', verify: 'pending', learn: 'pending' }, oracleVerdicts: [] });
-    state.tasks.set('t2', { id: 't2', goal: '', source: 'cli', routingLevel: 0, status: 'approval_required', startedAt: 0, pipeline: { perceive: 'done', predict: 'done', plan: 'done', generate: 'done', verify: 'done', learn: 'pending' }, oracleVerdicts: [] });
+    state.tasks.set('t1', {
+      id: 't1',
+      goal: '',
+      source: 'cli',
+      routingLevel: 0,
+      status: 'running',
+      startedAt: 0,
+      pipeline: {
+        perceive: 'done',
+        predict: 'done',
+        plan: 'done',
+        generate: 'running',
+        verify: 'pending',
+        learn: 'pending',
+      },
+      oracleVerdicts: [],
+    });
+    state.tasks.set('t2', {
+      id: 't2',
+      goal: '',
+      source: 'cli',
+      routingLevel: 0,
+      status: 'approval_required',
+      startedAt: 0,
+      pipeline: { perceive: 'done', predict: 'done', plan: 'done', generate: 'done', verify: 'done', learn: 'pending' },
+      oracleVerdicts: [],
+    });
     updateTabBadges(state);
     expect(state.tabBadges.tasks?.count).toBe(1); // 1 running
     expect(state.tabBadges.tasks?.color).toBe('red'); // approval pending

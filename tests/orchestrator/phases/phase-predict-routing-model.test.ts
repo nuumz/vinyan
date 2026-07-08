@@ -63,10 +63,7 @@ describe('resolveExecutableProviderId', () => {
 
     // Engine selector pinned 'mock/beta' — the registry has alpha first, but
     // the resolver must trust an explicit routing.model that matches a real id.
-    const refined = resolveExecutableProviderId(
-      baseRouting({ model: 'mock/beta' }),
-      registry,
-    );
+    const refined = resolveExecutableProviderId(baseRouting({ model: 'mock/beta' }), registry);
 
     expect(refined.model).toBe('mock/beta');
   });

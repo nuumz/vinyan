@@ -83,7 +83,9 @@ describe('Smoke: Real LLM', () => {
     expect(result.trace.durationMs).toBeGreaterThan(0);
     expect(result.trace.routingLevel).toBeGreaterThanOrEqual(0);
 
-    console.log(`[smoke] reasoning: status=${result.status} answer="${result.answer?.slice(0, 80)}" duration=${result.trace.durationMs}ms`);
+    console.log(
+      `[smoke] reasoning: status=${result.status} answer="${result.answer?.slice(0, 80)}" duration=${result.trace.durationMs}ms`,
+    );
   }, 60_000);
 
   test('code task produces file mutations', async () => {
@@ -123,14 +125,16 @@ describe('Smoke: Real LLM', () => {
 
     if (hasMutations) {
       // At least one mutation should reference our target file
-      const targetMutation = result.mutations.find(m => m.file.includes('greet'));
+      const targetMutation = result.mutations.find((m) => m.file.includes('greet'));
       if (targetMutation) {
         expect(targetMutation.diff.length).toBeGreaterThan(0);
         console.log(`[smoke] code: mutation on ${targetMutation.file}, diff length=${targetMutation.diff.length}`);
       }
     }
 
-    console.log(`[smoke] code: status=${result.status} mutations=${result.mutations.length} duration=${result.trace.durationMs}ms`);
+    console.log(
+      `[smoke] code: status=${result.status} mutations=${result.mutations.length} duration=${result.trace.durationMs}ms`,
+    );
   }, 120_000);
 
   test('factory creates orchestrator with real providers', () => {

@@ -188,9 +188,7 @@ describe('DefaultMemoryProvider.search — FTS5 retrieval', () => {
   it('filters out weaker tiers with minTier', async () => {
     const db = freshDb();
     const provider = new DefaultMemoryProvider({ db });
-    await provider.write(
-      sampleInput({ content: 'gamma ray burst', evidenceTier: 'speculative', confidence: 0.3 }),
-    );
+    await provider.write(sampleInput({ content: 'gamma ray burst', evidenceTier: 'speculative', confidence: 0.3 }));
     await provider.write(
       sampleInput({
         content: 'gamma ray burst',
@@ -302,9 +300,7 @@ describe('DefaultMemoryProvider.invalidate', () => {
     const db = freshDb();
     const provider = new DefaultMemoryProvider({ db });
     const hash = 'c'.repeat(64);
-    await provider.write(
-      sampleInput({ evidenceTier: 'deterministic', confidence: 1.0, contentHash: hash }),
-    );
+    await provider.write(sampleInput({ evidenceTier: 'deterministic', confidence: 1.0, contentHash: hash }));
     await provider.write(
       sampleInput({
         evidenceTier: 'deterministic',

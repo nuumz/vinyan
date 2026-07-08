@@ -7,11 +7,11 @@
  *   - assistant has writeAny:false → denies file_write
  */
 import { describe, expect, test } from 'bun:test';
-import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createContract } from '../../src/core/agent-contract.ts';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import { loadAgentRegistry } from '../../src/orchestrator/agents/registry.ts';
 import type { RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
 

@@ -1,11 +1,11 @@
-import { describe, expect, it, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { AgentRuntimeStore } from '../../../src/db/agent-runtime-store.ts';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { createBus, type VinyanBus } from '../../../src/core/bus.ts';
+import { AgentRuntimeStore } from '../../../src/db/agent-runtime-store.ts';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import {
-  RuntimeStateManager,
   isTransitionAllowed,
+  RuntimeStateManager,
   type RuntimeTransition,
 } from '../../../src/orchestrator/ecosystem/runtime-state.ts';
 

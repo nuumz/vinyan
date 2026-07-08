@@ -14,15 +14,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
-import { buildConversationalResult } from '../../src/orchestrator/conversational-result-builder.ts';
 import type { DerivedCapabilities } from '../../src/orchestrator/agents/derive-persona-capabilities.ts';
+import { buildConversationalResult } from '../../src/orchestrator/conversational-result-builder.ts';
+import type { AgentSpec, HistoryMessage, IntentResolution, TaskInput } from '../../src/orchestrator/types.ts';
 import type { SkillMdRecord } from '../../src/skills/skill-md/index.ts';
-import type {
-  AgentSpec,
-  HistoryMessage,
-  IntentResolution,
-  TaskInput,
-} from '../../src/orchestrator/types.ts';
 
 function makeInput(over: Partial<TaskInput> = {}): TaskInput {
   return {
@@ -127,11 +122,7 @@ function makeDeps(opts: DepsOpts): any {
   const provider = {
     id: 'mock',
     tier: 'fast' as const,
-    generate: async (req: {
-      systemPrompt: string;
-      userPrompt: string;
-      messages?: HistoryMessage[];
-    }) => {
+    generate: async (req: { systemPrompt: string; userPrompt: string; messages?: HistoryMessage[] }) => {
       opts.capturedSystemPrompt.push(req.systemPrompt);
       opts.capturedMessages?.push(req.messages);
       return { content: opts.providerContent ?? 'ok', tokensUsed: { input: 1, output: 1 } };

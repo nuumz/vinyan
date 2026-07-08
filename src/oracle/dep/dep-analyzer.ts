@@ -192,7 +192,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
         errorCode: 'SYMBOL_NOT_FOUND',
         durationMs: performance.now() - startTime,
         opinion: fromScalar(0, BASE_RATE),
-        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 450_000 },
+        temporalContext: {
+          validFrom: Date.now(),
+          validUntil: Date.now() + TTL_MS,
+          decayModel: 'exponential' as const,
+          halfLife: 450_000,
+        },
       });
     }
 
@@ -229,20 +234,30 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
         reason: `Blast radius: ${blastRadius} file(s), but ${unresolved.length} import(s) unresolvable: ${unresolved.join(', ')}`,
         durationMs: performance.now() - startTime,
         opinion: fromScalar(0.5, BASE_RATE),
-        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 450_000 },
+        temporalContext: {
+          validFrom: Date.now(),
+          validUntil: Date.now() + TTL_MS,
+          decayModel: 'exponential' as const,
+          halfLife: 450_000,
+        },
       });
     }
 
     return buildVerdict({
       verified: true,
       type: 'known',
-      confidence: 0.90,
+      confidence: 0.9,
       evidence,
       fileHashes: { [target]: fileHash },
       reason: `Blast radius: ${blastRadius} file(s) depend on ${target}`,
       durationMs: performance.now() - startTime,
-      opinion: fromScalar(0.90, BASE_RATE),
-      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 450_000 },
+      opinion: fromScalar(0.9, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 450_000,
+      },
     });
   } catch (error) {
     return buildVerdict({
@@ -255,7 +270,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       errorCode: 'ORACLE_CRASH',
       durationMs: performance.now() - startTime,
       opinion: fromScalar(0, BASE_RATE),
-      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 450_000 },
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 450_000,
+      },
     });
   }
 }

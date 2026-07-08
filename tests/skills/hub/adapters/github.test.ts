@@ -3,7 +3,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { GitHubAdapter, parseGithubSkillId } from '../../../../src/skills/hub/adapters/github.ts';
-import { SkillNotFoundError, SkillRegistryError, type FetchImpl } from '../../../../src/skills/hub/registry-adapter.ts';
+import { type FetchImpl, SkillNotFoundError, SkillRegistryError } from '../../../../src/skills/hub/registry-adapter.ts';
 
 const SAMPLE_SKILL = `---
 confidence_tier: heuristic

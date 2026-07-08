@@ -30,17 +30,17 @@ import type { VinyanBus } from '../../core/bus.ts';
 import type { ReasoningEngine } from '../types.ts';
 
 import { CommitmentBridge, type TaskFacts } from './commitment-bridge.ts';
-import { CommitmentLedger } from './commitment-ledger.ts';
-import { DepartmentIndex } from './department.ts';
-import { HelpfulnessTracker } from './helpfulness-tracker.ts';
-import { RuntimeStateManager } from './runtime-state.ts';
-import { TeamManager } from './team.ts';
+import type { CommitmentLedger } from './commitment-ledger.ts';
+import type { DepartmentIndex } from './department.ts';
+import type { HelpfulnessTracker } from './helpfulness-tracker.ts';
+import type { RuntimeStateManager } from './runtime-state.ts';
+import type { TeamManager } from './team.ts';
 import {
-  VolunteerRegistry,
-  selectVolunteer,
   type SelectionVerdict,
+  selectVolunteer,
   type VolunteerCandidate,
   type VolunteerContext,
+  type VolunteerRegistry,
 } from './volunteer-protocol.ts';
 
 // ── Config ───────────────────────────────────────────────────────────
@@ -243,10 +243,7 @@ export class EcosystemCoordinator {
 
   private scheduleNextReconcile(): void {
     if (!this.started || this.reconcileIntervalMs <= 0) return;
-    this.reconcileHandle = this.timer.setTimer(
-      () => this.runScheduledReconcile(),
-      this.reconcileIntervalMs,
-    );
+    this.reconcileHandle = this.timer.setTimer(() => this.runScheduledReconcile(), this.reconcileIntervalMs);
   }
 
   private runScheduledReconcile(): void {
@@ -355,9 +352,7 @@ export class EcosystemCoordinator {
 
     // 2. Narrow by department if asked and the department has members.
     if (params.departmentId) {
-      const members = new Set(
-        this.departments.getEnginesInDepartment(params.departmentId),
-      );
+      const members = new Set(this.departments.getEnginesInDepartment(params.departmentId));
       if (members.size > 0) {
         for (const id of [...eligible]) {
           if (!members.has(id)) eligible.delete(id);
@@ -438,14 +433,9 @@ export class EcosystemCoordinator {
     // engine. Commitments held by Standby/Dormant engines are orphans —
     // something opened the commitment but never flipped the runtime state.
     const workingIds = new Set(this.runtime.listByState('working').map((s) => s.agentId));
-    const awakeningIds = new Set(
-      this.runtime.listByState('awakening').map((s) => s.agentId),
-    );
+    const awakeningIds = new Set(this.runtime.listByState('awakening').map((s) => s.agentId));
     const seenEngines = new Set<string>();
-    for (const snap of [
-      ...this.runtime.listByState('standby'),
-      ...this.runtime.listByState('dormant'),
-    ]) {
+    for (const snap of [...this.runtime.listByState('standby'), ...this.runtime.listByState('dormant')]) {
       if (seenEngines.has(snap.agentId)) continue;
       seenEngines.add(snap.agentId);
       const open = this.commitments.openByEngine(snap.agentId);

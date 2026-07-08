@@ -13,11 +13,11 @@
  */
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 import { ApprovalLedgerStore } from '../../src/db/approval-ledger-store.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { ApprovalGate } from '../../src/orchestrator/approval-gate.ts';
-import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 
 function freshDb(): Database {
   const db = new Database(':memory:');

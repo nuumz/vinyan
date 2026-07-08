@@ -122,8 +122,16 @@ export const TaskUncertaintySignalSchema = z.object({
 export const ThinkingPolicySchema = z.object({
   policyBasis: z.enum(['default', 'calibrated', 'override']),
   thinking: z.union([
-    z.object({ type: z.literal('adaptive'), effort: z.enum(['low', 'medium', 'high', 'max']), display: z.enum(['omitted', 'summarized']).optional() }),
-    z.object({ type: z.literal('enabled'), budgetTokens: z.number().positive(), display: z.enum(['omitted', 'summarized']).optional() }),
+    z.object({
+      type: z.literal('adaptive'),
+      effort: z.enum(['low', 'medium', 'high', 'max']),
+      display: z.enum(['omitted', 'summarized']).optional(),
+    }),
+    z.object({
+      type: z.literal('enabled'),
+      budgetTokens: z.number().positive(),
+      display: z.enum(['omitted', 'summarized']).optional(),
+    }),
     z.object({ type: z.literal('disabled') }),
   ]),
   profileId: ThinkingProfileIdSchema,
@@ -132,9 +140,11 @@ export const ThinkingPolicySchema = z.object({
   selfModelConfidence: z.number().min(0).max(1).optional(),
   observationKey: z.string().optional(),
   thinkingCeiling: z.number().min(0).optional(),
-  taskTypeCalibration: z.object({
-    taskTypeSignature: z.string(),
-    minObservationCount: z.number().min(0),
-    basis: z.enum(['insufficient', 'emerging', 'calibrated']),
-  }).optional(),
+  taskTypeCalibration: z
+    .object({
+      taskTypeSignature: z.string(),
+      minObservationCount: z.number().min(0),
+      basis: z.enum(['insufficient', 'emerging', 'calibrated']),
+    })
+    .optional(),
 });

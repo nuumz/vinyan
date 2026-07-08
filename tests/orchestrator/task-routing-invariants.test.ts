@@ -9,10 +9,10 @@
  *
  * Uses executeTask + OrchestratorDeps directly (same pattern as core-loop-pipeline-confidence.test.ts).
  */
-import { describe, test, expect } from 'bun:test';
-import { executeTask, type OrchestratorDeps } from '../../src/orchestrator/core-loop.ts';
-import type { TaskInput, RoutingDecision, PerceptualHierarchy } from '../../src/orchestrator/types.ts';
+import { describe, expect, test } from 'bun:test';
 import type { OracleVerdict } from '../../src/core/types.ts';
+import { executeTask, type OrchestratorDeps } from '../../src/orchestrator/core-loop.ts';
+import type { PerceptualHierarchy, RoutingDecision, TaskInput } from '../../src/orchestrator/types.ts';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -51,10 +51,7 @@ function makeInput(overrides?: Partial<TaskInput>): TaskInput {
   };
 }
 
-function makeDeps(overrides: {
-  routingLevel?: number;
-  taskType?: 'code' | 'reasoning';
-} = {}): OrchestratorDeps {
+function makeDeps(overrides: { routingLevel?: number; taskType?: 'code' | 'reasoning' } = {}): OrchestratorDeps {
   const level = overrides.routingLevel ?? 0;
   const isCode = overrides.taskType === 'code';
 
@@ -133,34 +130,22 @@ function makeDeps(overrides: {
 
 describe('P1: tool-needed tasks must route to L2+', () => {
   test('F1 regression: "git last commit ว่าอะไร" → L2+ (CLI mention overrides inquire intent)', async () => {
-    const result = await executeTask(
-      makeInput({ goal: 'git last commit ว่าอะไร' }),
-      makeDeps({ routingLevel: 0 }),
-    );
+    const result = await executeTask(makeInput({ goal: 'git last commit ว่าอะไร' }), makeDeps({ routingLevel: 0 }));
     expect(result.trace.routingLevel).toBeGreaterThanOrEqual(2);
   });
 
   test('"ช่วยรัน npm install" → L2+ (Thai action verb + CLI command)', async () => {
-    const result = await executeTask(
-      makeInput({ goal: 'ช่วยรัน npm install' }),
-      makeDeps({ routingLevel: 0 }),
-    );
+    const result = await executeTask(makeInput({ goal: 'ช่วยรัน npm install' }), makeDeps({ routingLevel: 0 }));
     expect(result.trace.routingLevel).toBeGreaterThanOrEqual(2);
   });
 
   test('F3: "docker คืออะไร" → L2+ (CLI mention, P1 capability over economy)', async () => {
-    const result = await executeTask(
-      makeInput({ goal: 'docker คืออะไร' }),
-      makeDeps({ routingLevel: 0 }),
-    );
+    const result = await executeTask(makeInput({ goal: 'docker คืออะไร' }), makeDeps({ routingLevel: 0 }));
     expect(result.trace.routingLevel).toBeGreaterThanOrEqual(2);
   });
 
   test('"git push origin main" → L2+ (execute intent + CLI command)', async () => {
-    const result = await executeTask(
-      makeInput({ goal: 'git push origin main' }),
-      makeDeps({ routingLevel: 0 }),
-    );
+    const result = await executeTask(makeInput({ goal: 'git push origin main' }), makeDeps({ routingLevel: 0 }));
     expect(result.trace.routingLevel).toBeGreaterThanOrEqual(2);
   });
 
@@ -179,18 +164,12 @@ describe('P1: tool-needed tasks must route to L2+', () => {
 
 describe('P5 + conversational cap: floor overrides ceiling', () => {
   test('conversational task capped at L1 even when risk says L2', async () => {
-    const result = await executeTask(
-      makeInput({ goal: 'สวัสดี' }),
-      makeDeps({ routingLevel: 2 }),
-    );
+    const result = await executeTask(makeInput({ goal: 'สวัสดี' }), makeDeps({ routingLevel: 2 }));
     expect(result.trace.routingLevel).toBeLessThanOrEqual(1);
   });
 
   test('CLI mention raises to L2 despite low risk (floor active)', async () => {
-    const result = await executeTask(
-      makeInput({ goal: 'git log ดูหน่อย' }),
-      makeDeps({ routingLevel: 0 }),
-    );
+    const result = await executeTask(makeInput({ goal: 'git log ดูหน่อย' }), makeDeps({ routingLevel: 0 }));
     expect(result.trace.routingLevel).toBeGreaterThanOrEqual(2);
   });
 
@@ -209,10 +188,7 @@ describe('P5 + conversational cap: floor overrides ceiling', () => {
 
 describe('O5: no lowering after capability floor', () => {
   test('tool-needed floor persists through full pipeline', async () => {
-    const result = await executeTask(
-      makeInput({ goal: 'git status' }),
-      makeDeps({ routingLevel: 0 }),
-    );
+    const result = await executeTask(makeInput({ goal: 'git status' }), makeDeps({ routingLevel: 0 }));
     expect(result.trace.routingLevel).toBeGreaterThanOrEqual(2);
   });
 
@@ -232,10 +208,7 @@ describe('O5: no lowering after capability floor', () => {
 describe('Composition matrix — untested rows', () => {
   test('Row 3: general-reasoning / execute / none → L0-L1', async () => {
     // "ช่วยอธิบาย" matches EXECUTE_PATTERN (ช่วย) but no CLI command → none → no floor
-    const result = await executeTask(
-      makeInput({ goal: 'ช่วยอธิบาย architecture' }),
-      makeDeps({ routingLevel: 0 }),
-    );
+    const result = await executeTask(makeInput({ goal: 'ช่วยอธิบาย architecture' }), makeDeps({ routingLevel: 0 }));
     expect(result.trace.routingLevel).toBeLessThanOrEqual(1);
   });
 
@@ -249,10 +222,7 @@ describe('Composition matrix — untested rows', () => {
 
   test('Row 8: code-reasoning / execute / tool-needed → L2+', async () => {
     // "git push origin main" → code-reasoning (git is CODE_KEYWORD) + tool-needed (git is CLI)
-    const result = await executeTask(
-      makeInput({ goal: 'git push origin main' }),
-      makeDeps({ routingLevel: 0 }),
-    );
+    const result = await executeTask(makeInput({ goal: 'git push origin main' }), makeDeps({ routingLevel: 0 }));
     expect(result.trace.routingLevel).toBeGreaterThanOrEqual(2);
   });
 });

@@ -12,23 +12,17 @@
  * Verbatim extraction from `core-loop.ts` to reduce file size; behavior,
  * trace shape, and event order are unchanged.
  */
+
+import { renderSimpleSkillSections, resolveSimpleSkillsForDispatch } from '../skills/simple/dispatch-helper.ts';
+import type { SimpleSkill } from '../skills/simple/loader.ts';
+import { renderSkillCard, type SkillCardView, toSkillCardView } from './agents/derive-persona-capabilities.ts';
 import type { OrchestratorDeps } from './core-loop.ts';
-import {
-  renderSkillCard,
-  type SkillCardView,
-  toSkillCardView,
-} from './agents/derive-persona-capabilities.ts';
 import { buildShortCircuitProvenance } from './governance-provenance.ts';
 import {
   detectHallucinatedDelegation,
   formatEscapeProtocolBlock,
   parseEscapeSentinel,
 } from './intent/escape-sentinel.ts';
-import {
-  renderSimpleSkillSections,
-  resolveSimpleSkillsForDispatch,
-} from '../skills/simple/dispatch-helper.ts';
-import type { SimpleSkill } from '../skills/simple/loader.ts';
 import type { ExecutionTrace, IntentResolution, TaskInput, TaskResult } from './types.ts';
 
 export type ConversationalOutcome =
@@ -284,8 +278,7 @@ export async function buildConversationalResult(
         strategy: 'agentic-workflow',
         workflowPrompt: seededWorkflowPrompt,
         reasoningSource: 'persona-escape',
-        reasoning:
-          `${intent.reasoning ?? ''} [hallucinated-delegation: ${halluc.locale ?? 'unknown'}]`.trim(),
+        reasoning: `${intent.reasoning ?? ''} [hallucinated-delegation: ${halluc.locale ?? 'unknown'}]`.trim(),
       };
       return {
         kind: 'reroute',
@@ -437,9 +430,7 @@ Do NOT narrate your reasoning process — just respond directly to the user.`;
   // "competition setup" instead of answering the assigned step). Mirrors the
   // escape-protocol sub-task carve-out further down — same predicate,
   // same reasoning.
-  const peers = !input.parentTaskId
-    ? (deps.agentRegistry?.listAgents() ?? []).filter((a) => a.id !== agent.id)
-    : [];
+  const peers = !input.parentTaskId ? (deps.agentRegistry?.listAgents() ?? []).filter((a) => a.id !== agent.id) : [];
   if (peers.length > 0) {
     lines.push('');
     lines.push('[PEER AGENTS — DO NOT PROMISE TO DISPATCH]');

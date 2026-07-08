@@ -197,10 +197,7 @@ export function computeFromVerdicts(
  * Replaces architecturalCompliance with fusedConfidence and recomputes composite.
  * DE4: Quality score reflects epistemic state after fusion, not just raw pass/fail ratios.
  */
-export function recalibrateWithFusion(
-  score: QualityScore,
-  fusedConfidence: number,
-): QualityScore {
+export function recalibrateWithFusion(score: QualityScore, fusedConfidence: number): QualityScore {
   const architecturalCompliance = fusedConfidence;
   const dims = score.dimensionsAvailable;
 

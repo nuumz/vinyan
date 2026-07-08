@@ -130,13 +130,7 @@ describe('PromptAssembler', () => {
     });
 
     test('reasoning task also emits tier offsets', () => {
-      const result = assemblePrompt(
-        'explain recursion',
-        makePerception(),
-        makeMemory(),
-        undefined,
-        'reasoning',
-      );
+      const result = assemblePrompt('explain recursion', makePerception(), makeMemory(), undefined, 'reasoning');
       expect(result.tiers).toBeDefined();
       expect(result.tiers.system.frozenEnd).toBeGreaterThan(0);
     });

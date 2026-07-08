@@ -16,16 +16,16 @@ import type { SkillOutcomeRecord } from '../../../src/db/skill-outcome-store.ts'
 import { SkillTrustLedgerStore } from '../../../src/db/skill-trust-ledger-store.ts';
 import { SkillArtifactStore } from '../../../src/skills/artifact-store.ts';
 import {
-  applyTierGraduations,
-  TIER_GRADUATION_RULE_ID,
-} from '../../../src/skills/autonomous/tier-graduation-applier.ts';
-import {
   decideTierGraduations,
   MIN_COOLDOWN_RUNS,
   MIN_TRIALS_PROMOTE,
   nextTierDown,
   nextTierUp,
 } from '../../../src/skills/autonomous/tier-graduation.ts';
+import {
+  applyTierGraduations,
+  TIER_GRADUATION_RULE_ID,
+} from '../../../src/skills/autonomous/tier-graduation-applier.ts';
 import { parseSkillMd } from '../../../src/skills/skill-md/index.ts';
 
 function makeRow(opts: {

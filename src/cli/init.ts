@@ -20,10 +20,16 @@ interface ProjectInfo {
 function detectProject(workspacePath: string): ProjectInfo {
   return {
     hasTypeScript: existsSync(join(workspacePath, 'tsconfig.json')),
-    hasPython: existsSync(join(workspacePath, 'pyproject.toml')) || existsSync(join(workspacePath, 'setup.py')) || existsSync(join(workspacePath, 'requirements.txt')),
+    hasPython:
+      existsSync(join(workspacePath, 'pyproject.toml')) ||
+      existsSync(join(workspacePath, 'setup.py')) ||
+      existsSync(join(workspacePath, 'requirements.txt')),
     hasGo: existsSync(join(workspacePath, 'go.mod')),
     hasRust: existsSync(join(workspacePath, 'Cargo.toml')),
-    hasJava: existsSync(join(workspacePath, 'pom.xml')) || existsSync(join(workspacePath, 'build.gradle')) || existsSync(join(workspacePath, 'build.gradle.kts')),
+    hasJava:
+      existsSync(join(workspacePath, 'pom.xml')) ||
+      existsSync(join(workspacePath, 'build.gradle')) ||
+      existsSync(join(workspacePath, 'build.gradle.kts')),
     hasPackageJson: existsSync(join(workspacePath, 'package.json')),
   };
 }
@@ -126,7 +132,5 @@ export function init(workspacePath: string, optsOrForce: InitOptions | boolean =
     }
   }
 
-  return systemSkillsCopied
-    ? { created: true, configPath, systemSkillsCopied }
-    : { created: true, configPath };
+  return systemSkillsCopied ? { created: true, configPath, systemSkillsCopied } : { created: true, configPath };
 }

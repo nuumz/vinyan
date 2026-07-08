@@ -7,7 +7,6 @@
 
 import type { DataSource } from './data/source.ts';
 import { getContextHints } from './hints.ts';
-import { saveSession } from './session.ts';
 import { parseCommand, routeKeypress, startKeyListener, type TUIAction } from './input.ts';
 import {
   ANSI,
@@ -21,6 +20,7 @@ import {
   terminalSizeGuard,
 } from './renderer.ts';
 import { Screen, type ViewRenderer } from './screen.ts';
+import { saveSession } from './session.ts';
 import {
   cleanExpiredToasts,
   closeModal,
@@ -28,8 +28,8 @@ import {
   cycleNotification,
   cycleSortField,
   dismissNotification,
-  exitInputMode,
   enterCommandMode,
+  exitInputMode,
   openModal,
   pushToast,
   selectEvent,
@@ -41,12 +41,12 @@ import {
 import type { TUIState, ViewTab } from './types.ts';
 import { renderApprovalModal, renderConfirmCancel, renderConfirmQuit } from './views/approval-modal.ts';
 import { CHAT_PANEL_COUNT, renderChat } from './views/chat.ts';
+import { ECONOMY_PANEL_COUNT, renderEconomy } from './views/economy.ts';
 import { EVENTS_PANEL_COUNT, renderEvents } from './views/events.ts';
 import { renderHelpOverlay } from './views/help.ts';
 import { PEERS_PANEL_COUNT, renderPeers } from './views/peers.ts';
-import { SYSTEM_PANEL_COUNT, renderSystem } from './views/system.ts';
+import { renderSystem, SYSTEM_PANEL_COUNT } from './views/system.ts';
 import { renderTasks, TASKS_PANEL_COUNT } from './views/tasks.ts';
-import { ECONOMY_PANEL_COUNT, renderEconomy } from './views/economy.ts';
 
 export interface AppConfig {
   state: TUIState;
@@ -113,12 +113,14 @@ export class App {
       error: console.error,
     };
 
-    const capture = (level: 'log' | 'warn' | 'error') => (...args: unknown[]) => {
-      const message = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-      this.state.bootLog.push({ message, level, timestamp: Date.now() });
-      if (this.state.bootLog.length > 50) this.state.bootLog.shift();
-      this.state.dirty = true;
-    };
+    const capture =
+      (level: 'log' | 'warn' | 'error') =>
+      (...args: unknown[]) => {
+        const message = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+        this.state.bootLog.push({ message, level, timestamp: Date.now() });
+        if (this.state.bootLog.length > 50) this.state.bootLog.shift();
+        this.state.dirty = true;
+      };
 
     console.log = capture('log');
     console.warn = capture('warn');
@@ -246,7 +248,7 @@ export class App {
         this.state.dirty = true;
         break;
 
-      case 'approve':
+      case 'approve': {
         this.dataSource?.approveTask(action.taskId);
         closeModal(this.state);
         // Dismiss matching notification
@@ -254,14 +256,16 @@ export class App {
         if (approveNotif) dismissNotification(this.state, approveNotif.id);
         pushToast(this.state, `✓ Approved ${action.taskId}`, 'success');
         break;
+      }
 
-      case 'reject':
+      case 'reject': {
         this.dataSource?.rejectTask(action.taskId);
         closeModal(this.state);
         const rejectNotif = this.state.notifications.find((n) => n.taskId === action.taskId && !n.dismissed);
         if (rejectNotif) dismissNotification(this.state, rejectNotif.id);
         pushToast(this.state, `✗ Rejected ${action.taskId}`, 'warning');
         break;
+      }
 
       case 'toggle-help':
         if (this.state.modal?.type === 'help') {
@@ -679,14 +683,11 @@ export class App {
     if (logSlice.length > 0) {
       logLines.push('');
       for (const entry of logSlice) {
-        const prefix = entry.level === 'error' ? color('✗', ANSI.red)
-          : entry.level === 'warn' ? color('!', ANSI.yellow)
-          : dim('·');
+        const prefix =
+          entry.level === 'error' ? color('✗', ANSI.red) : entry.level === 'warn' ? color('!', ANSI.yellow) : dim('·');
         // Truncate to fit terminal width with padding
         const maxMsgW = Math.max(20, termWidth - 10);
-        const msg = entry.message.length > maxMsgW
-          ? entry.message.slice(0, maxMsgW - 1) + '…'
-          : entry.message;
+        const msg = entry.message.length > maxMsgW ? entry.message.slice(0, maxMsgW - 1) + '…' : entry.message;
         logLines.push(`  ${prefix} ${dim(msg)}`);
       }
     }

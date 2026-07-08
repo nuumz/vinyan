@@ -19,8 +19,8 @@ import {
   type ImporterGateVerdict,
   InMemorySkillTrustLedger,
   type SkillFetchResult,
-  type SkillRegistryAdapter,
   SkillImporter,
+  type SkillRegistryAdapter,
 } from '../../../src/skills/hub/index.ts';
 
 const CLEAN_SKILL_MD = `---

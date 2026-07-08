@@ -20,16 +20,7 @@ import { z } from 'zod/v4';
 
 /** Oracle that should verify a given criterion. Closed vocabulary — extending
  *  requires a code change to keep SpecArtifact governance reproducible. */
-export const SPEC_ORACLE_VOCAB = [
-  'ast',
-  'type',
-  'test',
-  'lint',
-  'dep',
-  'goal-alignment',
-  'critic',
-  'manual',
-] as const;
+export const SPEC_ORACLE_VOCAB = ['ast', 'type', 'test', 'lint', 'dep', 'goal-alignment', 'critic', 'manual'] as const;
 export type SpecOracle = (typeof SPEC_ORACLE_VOCAB)[number];
 
 export const AcceptanceCriterionSchema = z.object({
@@ -175,9 +166,7 @@ export type SpecArtifact = SpecArtifactCode | SpecArtifactReasoning;
  * AcceptanceCriterion shape (id/description/testable/oracle).
  */
 export function specToAcceptanceCriteriaList(spec: SpecArtifact): string[] {
-  return spec.acceptanceCriteria
-    .filter((c) => c.testable)
-    .map((c) => c.description);
+  return spec.acceptanceCriteria.filter((c) => c.testable).map((c) => c.description);
 }
 
 /**

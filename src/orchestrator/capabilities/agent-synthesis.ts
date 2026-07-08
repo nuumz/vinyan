@@ -47,11 +47,7 @@ export interface SynthesisOptions {
   allowedTools?: string[];
 }
 
-const DEFAULT_ALLOWED_TOOLS: readonly string[] = [
-  'file_read',
-  'search_grep',
-  'directory_list',
-];
+const DEFAULT_ALLOWED_TOOLS: readonly string[] = ['file_read', 'search_grep', 'directory_list'];
 
 const DEFAULT_MAX_CLAIMS = 6;
 
@@ -76,9 +72,7 @@ export function planFromGap(
 
   const top = analysis.candidates[0];
   const matchedIds = new Set(top?.matched.map((m) => m.id) ?? []);
-  const unmet: CapabilityRequirement[] = analysis.required.filter(
-    (r) => !matchedIds.has(r.id),
-  );
+  const unmet: CapabilityRequirement[] = analysis.required.filter((r) => !matchedIds.has(r.id));
 
   if (unmet.length === 0) return null;
 
@@ -121,10 +115,7 @@ export function planFromGap(
  * responsible for `registry.registerAgent(...)` and the matching
  * `unregisterAgent` in a `finally` block.
  */
-export function synthesizeAgent(
-  plan: AgentSynthesisPlan,
-  opts: SynthesisOptions = {},
-): AgentSpec {
+export function synthesizeAgent(plan: AgentSynthesisPlan, opts: SynthesisOptions = {}): AgentSpec {
   const maxClaims = opts.maxClaims ?? DEFAULT_MAX_CLAIMS;
   const claims = plan.capabilities.slice(0, maxClaims);
   const allowedTools = opts.allowedTools ? [...opts.allowedTools] : [...DEFAULT_ALLOWED_TOOLS];
@@ -164,10 +155,7 @@ function makeSyntheticId(taskId: string, claims: CapabilityClaim[]): string {
     .map((c) => c.id)
     .sort()
     .join('|');
-  const hash = createHash('sha256')
-    .update(`${taskId}::${fingerprint}`)
-    .digest('hex')
-    .slice(0, 8);
+  const hash = createHash('sha256').update(`${taskId}::${fingerprint}`).digest('hex').slice(0, 8);
   return `synthetic-${hash}`;
 }
 
@@ -212,11 +200,7 @@ function buildSoul(plan: AgentSynthesisPlan): string {
   return lines.join('\n');
 }
 
-function buildRationale(
-  analysis: CapabilityGapAnalysis,
-  unmet: CapabilityRequirement[],
-  goal?: string,
-): string {
+function buildRationale(analysis: CapabilityGapAnalysis, unmet: CapabilityRequirement[], goal?: string): string {
   const unmetIds = unmet.map((r) => r.id).join(', ');
   const goalLine = goal ? `goal=${truncate(goal, 120)}; ` : '';
   return `${goalLine}gapNormalized=${analysis.gapNormalized.toFixed(2)}; unmet=[${unmetIds}]; recommendedAction=${analysis.recommendedAction}`;

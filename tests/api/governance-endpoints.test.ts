@@ -12,7 +12,12 @@ import { SessionManager } from '../../src/api/session-manager.ts';
 import { createBus } from '../../src/core/bus.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
-import { TRACE_SCHEMA_SQL, migratePipelineConfidenceColumns, migrateThinkingColumns, migrateTranscriptColumns } from '../../src/db/trace-schema.ts';
+import {
+  migratePipelineConfidenceColumns,
+  migrateThinkingColumns,
+  migrateTranscriptColumns,
+  TRACE_SCHEMA_SQL,
+} from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
 import type { ExecutionTrace, GovernanceProvenance, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 

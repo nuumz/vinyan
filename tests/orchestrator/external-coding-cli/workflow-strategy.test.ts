@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
 import { createBus } from '../../../src/core/bus.ts';
+import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
+import { CodingCliVerifier } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-verifier.ts';
 import {
   CodingCliConfigSchema,
   CodingCliWorkflowStrategy,
@@ -12,7 +13,6 @@ import {
   ExternalCodingCliController,
   registerCodingCliStrategy,
 } from '../../../src/orchestrator/external-coding-cli/index.ts';
-import { CodingCliVerifier } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-verifier.ts';
 import { WorkflowRegistry } from '../../../src/orchestrator/workflow/workflow-registry.ts';
 import { FakeAdapter, makeFakeResultBlock } from './fake-adapter.ts';
 

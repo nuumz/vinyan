@@ -3,10 +3,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  countSoulTokens,
+  createSeedSoul,
   parseSoulMd,
   renderSoulMd,
-  createSeedSoul,
-  countSoulTokens,
   SOUL_MAX_TOKENS,
 } from '../../../src/orchestrator/agent-context/soul-schema.ts';
 

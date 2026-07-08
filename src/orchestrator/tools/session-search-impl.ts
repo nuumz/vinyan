@@ -24,7 +24,7 @@
  *   - `src/db/migrations/003_memory_records.ts` — base table + FTS5 vtable.
  */
 import type { Database } from 'bun:sqlite';
-import { rankOf, type ConfidenceTier } from '../../core/confidence-tier.ts';
+import { type ConfidenceTier, rankOf } from '../../core/confidence-tier.ts';
 import { computeScore, type RankerWeights } from '../../memory/provider/ranker.ts';
 import type { MemoryKind } from '../../memory/provider/types.ts';
 
@@ -127,10 +127,7 @@ function emptyResult(query: string, warning?: string): SessionSearchResult {
 
 // ── Main entry point ────────────────────────────────────────────────────
 
-export async function searchSessions(
-  input: SessionSearchInput,
-  deps: SessionSearchDeps,
-): Promise<SessionSearchResult> {
+export async function searchSessions(input: SessionSearchInput, deps: SessionSearchDeps): Promise<SessionSearchResult> {
   const query = input.query.trim();
   if (!query) return emptyResult(input.query, 'empty_query');
 

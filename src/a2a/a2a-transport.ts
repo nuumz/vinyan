@@ -260,11 +260,7 @@ function extractTaskResultFromResponse(
   // success/failure + clarification questions so the parent can react.
   const stateRaw = r.status?.state ?? 'failed';
   const status: TaskResult['status'] =
-    stateRaw === 'completed'
-      ? 'completed'
-      : stateRaw === 'input-required'
-        ? 'input-required'
-        : 'failed';
+    stateRaw === 'completed' ? 'completed' : stateRaw === 'input-required' ? 'input-required' : 'failed';
 
   const messageText = (r.status?.message?.parts ?? [])
     .filter((p) => p.type === 'text' && typeof p.text === 'string')

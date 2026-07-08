@@ -1,8 +1,8 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { CostLedger, type CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
 import { DynamicBudgetAllocator } from '../../src/economy/dynamic-budget-allocator.ts';
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 
 function createEnv() {
   const db = new Database(':memory:');

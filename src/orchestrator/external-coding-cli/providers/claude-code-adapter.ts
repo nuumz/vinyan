@@ -22,6 +22,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { parseFinalResult } from '../external-coding-cli-result-parser.ts';
 import {
   type ApprovalDecision,
   type CodingCliApprovalRequest,
@@ -40,7 +41,6 @@ import {
   type ParseContext,
   ZERO_CAPABILITIES,
 } from '../types.ts';
-import { parseFinalResult } from '../external-coding-cli-result-parser.ts';
 import { probeBinary, whichBinary } from './provider-detection.ts';
 
 export interface ClaudeCodeAdapterOptions {
@@ -121,8 +121,10 @@ export class ClaudeCodeAdapter implements CodingCliProviderAdapter {
     if (!this.capabilities.headless) return null;
     const args: string[] = [
       '-p', // print mode = non-interactive
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
       '--include-hook-events',
       '--include-partial-messages',
       '--no-session-persistence',
@@ -147,8 +149,10 @@ export class ClaudeCodeAdapter implements CodingCliProviderAdapter {
     }
     const args: string[] = [
       '-p',
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
       '--include-hook-events',
       '--include-partial-messages',
       '--no-session-persistence',
@@ -279,14 +283,18 @@ printf '{"providerId":"claude-code","codingCliSessionId":"%s","taskId":"%s","hoo
       extraEnv: {},
       extraArgs: ['--settings', settingsPath],
       teardown: async () => {
-        try { fs.rmSync(shimPath, { force: true }); } catch {}
-        try { fs.rmSync(settingsPath, { force: true }); } catch {}
+        try {
+          fs.rmSync(shimPath, { force: true });
+        } catch {}
+        try {
+          fs.rmSync(settingsPath, { force: true });
+        } catch {}
       },
     };
   }
 
-  async cleanup(_sessionId: string): Promise<void> {
-    void _sessionId;
+  async cleanup(sessionId: string): Promise<void> {
+    void sessionId;
   }
 
   // ── Internal ──────────────────────────────────────────────────────────
@@ -308,9 +316,16 @@ printf '{"providerId":"claude-code","codingCliSessionId":"%s","taskId":"%s","hoo
   private buildEnv(): Record<string, string> {
     const env: Record<string, string> = {};
     const allow = this.options.allowEnv ?? [
-      'PATH', 'HOME', 'TERM', 'LANG', 'LC_ALL',
-      'FORCE_COLOR', 'NO_COLOR',
-      'CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+      'PATH',
+      'HOME',
+      'TERM',
+      'LANG',
+      'LC_ALL',
+      'FORCE_COLOR',
+      'NO_COLOR',
+      'CLAUDE_CONFIG_DIR',
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN',
     ];
     for (const key of allow) {
       const value = process.env[key];
@@ -370,7 +385,10 @@ function parseClaudeStreamJson(ctx: ParseContext, chunk: string): CodingCliParse
           kind: 'tool_started',
           toolName,
           summary: String(parsed.summary ?? ''),
-          safeInput: typeof parsed.input === 'object' && parsed.input !== null ? (parsed.input as Record<string, unknown>) : undefined,
+          safeInput:
+            typeof parsed.input === 'object' && parsed.input !== null
+              ? (parsed.input as Record<string, unknown>)
+              : undefined,
         });
         break;
       }

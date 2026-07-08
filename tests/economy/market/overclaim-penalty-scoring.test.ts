@@ -8,8 +8,8 @@
  *   - MarketScheduler.allocate() injects the penalty for bids carrying personaId
  */
 import { describe, expect, test } from 'bun:test';
-import { type BidderContext, scoreBid } from '../../../src/economy/market/auction-engine.ts';
 import type { MarketConfig } from '../../../src/economy/economy-config.ts';
+import { type BidderContext, scoreBid } from '../../../src/economy/market/auction-engine.ts';
 import { MarketScheduler } from '../../../src/economy/market/market-scheduler.ts';
 import type { EngineBid } from '../../../src/economy/market/schemas.ts';
 

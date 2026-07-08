@@ -43,7 +43,10 @@ export function mineStrategies(traces: TraceForStrategy[]): StrategyEntry[] {
     if (taskTraces.length < MIN_OBSERVATIONS) continue;
 
     // Group by approach within this task type
-    const byApproach = new Map<string, { successes: number; total: number; lastSuccess: number; description: string }>();
+    const byApproach = new Map<
+      string,
+      { successes: number; total: number; lastSuccess: number; description: string }
+    >();
 
     for (const trace of taskTraces) {
       const key = normalizeApproach(trace.approach);
@@ -87,9 +90,7 @@ export function mineStrategies(traces: TraceForStrategy[]): StrategyEntry[] {
     }
   }
 
-  return strategies
-    .sort((a, b) => b.evidenceCount - a.evidenceCount)
-    .slice(0, SOUL_SECTION_LIMITS.winningStrategies);
+  return strategies.sort((a, b) => b.evidenceCount - a.evidenceCount).slice(0, SOUL_SECTION_LIMITS.winningStrategies);
 }
 
 /** Normalize approach text for grouping. */

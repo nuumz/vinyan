@@ -18,8 +18,14 @@ describe('deriveOracleIndependenceAudit', () => {
   test('records aggregate confidence composition without changing confidence decisions', () => {
     const audit = deriveOracleIndependenceAudit({
       verdicts: {
-        ast: verdict({ confidence: 1, evidence: [{ file: 'src/auth.ts', line: 10, snippet: 'ast', contentHash: 'h1' }] }),
-        lint: verdict({ confidence: 0.72, evidence: [{ file: 'src/auth.ts', line: 22, snippet: 'lint', contentHash: 'h2' }] }),
+        ast: verdict({
+          confidence: 1,
+          evidence: [{ file: 'src/auth.ts', line: 10, snippet: 'ast', contentHash: 'h1' }],
+        }),
+        lint: verdict({
+          confidence: 0.72,
+          evidence: [{ file: 'src/auth.ts', line: 22, snippet: 'lint', contentHash: 'h2' }],
+        }),
       },
       aggregateConfidence: 0.86,
       passed: true,
@@ -36,8 +42,14 @@ describe('deriveOracleIndependenceAudit', () => {
   test('flags shared evidence across multiple oracle verdicts', () => {
     const audit = deriveOracleIndependenceAudit({
       verdicts: {
-        ast: verdict({ confidence: 1, evidence: [{ file: 'src/auth.ts', line: 10, snippet: 'ast', contentHash: 'h1' }] }),
-        type: verdict({ confidence: 1, evidence: [{ file: 'src/auth.ts', line: 40, snippet: 'type', contentHash: 'h1' }] }),
+        ast: verdict({
+          confidence: 1,
+          evidence: [{ file: 'src/auth.ts', line: 10, snippet: 'ast', contentHash: 'h1' }],
+        }),
+        type: verdict({
+          confidence: 1,
+          evidence: [{ file: 'src/auth.ts', line: 40, snippet: 'type', contentHash: 'h1' }],
+        }),
       },
       passed: true,
     });

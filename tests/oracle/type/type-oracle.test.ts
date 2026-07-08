@@ -3,7 +3,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { HypothesisTuple } from '../../../src/core/types.ts';
-import { clearTscCache, verify } from '../../../src/oracle/type/type-verifier.ts';
+import { isAbstention } from '../../../src/core/types.ts';
+import { clearTscCache, verify as verifyResponse } from '../../../src/oracle/type/type-verifier.ts';
+import { asVerdict } from '../../helpers/oracle-verdict.ts';
+
+/** Narrowing wrapper — most tests here exercise the verdict path. */
+async function verify(hypothesis: HypothesisTuple) {
+  return asVerdict(await verifyResponse(hypothesis));
+}
 
 describe('type-oracle', () => {
   let tempDir: string;
@@ -130,6 +137,32 @@ describe('type-oracle', () => {
     await verify(hypothesis);
     const info2 = readFileSync(buildInfoPath, 'utf-8');
     expect(info2).not.toBe(info1);
+  });
+
+  test('workspace without tsconfig abstains instead of passing (A2)', async () => {
+    const bareDir = mkdtempSync(join(tmpdir(), 'vinyan-type-notsconfig-'));
+    try {
+      writeFileSync(join(bareDir, 'plain.txt'), 'not a typescript project\n');
+      clearTscCache();
+
+      const response = await verifyResponse({ target: 'plain.txt', pattern: 'type-check', workspace: bareDir });
+      expect(isAbstention(response)).toBe(true);
+      if (isAbstention(response)) {
+        expect(response.reason).toBe('out_of_domain');
+      }
+    } finally {
+      rmSync(bareDir, { recursive: true, force: true });
+      clearTscCache();
+    }
+  });
+
+  test('failing verdict carries disbelief, not belief (SL orientation)', async () => {
+    writeFileSync(join(tempDir, 'bad.ts'), `export const n: number = "string";\n`);
+    clearTscCache();
+
+    const verdict = await verify({ target: 'bad.ts', pattern: 'type-check', workspace: tempDir });
+    expect(verdict.verified).toBe(false);
+    expect(verdict.opinion!.disbelief).toBeGreaterThan(verdict.opinion!.belief);
   });
 
   test('detects new type error after source change', async () => {

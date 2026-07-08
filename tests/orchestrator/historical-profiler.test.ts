@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
 import type { ExecutionTrace, TaskInput } from '../../src/orchestrator/types.ts';
@@ -92,27 +92,33 @@ describe('profileHistory', () => {
     const input = makeInput();
 
     // 3 failures: 'type' fails in all 3, 'ast' fails in 2, 'dep' fails in 1
-    store.insert(makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: { ast: false, type: false, dep: false },
-      taskTypeSignature: 'fix::ts::single',
-    }));
-    store.insert(makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: { ast: false, type: false, dep: true },
-      taskTypeSignature: 'fix::ts::single',
-    }));
-    store.insert(makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: { ast: true, type: false, dep: true },
-      taskTypeSignature: 'fix::ts::single',
-    }));
+    store.insert(
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: { ast: false, type: false, dep: false },
+        taskTypeSignature: 'fix::ts::single',
+      }),
+    );
+    store.insert(
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: { ast: false, type: false, dep: true },
+        taskTypeSignature: 'fix::ts::single',
+      }),
+    );
+    store.insert(
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: { ast: true, type: false, dep: true },
+        taskTypeSignature: 'fix::ts::single',
+      }),
+    );
 
     const profile = profileHistory(input, store);
 
     expect(profile.commonFailureOracles[0]).toBe('type'); // 3 failures
-    expect(profile.commonFailureOracles[1]).toBe('ast');  // 2 failures
-    expect(profile.commonFailureOracles[2]).toBe('dep');  // 1 failure
+    expect(profile.commonFailureOracles[1]).toBe('ast'); // 2 failures
+    expect(profile.commonFailureOracles[2]).toBe('dep'); // 1 failure
     expect(profile.commonFailureOracles).toHaveLength(3);
   });
 
@@ -177,17 +183,21 @@ describe('profileHistory', () => {
     const input = makeInput();
 
     // Trace 1: 1200ms, 2 files → 600ms/file
-    store.insert(makeTrace({
-      durationMs: 1200,
-      affectedFiles: ['src/a.ts', 'src/b.ts'],
-      taskTypeSignature: 'fix::ts::single',
-    }));
+    store.insert(
+      makeTrace({
+        durationMs: 1200,
+        affectedFiles: ['src/a.ts', 'src/b.ts'],
+        taskTypeSignature: 'fix::ts::single',
+      }),
+    );
     // Trace 2: 900ms, 1 file → 900ms/file
-    store.insert(makeTrace({
-      durationMs: 900,
-      affectedFiles: ['src/c.ts'],
-      taskTypeSignature: 'fix::ts::single',
-    }));
+    store.insert(
+      makeTrace({
+        durationMs: 900,
+        affectedFiles: ['src/c.ts'],
+        taskTypeSignature: 'fix::ts::single',
+      }),
+    );
 
     const profile = profileHistory(input, store);
 
@@ -199,10 +209,12 @@ describe('profileHistory', () => {
     const input = makeInput({ targetFiles: undefined });
 
     for (let i = 0; i < 5; i++) {
-      store.insert(makeTrace({
-        affectedFiles: ['src/auth/login.ts'],
-        taskTypeSignature: 'fix::ts::single',
-      }));
+      store.insert(
+        makeTrace({
+          affectedFiles: ['src/auth/login.ts'],
+          taskTypeSignature: 'fix::ts::single',
+        }),
+      );
     }
 
     const profile = profileHistory(input, store);

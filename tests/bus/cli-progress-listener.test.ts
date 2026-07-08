@@ -143,7 +143,13 @@ describe('attachCLIProgressListener', () => {
     const detach = attachCLIProgressListener(bus, { output: stream });
 
     bus.emit('task:start', {
-      input: { id: 't-1', source: 'cli', goal: 'x', taskType: 'code', budget: { maxTokens: 1, maxDurationMs: 1, maxRetries: 1 } },
+      input: {
+        id: 't-1',
+        source: 'cli',
+        goal: 'x',
+        taskType: 'code',
+        budget: { maxTokens: 1, maxDurationMs: 1, maxRetries: 1 },
+      },
       routing: { level: 0, model: null, budgetTokens: 0, latencyBudgetMs: 0 },
     });
     expect(output.length).toBe(1);
@@ -151,7 +157,13 @@ describe('attachCLIProgressListener', () => {
     detach();
 
     bus.emit('task:start', {
-      input: { id: 't-2', source: 'cli', goal: 'y', taskType: 'code', budget: { maxTokens: 1, maxDurationMs: 1, maxRetries: 1 } },
+      input: {
+        id: 't-2',
+        source: 'cli',
+        goal: 'y',
+        taskType: 'code',
+        budget: { maxTokens: 1, maxDurationMs: 1, maxRetries: 1 },
+      },
       routing: { level: 0, model: null, budgetTokens: 0, latencyBudgetMs: 0 },
     });
     expect(output.length).toBe(1); // not incremented

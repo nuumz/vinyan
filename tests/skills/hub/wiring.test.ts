@@ -3,16 +3,17 @@
  * working `SkillImporter` handle end-to-end with a fixture adapter,
  * an in-memory SQLite, and stubbed gate/critic.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MigrationRunner } from '../../../src/db/migrations/index.ts';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-import { SkillArtifactStore } from '../../../src/skills/artifact-store.ts';
+import { MigrationRunner } from '../../../src/db/migrations/index.ts';
 import type { GateRequest, GateVerdict } from '../../../src/gate/gate.ts';
 import type { CriticResult } from '../../../src/orchestrator/critic/critic-engine.ts';
+import { SkillArtifactStore } from '../../../src/skills/artifact-store.ts';
 import type { SkillFetchResult, SkillRegistryAdapter } from '../../../src/skills/hub/registry-adapter.ts';
 import { setupSkillImporter } from '../../../src/skills/hub/wiring.ts';
 

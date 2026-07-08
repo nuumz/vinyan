@@ -8,9 +8,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
-import { type GateRequest, readSessionLog, runGate } from '../../src/gate/index.ts';
 import { clearConfigCache } from '../../src/config/loader.ts';
 import { clearGateDeps } from '../../src/gate/gate.ts';
+import { type GateRequest, readSessionLog, runGate } from '../../src/gate/index.ts';
 import { clearTscCache } from '../../src/oracle/type/type-verifier.ts';
 
 // ── Workspace setup ─────────────────────────────────────────────
@@ -67,7 +67,9 @@ describe('Oracle Gate', () => {
     expect(Object.keys(verdict.oracle_results).length).toBeGreaterThanOrEqual(1);
     // Phase 4.9: fusedOpinion present when oracles ran
     expect(verdict.fusedOpinion).toBeDefined();
-    expect(verdict.fusedOpinion!.belief + verdict.fusedOpinion!.disbelief + verdict.fusedOpinion!.uncertainty).toBeCloseTo(1.0, 5);
+    expect(
+      verdict.fusedOpinion!.belief + verdict.fusedOpinion!.disbelief + verdict.fusedOpinion!.uncertainty,
+    ).toBeCloseTo(1.0, 5);
   });
 
   test('blocks when type oracle finds errors', async () => {

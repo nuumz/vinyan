@@ -59,8 +59,12 @@ export function createTaskQueue(config: TaskQueueConfig = {}): TaskQueue {
 
   return {
     enqueue,
-    get activeCount() { return active; },
-    get pendingCount() { return waiting.length; },
+    get activeCount() {
+      return active;
+    },
+    get pendingCount() {
+      return waiting.length;
+    },
     drain,
   };
 }

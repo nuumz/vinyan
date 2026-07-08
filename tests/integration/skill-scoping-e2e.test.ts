@@ -20,8 +20,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBus } from '../../src/core/bus.ts';
 import { createOrchestrator } from '../../src/orchestrator/factory.ts';
-import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import { createScriptedMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
+import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { CachedSkill } from '../../src/orchestrator/types.ts';
 
 function seedSkill(overrides: Partial<CachedSkill>): CachedSkill {
@@ -97,9 +97,7 @@ describe('Phase 3 E2E — SkillManager agent scoping via factory', () => {
     const store = orchestrator.skillStore!;
     const mgr = orchestrator.skillManager!;
 
-    store.insert(
-      seedSkill({ taskSignature: 'task-b::src/foo.ts', approach: 'ts-coder private', agentId: 'ts-coder' }),
-    );
+    store.insert(seedSkill({ taskSignature: 'task-b::src/foo.ts', approach: 'ts-coder private', agentId: 'ts-coder' }));
 
     // writer has no owned skill and no legacy fallback for this signature → null
     const writerMatch = mgr.match('task-b::src/foo.ts', 'writer');

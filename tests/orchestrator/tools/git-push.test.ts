@@ -28,10 +28,7 @@ describe('git_push descriptor', () => {
 
 describe('git_push policy gating', () => {
   test('blocks --force to main', async () => {
-    const result = await gitPush.execute(
-      { callId: 'p1', branch: 'main', remote: 'origin', force: true },
-      ctx(),
-    );
+    const result = await gitPush.execute({ callId: 'p1', branch: 'main', remote: 'origin', force: true }, ctx());
     expect(result.status).toBe('denied');
     expect((result.output as { code: string }).code).toBe('force-push-protected');
   });
@@ -46,19 +43,13 @@ describe('git_push policy gating', () => {
   });
 
   test('rejects branch name with spaces', async () => {
-    const result = await gitPush.execute(
-      { callId: 'p3', branch: 'feature with space', remote: 'origin' },
-      ctx(),
-    );
+    const result = await gitPush.execute({ callId: 'p3', branch: 'feature with space', remote: 'origin' }, ctx());
     expect(result.status).toBe('denied');
     expect((result.output as { code: string }).code).toBe('branch-name-invalid');
   });
 
   test('rejects remote with metacharacters (anti command-injection)', async () => {
-    const result = await gitPush.execute(
-      { callId: 'p4', branch: 'feature/foo', remote: 'origin;rm -rf /' },
-      ctx(),
-    );
+    const result = await gitPush.execute({ callId: 'p4', branch: 'feature/foo', remote: 'origin;rm -rf /' }, ctx());
     expect(result.status).toBe('denied');
     expect((result.output as { code: string }).code).toBe('unsupported-remote-flag');
   });

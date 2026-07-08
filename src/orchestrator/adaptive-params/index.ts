@@ -4,15 +4,16 @@
  * See `parameter-registry.ts` for the philosophy (Guard axioms vs.
  * Ceiling parameters) and the registry of every tunable.
  */
+
+export { type ParameterAdaptationInput, type ParameterAdaptationRecord, ParameterLedger } from './parameter-ledger.ts';
 export {
   AXIOM_CATEGORIES,
+  type AxiomCategory,
   getParameterDef,
   listParameterDefs,
   PARAMETER_TYPES,
-  validateParameterValue,
-  type AxiomCategory,
   type ParameterDef,
   type ParameterType,
+  validateParameterValue,
 } from './parameter-registry.ts';
-export { ParameterLedger, type ParameterAdaptationInput, type ParameterAdaptationRecord } from './parameter-ledger.ts';
-export { ParameterStore, type ParameterSetResult, type ParameterStoreOptions } from './parameter-store.ts';
+export { type ParameterSetResult, ParameterStore, type ParameterStoreOptions } from './parameter-store.ts';

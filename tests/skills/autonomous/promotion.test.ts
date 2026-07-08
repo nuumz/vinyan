@@ -10,8 +10,8 @@ import {
   AUTONOMOUS_PROMOTE_RULE_ID,
   AUTONOMOUS_REGRESSION_FACTOR,
   AUTONOMOUS_RETIRE_AFTER_DEMOTIONS,
-  decideAutonomousPromotion,
   type BacktestResult,
+  decideAutonomousPromotion,
 } from '../../../src/skills/autonomous/index.ts';
 
 const okBacktest: BacktestResult = {

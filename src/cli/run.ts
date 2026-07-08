@@ -56,7 +56,7 @@ export async function runAgentTask(argv: string[], opts: RunAgentTaskOptions = {
   // human-readable error rather than silently becoming a hallucinated
   // persona downstream. agent-router still does a registry membership
   // check after this brand pass.
-  let agentIdOverride = tryAsPersonaId(agentIdRaw);
+  const agentIdOverride = tryAsPersonaId(agentIdRaw);
   if (agentIdRaw && !agentIdOverride) {
     console.error(
       `vinyan run: invalid --agent value "${agentIdRaw}". ` +
@@ -164,6 +164,19 @@ export async function runAgentTask(argv: string[], opts: RunAgentTaskOptions = {
       detachProgress?.();
       orchestrator.close();
       process.exit(0);
+    }
+
+    // Fail fast when no LLM provider is configured. Without this guard an
+    // empty registry degrades to an empty result with exit 0 — silently
+    // useless for a first-run user. Mirrors the `vinyan doctor` LLM check.
+    const providerCount = orchestrator.llmRegistry?.listProviders().length ?? 0;
+    if (providerCount === 0) {
+      console.error('vinyan run: no LLM provider configured.');
+      console.error('Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY in your environment or a .env file, then retry.');
+      console.error('Run `vinyan doctor` to diagnose your setup.');
+      detachProgress?.();
+      orchestrator.close();
+      process.exit(1);
     }
 
     const result = await orchestrator.executeTask(input);

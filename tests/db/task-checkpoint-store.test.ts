@@ -1,8 +1,9 @@
 /**
  * Tests for Crash Recovery — TaskCheckpointStore.
  */
-import { describe, expect, test } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
+import { describe, expect, test } from 'bun:test';
 import { TaskCheckpointStore } from '../../src/db/task-checkpoint-store.ts';
 
 function makeStore(): TaskCheckpointStore {
@@ -80,9 +81,30 @@ describe('TaskCheckpointStore', () => {
   test('findDispatched only returns dispatched status', () => {
     const store = makeStore();
 
-    store.save({ taskId: 't1', inputJson: '{}', routingLevel: 1, planJson: null, perceptionJson: null, attemptCount: 1 });
-    store.save({ taskId: 't2', inputJson: '{}', routingLevel: 1, planJson: null, perceptionJson: null, attemptCount: 1 });
-    store.save({ taskId: 't3', inputJson: '{}', routingLevel: 1, planJson: null, perceptionJson: null, attemptCount: 1 });
+    store.save({
+      taskId: 't1',
+      inputJson: '{}',
+      routingLevel: 1,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 1,
+    });
+    store.save({
+      taskId: 't2',
+      inputJson: '{}',
+      routingLevel: 1,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 1,
+    });
+    store.save({
+      taskId: 't3',
+      inputJson: '{}',
+      routingLevel: 1,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 1,
+    });
 
     store.complete('t1');
     store.fail('t2', 'error');
@@ -96,7 +118,14 @@ describe('TaskCheckpointStore', () => {
     const db = new Database(':memory:');
     const store = new TaskCheckpointStore(db);
 
-    store.save({ taskId: 't1', inputJson: '{}', routingLevel: 1, planJson: null, perceptionJson: null, attemptCount: 1 });
+    store.save({
+      taskId: 't1',
+      inputJson: '{}',
+      routingLevel: 1,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 1,
+    });
     store.complete('t1');
 
     // Manually backdate the updated_at to simulate old entry
@@ -108,7 +137,14 @@ describe('TaskCheckpointStore', () => {
 
   test('cleanup does not remove recent entries', () => {
     const store = makeStore();
-    store.save({ taskId: 't1', inputJson: '{}', routingLevel: 1, planJson: null, perceptionJson: null, attemptCount: 1 });
+    store.save({
+      taskId: 't1',
+      inputJson: '{}',
+      routingLevel: 1,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 1,
+    });
     store.complete('t1');
 
     const cleaned = store.cleanup(24 * 60 * 60 * 1000);
@@ -118,8 +154,22 @@ describe('TaskCheckpointStore', () => {
   test('save with same taskId overwrites (INSERT OR REPLACE)', () => {
     const store = makeStore();
 
-    store.save({ taskId: 't1', inputJson: '{"v":1}', routingLevel: 1, planJson: null, perceptionJson: null, attemptCount: 1 });
-    store.save({ taskId: 't1', inputJson: '{"v":2}', routingLevel: 2, planJson: null, perceptionJson: null, attemptCount: 2 });
+    store.save({
+      taskId: 't1',
+      inputJson: '{"v":1}',
+      routingLevel: 1,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 1,
+    });
+    store.save({
+      taskId: 't1',
+      inputJson: '{"v":2}',
+      routingLevel: 2,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 2,
+    });
 
     const dispatched = store.findDispatched();
     expect(dispatched).toHaveLength(1);
@@ -148,9 +198,30 @@ describe('TaskCheckpointStore', () => {
     const store = makeStore();
 
     // Simulate 3 tasks dispatched before crash
-    store.save({ taskId: 't1', inputJson: '{"id":"t1"}', routingLevel: 1, planJson: null, perceptionJson: null, attemptCount: 1 });
-    store.save({ taskId: 't2', inputJson: '{"id":"t2"}', routingLevel: 2, planJson: null, perceptionJson: null, attemptCount: 1 });
-    store.save({ taskId: 't3', inputJson: '{"id":"t3"}', routingLevel: 1, planJson: null, perceptionJson: null, attemptCount: 1 });
+    store.save({
+      taskId: 't1',
+      inputJson: '{"id":"t1"}',
+      routingLevel: 1,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 1,
+    });
+    store.save({
+      taskId: 't2',
+      inputJson: '{"id":"t2"}',
+      routingLevel: 2,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 1,
+    });
+    store.save({
+      taskId: 't3',
+      inputJson: '{"id":"t3"}',
+      routingLevel: 1,
+      planJson: null,
+      perceptionJson: null,
+      attemptCount: 1,
+    });
 
     // t1 completed before crash
     store.complete('t1');

@@ -88,7 +88,9 @@ describe('executeGeneratePhase runtime skill hints', () => {
     let capturedUnderstanding: SemanticTaskUnderstanding | undefined;
     const matchedSkill = makeSkill({ approach: 'matched exact approach', successRate: 0.93 });
     const agentMemory = {
-      queryRelatedSkills: async () => [makeSkill({ taskSignature: 'similar::ts', approach: 'related memory approach' })],
+      queryRelatedSkills: async () => [
+        makeSkill({ taskSignature: 'similar::ts', approach: 'related memory approach' }),
+      ],
     } as unknown as AgentMemoryAPI;
     const input = makeInput();
     const understanding = makeUnderstanding();

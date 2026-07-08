@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { CausalPredictorImpl } from '../../src/orchestrator/prediction/causal-predictor.ts';
-import type { CausalEdge, FileOutcomeStat, CausalEdgeType } from '../../src/orchestrator/forward-predictor-types.ts';
+import type { CausalEdge, CausalEdgeType, FileOutcomeStat } from '../../src/orchestrator/forward-predictor-types.ts';
 import { CAUSAL_EDGE_WEIGHTS } from '../../src/orchestrator/forward-predictor-types.ts';
+import { CausalPredictorImpl } from '../../src/orchestrator/prediction/causal-predictor.ts';
 
 function makeEdge(
   fromFile: string,
@@ -56,10 +56,7 @@ describe('CausalPredictor', () => {
   // =========================================================================
 
   test('BFS: A→B→C chain with known weights', () => {
-    const edges = [
-      makeEdge('src/a.ts', 'src/b.ts', 'calls-method'),
-      makeEdge('src/b.ts', 'src/c.ts', 'uses-type'),
-    ];
+    const edges = [makeEdge('src/a.ts', 'src/b.ts', 'calls-method'), makeEdge('src/b.ts', 'src/c.ts', 'uses-type')];
     const fileStats = [
       makeFileStat('src/b.ts', 5, 5), // 50% fail rate
       makeFileStat('src/c.ts', 8, 2), // 20% fail rate
@@ -139,12 +136,8 @@ describe('CausalPredictor', () => {
 
   test('returns at most 10 risk files (MAX_RISK_FILES)', () => {
     // Create 15 direct dependents of A
-    const edges = Array.from({ length: 15 }, (_, i) =>
-      makeEdge('src/a.ts', `src/dep-${i}.ts`, 'imports'),
-    );
-    const fileStats = Array.from({ length: 15 }, (_, i) =>
-      makeFileStat(`src/dep-${i}.ts`, 5, 5),
-    );
+    const edges = Array.from({ length: 15 }, (_, i) => makeEdge('src/a.ts', `src/dep-${i}.ts`, 'imports'));
+    const fileStats = Array.from({ length: 15 }, (_, i) => makeFileStat(`src/dep-${i}.ts`, 5, 5));
 
     const result = predictor.computeRisks(['src/a.ts'], edges, fileStats, 0.8);
     expect(result.riskFiles.length).toBeLessThanOrEqual(10);
@@ -152,20 +145,17 @@ describe('CausalPredictor', () => {
 
   test('top-K keeps highest break probability files', () => {
     // 12 dependents with varying fail rates
-    const edges = Array.from({ length: 12 }, (_, i) =>
-      makeEdge('src/a.ts', `src/dep-${i}.ts`, 'calls-method'),
-    );
-    const fileStats = Array.from({ length: 12 }, (_, i) =>
-      makeFileStat(`src/dep-${i}.ts`, 10 - i, i), // dep-0: 0% fail, dep-11: ~100% fail
+    const edges = Array.from({ length: 12 }, (_, i) => makeEdge('src/a.ts', `src/dep-${i}.ts`, 'calls-method'));
+    const fileStats = Array.from(
+      { length: 12 },
+      (_, i) => makeFileStat(`src/dep-${i}.ts`, 10 - i, i), // dep-0: 0% fail, dep-11: ~100% fail
     );
 
     const result = predictor.computeRisks(['src/a.ts'], edges, fileStats, 0.8);
 
     // Should be sorted descending by breakProbability
     for (let i = 1; i < result.riskFiles.length; i++) {
-      expect(result.riskFiles[i - 1]!.breakProbability).toBeGreaterThanOrEqual(
-        result.riskFiles[i]!.breakProbability,
-      );
+      expect(result.riskFiles[i - 1]!.breakProbability).toBeGreaterThanOrEqual(result.riskFiles[i]!.breakProbability);
     }
   });
 
@@ -174,13 +164,10 @@ describe('CausalPredictor', () => {
   // =========================================================================
 
   test('test-covers edge has highest weight (0.95)', () => {
-    const edges = [
-      makeEdge('src/a.ts', 'src/test.ts', 'test-covers'),
-      makeEdge('src/a.ts', 'src/imp.ts', 'imports'),
-    ];
+    const edges = [makeEdge('src/a.ts', 'src/test.ts', 'test-covers'), makeEdge('src/a.ts', 'src/imp.ts', 'imports')];
     const fileStats = [
       makeFileStat('src/test.ts', 5, 5), // 50% fail
-      makeFileStat('src/imp.ts', 5, 5),  // 50% fail
+      makeFileStat('src/imp.ts', 5, 5), // 50% fail
     ];
 
     const result = predictor.computeRisks(['src/a.ts'], edges, fileStats, 0.8);
@@ -194,7 +181,7 @@ describe('CausalPredictor', () => {
     // test-covers (0.95) * 0.5 = 0.475 vs imports (0.20) * 0.5 = 0.10
     expect(testRisk!.breakProbability).toBeGreaterThan(impRisk!.breakProbability);
     expect(testRisk!.breakProbability).toBeCloseTo(0.475, 2);
-    expect(impRisk!.breakProbability).toBeCloseTo(0.10, 2);
+    expect(impRisk!.breakProbability).toBeCloseTo(0.1, 2);
   });
 
   // =========================================================================
@@ -202,10 +189,7 @@ describe('CausalPredictor', () => {
   // =========================================================================
 
   test('aggregate risk: P(>=1 break) = 1 - ∏(1 - P(break_i))', () => {
-    const edges = [
-      makeEdge('src/a.ts', 'src/b.ts', 'calls-method'),
-      makeEdge('src/a.ts', 'src/c.ts', 'calls-method'),
-    ];
+    const edges = [makeEdge('src/a.ts', 'src/b.ts', 'calls-method'), makeEdge('src/a.ts', 'src/c.ts', 'calls-method')];
     const fileStats = [
       makeFileStat('src/b.ts', 5, 5), // 50% fail
       makeFileStat('src/c.ts', 8, 2), // 20% fail
@@ -240,10 +224,7 @@ describe('CausalPredictor', () => {
   // =========================================================================
 
   test('causal chain records the traversal path', () => {
-    const edges = [
-      makeEdge('src/a.ts', 'src/b.ts', 'calls-method'),
-      makeEdge('src/b.ts', 'src/c.ts', 'uses-type'),
-    ];
+    const edges = [makeEdge('src/a.ts', 'src/b.ts', 'calls-method'), makeEdge('src/b.ts', 'src/c.ts', 'uses-type')];
 
     const result = predictor.computeRisks(['src/a.ts'], edges, [], 0.8);
 
@@ -296,10 +277,7 @@ describe('CausalPredictor', () => {
   // =========================================================================
 
   test('multiple target files seed BFS from all targets', () => {
-    const edges = [
-      makeEdge('src/a.ts', 'src/shared.ts', 'imports'),
-      makeEdge('src/b.ts', 'src/other.ts', 'imports'),
-    ];
+    const edges = [makeEdge('src/a.ts', 'src/shared.ts', 'imports'), makeEdge('src/b.ts', 'src/other.ts', 'imports')];
 
     const result = predictor.computeRisks(['src/a.ts', 'src/b.ts'], edges, [], 0.8);
 

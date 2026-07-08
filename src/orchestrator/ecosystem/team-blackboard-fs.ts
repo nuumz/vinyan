@@ -38,16 +38,7 @@
  */
 
 import { createHash, randomBytes } from 'crypto';
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -103,9 +94,7 @@ function sanitizeName(raw: string, kind: 'team' | 'key'): string {
   }
   const underscored = raw.replace(/\//g, '__');
   if (!VALID_CHARS.test(underscored)) {
-    throw new Error(
-      `team-blackboard-fs: invalid ${kind} id '${raw}' — allowed: [A-Za-z0-9_\\-:./]`,
-    );
+    throw new Error(`team-blackboard-fs: invalid ${kind} id '${raw}' — allowed: [A-Za-z0-9_\\-:./]`);
   }
   if (underscored.length <= MAX_BASENAME) return underscored;
   const head = underscored.slice(0, 180);
@@ -333,9 +322,7 @@ export class TeamBlackboardFs {
         baselineVersion: retryBaseline,
       });
       if (!retry) {
-        throw new Error(
-          `team-blackboard-fs: CAS retry exhausted for ${params.teamId}/${params.key}`,
-        );
+        throw new Error(`team-blackboard-fs: CAS retry exhausted for ${params.teamId}/${params.key}`);
       }
       return retry;
     }

@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildSpecRoomContract,
-  shouldUseSpecRoom,
   SPEC_ROOM_ROLES,
+  shouldUseSpecRoom,
 } from '../../../../src/orchestrator/room/presets/spec-room.ts';
 import { RoomContractSchema } from '../../../../src/orchestrator/room/types.ts';
 

@@ -49,9 +49,7 @@ export function buildStubDraftGenerator(): DraftGenerator {
       declared_oracles: [],
       expected_prediction_error_reduction: {
         baseline_composite_error: clamp01(req.expectedReduction.baseline),
-        target_composite_error: clamp01(
-          Math.min(req.expectedReduction.target, req.expectedReduction.baseline),
-        ),
+        target_composite_error: clamp01(Math.min(req.expectedReduction.target, req.expectedReduction.baseline)),
         trial_window: Math.max(1, Math.trunc(req.expectedReduction.window)),
       },
       falsifiable_by: [],

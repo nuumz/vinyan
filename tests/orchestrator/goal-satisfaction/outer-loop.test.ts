@@ -1,9 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { OrchestratorDeps } from '../../../src/orchestrator/core-loop.ts';
-import type {
-  GoalEvaluator,
-  GoalSatisfaction,
-} from '../../../src/orchestrator/goal-satisfaction/goal-evaluator.ts';
+import type { GoalEvaluator, GoalSatisfaction } from '../../../src/orchestrator/goal-satisfaction/goal-evaluator.ts';
 import { executeWithGoalLoop } from '../../../src/orchestrator/goal-satisfaction/outer-loop.ts';
 import type { ExecutionTrace, TaskInput, TaskResult } from '../../../src/orchestrator/types.ts';
 import type { WorkingMemory } from '../../../src/orchestrator/working-memory.ts';
@@ -263,9 +260,7 @@ describe('executeWithGoalLoop', () => {
       evaluate: async () => ({
         score: 0.9,
         basis: 'deterministic',
-        blockers: [
-          { category: 'oracle-contradiction', detail: 'ast/type disagree', resolvable: true },
-        ],
+        blockers: [{ category: 'oracle-contradiction', detail: 'ast/type disagree', resolvable: true }],
         passedChecks: ['mutation-expectation', 'target-symbol'],
         failedChecks: ['oracle-consistency'],
         accountabilityGrade: 'C',

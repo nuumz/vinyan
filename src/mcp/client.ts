@@ -73,7 +73,10 @@ export class MCPClientPool {
         this.clients.set(config.name, bridge);
       } catch (err) {
         // Connection failure is non-fatal — server may be unavailable
-        console.warn(`[vinyan] MCP client '${config.name}' connection failed:`, err instanceof Error ? err.message : err);
+        console.warn(
+          `[vinyan] MCP client '${config.name}' connection failed:`,
+          err instanceof Error ? err.message : err,
+        );
       }
     });
 
@@ -123,9 +126,7 @@ export class MCPClientPool {
     const verdict = await client.callTool(toolName, args);
 
     // Verify through Oracle Gate — package the result as a "mutation" for verification
-    const resultText = verdict.evidence
-      .map((e) => e.snippet)
-      .join('\n');
+    const resultText = verdict.evidence.map((e) => e.snippet).join('\n');
 
     try {
       const verification = await gate.verify(
@@ -155,15 +156,13 @@ export class MCPClientPool {
 
   /** Shutdown all MCP server connections. */
   async shutdown(): Promise<void> {
-    const disconnectPromises = Array.from(this.clients.entries()).map(
-      async ([name, client]) => {
-        try {
-          await client.disconnect();
-        } catch {
-          console.warn(`[vinyan] MCP client '${name}' disconnect failed`);
-        }
-      },
-    );
+    const disconnectPromises = Array.from(this.clients.entries()).map(async ([name, client]) => {
+      try {
+        await client.disconnect();
+      } catch {
+        console.warn(`[vinyan] MCP client '${name}' disconnect failed`);
+      }
+    });
     await Promise.allSettled(disconnectPromises);
     this.clients.clear();
   }

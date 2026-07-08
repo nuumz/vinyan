@@ -37,10 +37,7 @@ let db: Database;
 let bus: VinyanBus;
 let store: SkillProposalStore;
 
-function authedReq(
-  path: string,
-  opts: { method?: string; body?: string } = {},
-): Request {
+function authedReq(path: string, opts: { method?: string; body?: string } = {}): Request {
   return new Request(`http://localhost${path}`, {
     method: opts.method ?? 'GET',
     headers: {
@@ -151,9 +148,7 @@ describe('POST /api/v1/skill-proposals/scan', () => {
   });
 
   test('rejects body without skillMd field', async () => {
-    const res = await server.handleRequest(
-      authedReq('/api/v1/skill-proposals/scan', { method: 'POST', body: '{}' }),
-    );
+    const res = await server.handleRequest(authedReq('/api/v1/skill-proposals/scan', { method: 'POST', body: '{}' }));
     expect(res.status).toBe(400);
   });
 });
@@ -334,9 +329,7 @@ describe('GET /api/v1/skill-proposals/:id/revisions', () => {
       }),
     );
 
-    const list = await server.handleRequest(
-      authedReq(`/api/v1/skill-proposals/${created.proposal.id}/revisions`),
-    );
+    const list = await server.handleRequest(authedReq(`/api/v1/skill-proposals/${created.proposal.id}/revisions`));
     expect(list.status).toBe(200);
     const body = (await list.json()) as {
       revisions: Array<{

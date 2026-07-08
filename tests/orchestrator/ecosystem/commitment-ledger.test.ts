@@ -1,17 +1,14 @@
-import { beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { beforeEach, describe, expect, it } from 'bun:test';
+import { createBus, type VinyanBus } from '../../../src/core/bus.ts';
+import { computeGoalHash } from '../../../src/core/content-hash.ts';
 import { CommitmentStore } from '../../../src/db/commitment-store.ts';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
+import { CommitmentBridge, type TaskFacts } from '../../../src/orchestrator/ecosystem/commitment-bridge.ts';
 import {
   CommitmentLedger,
   type CommitmentLedgerConfig,
 } from '../../../src/orchestrator/ecosystem/commitment-ledger.ts';
-import {
-  CommitmentBridge,
-  type TaskFacts,
-} from '../../../src/orchestrator/ecosystem/commitment-bridge.ts';
-import { createBus, type VinyanBus } from '../../../src/core/bus.ts';
-import { computeGoalHash } from '../../../src/core/content-hash.ts';
 import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
 
 function makeDb(): Database {
@@ -149,9 +146,7 @@ describe('CommitmentLedger.resolve', () => {
   });
 
   it('returns false for unknown commitmentId', () => {
-    expect(
-      ledger.resolve({ commitmentId: 'ghost', kind: 'delivered', evidence: 'x' }),
-    ).toBe(false);
+    expect(ledger.resolve({ commitmentId: 'ghost', kind: 'delivered', evidence: 'x' })).toBe(false);
   });
 
   it('latencyMs in the event reflects acceptedAt → resolvedAt', () => {
@@ -227,7 +222,8 @@ describe('CommitmentBridge', () => {
     bridge.start();
 
     bus.emit('market:auction_completed', {
-      auctionId: 't-1', taskId: 't-1',
+      auctionId: 't-1',
+      taskId: 't-1',
       winnerId: 'eng-winner',
       score: 0.8,
       bidderCount: 3,
@@ -236,9 +232,7 @@ describe('CommitmentBridge', () => {
     const open = ledger.openByEngine('eng-winner');
     expect(open).toHaveLength(1);
     expect(open[0]!.taskId).toBe('t-1');
-    expect(open[0]!.deliverableHash).toBe(
-      computeGoalHash('refactor auth', ['src/auth.ts']),
-    );
+    expect(open[0]!.deliverableHash).toBe(computeGoalHash('refactor auth', ['src/auth.ts']));
     bridge.stop();
   });
 
@@ -252,7 +246,8 @@ describe('CommitmentBridge', () => {
     bridge.start();
 
     bus.emit('market:auction_completed', {
-      auctionId: 't-1', taskId: 't-1',
+      auctionId: 't-1',
+      taskId: 't-1',
       winnerId: 'eng-1',
       score: 0.5,
       bidderCount: 2,
@@ -278,14 +273,17 @@ describe('CommitmentBridge', () => {
 
     for (const t of ['t-fail', 't-esc']) {
       bus.emit('market:auction_completed', {
-        auctionId: t, taskId: t,
+        auctionId: t,
+        taskId: t,
         winnerId: 'eng-1',
         score: 0.5,
         bidderCount: 1,
       });
     }
 
-    bus.emit('trace:record', { trace: makeTrace({ taskId: 't-fail', outcome: 'failure', failureReason: 'tests red' }) });
+    bus.emit('trace:record', {
+      trace: makeTrace({ taskId: 't-fail', outcome: 'failure', failureReason: 'tests red' }),
+    });
     bus.emit('trace:record', { trace: makeTrace({ taskId: 't-esc', outcome: 'escalated' }) });
 
     const byTask = Object.fromEntries(resolvedEvents.map((e) => [e.taskId, e.kind]));
@@ -305,7 +303,8 @@ describe('CommitmentBridge', () => {
     bridge.stop();
 
     bus.emit('market:auction_completed', {
-      auctionId: 't-1', taskId: 't-1',
+      auctionId: 't-1',
+      taskId: 't-1',
       winnerId: 'eng-1',
       score: 0.5,
       bidderCount: 1,

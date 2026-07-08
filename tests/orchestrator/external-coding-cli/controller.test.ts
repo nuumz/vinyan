@@ -2,13 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
 import { createBus } from '../../../src/core/bus.ts';
+import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
+import { CodingCliVerifier } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-verifier.ts';
 import {
   CodingCliConfigSchema,
   ExternalCodingCliController,
 } from '../../../src/orchestrator/external-coding-cli/index.ts';
-import { CodingCliVerifier } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-verifier.ts';
 import { FakeAdapter, makeFakeResultBlock } from './fake-adapter.ts';
 
 function tmpWorkspace(): string {
@@ -79,24 +79,27 @@ describe('ExternalCodingCliController — detection + routing', () => {
       adapters,
     });
     await controller.detectProviders();
-    const session = await controller.createSession({
-      taskId: 't1',
-      rootGoal: 'do thing',
-      cwd: '/tmp',
-      mode: 'auto',
-      timeoutMs: 60_000,
-      idleTimeoutMs: 5_000,
-      maxOutputBytes: 1_000_000,
-      allowedScope: [],
-      forbiddenScope: [],
-      approvalPolicy: {
-        autoApproveReadOnly: false,
-        requireHumanForWrites: true,
-        requireHumanForShell: true,
-        requireHumanForGit: true,
-        allowDangerousSkipPermissions: false,
-      },
-    } as never, 'claude-code');
+    const session = await controller.createSession(
+      {
+        taskId: 't1',
+        rootGoal: 'do thing',
+        cwd: '/tmp',
+        mode: 'auto',
+        timeoutMs: 60_000,
+        idleTimeoutMs: 5_000,
+        maxOutputBytes: 1_000_000,
+        allowedScope: [],
+        forbiddenScope: [],
+        approvalPolicy: {
+          autoApproveReadOnly: false,
+          requireHumanForWrites: true,
+          requireHumanForShell: true,
+          requireHumanForGit: true,
+          allowDangerousSkipPermissions: false,
+        },
+      } as never,
+      'claude-code',
+    );
     expect(session.state()).toBe('unsupported-capability');
   });
 });
@@ -211,7 +214,9 @@ describe('ExternalCodingCliController — headless run + verification', () => {
     const verifier = new CodingCliVerifier({
       cwd: workspace,
       skipGitDiffCheck: true,
-      goalAlignmentOracle: async (files) => ({ ok: files.length > 0 && files.every((f) => fs.existsSync(path.join(workspace, f))) }),
+      goalAlignmentOracle: async (files) => ({
+        ok: files.length > 0 && files.every((f) => fs.existsSync(path.join(workspace, f))),
+      }),
     });
     const claim = {
       status: 'completed' as const,

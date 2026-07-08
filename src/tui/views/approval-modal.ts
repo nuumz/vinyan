@@ -101,9 +101,7 @@ export function renderConfirmCancel(state: TUIState): string {
   const startCol = Math.floor((termWidth - modalW) / 2);
 
   const border = ANSI.yellow;
-  const taskLabel = state.modal.taskId.length > 28
-    ? `${state.modal.taskId.slice(0, 25)}...`
-    : state.modal.taskId;
+  const taskLabel = state.modal.taskId.length > 28 ? `${state.modal.taskId.slice(0, 25)}...` : state.modal.taskId;
   const lines = [
     `${border}┌${'─'.repeat(modalW - 2)}┐${ANSI.reset}`,
     padLine(bold(`Cancel task: ${taskLabel}`), modalW, border),

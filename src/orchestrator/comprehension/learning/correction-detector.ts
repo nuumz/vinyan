@@ -101,22 +101,20 @@ export interface CorrectionDetectorInput {
   currentIsNewTopic: boolean;
 }
 
-export type CorrectionVerdict =
-  | {
-      outcome: 'confirmed' | 'corrected' | 'abandoned';
-      /**
-       * Structured evidence for the label. `confidence` reflects how
-       * strongly the firing rule supports the outcome — downstream
-       * calibration can weight labels instead of treating a
-       * "continuation default" the same as a "correction-token match".
-       * Higher confidence = label is more reliable.
-       */
-      evidence: {
-        reason: string;
-        confidence: number;
-      } & Record<string, unknown>;
-    }
-  | null;
+export type CorrectionVerdict = {
+  outcome: 'confirmed' | 'corrected' | 'abandoned';
+  /**
+   * Structured evidence for the label. `confidence` reflects how
+   * strongly the firing rule supports the outcome — downstream
+   * calibration can weight labels instead of treating a
+   * "continuation default" the same as a "correction-token match".
+   * Higher confidence = label is more reliable.
+   */
+  evidence: {
+    reason: string;
+    confidence: number;
+  } & Record<string, unknown>;
+} | null;
 
 /**
  * Detect the user's intent re: the prior comprehension. Pure function;

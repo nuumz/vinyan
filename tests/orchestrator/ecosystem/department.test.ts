@@ -19,7 +19,10 @@ const DEFAULT_SEEDS: DepartmentSeed[] = [
 describe('deriveMembership', () => {
   it('includes departments where the engine meets minMatchCount', () => {
     const eng = makeEngine('e1', ['code-generation', 'tool-use', 'reasoning']);
-    const m = deriveMembership(eng, DEFAULT_SEEDS.map((s) => ({ ...s, minMatchCount: s.minMatchCount ?? 1 })));
+    const m = deriveMembership(
+      eng,
+      DEFAULT_SEEDS.map((s) => ({ ...s, minMatchCount: s.minMatchCount ?? 1 })),
+    );
     expect([...m.departmentIds].sort()).toEqual(['code', 'research', 'verification']);
     expect(m.matchedCapabilities['code']).toEqual(['code-generation', 'tool-use']);
   });
@@ -27,14 +30,20 @@ describe('deriveMembership', () => {
   it('excludes departments where minMatchCount is not met', () => {
     // Only one code-anchor capability → below minMatchCount=2
     const eng = makeEngine('e1', ['code-generation', 'reasoning']);
-    const m = deriveMembership(eng, DEFAULT_SEEDS.map((s) => ({ ...s, minMatchCount: s.minMatchCount ?? 1 })));
+    const m = deriveMembership(
+      eng,
+      DEFAULT_SEEDS.map((s) => ({ ...s, minMatchCount: s.minMatchCount ?? 1 })),
+    );
     expect(m.departmentIds).not.toContain('code');
     expect(m.departmentIds).toContain('research'); // reasoning matches
   });
 
   it('returns empty membership when no anchors match', () => {
     const eng = makeEngine('e1', ['kitchen-sink']);
-    const m = deriveMembership(eng, DEFAULT_SEEDS.map((s) => ({ ...s, minMatchCount: s.minMatchCount ?? 1 })));
+    const m = deriveMembership(
+      eng,
+      DEFAULT_SEEDS.map((s) => ({ ...s, minMatchCount: s.minMatchCount ?? 1 })),
+    );
     expect(m.departmentIds).toEqual([]);
   });
 });
@@ -84,10 +93,7 @@ describe('DepartmentIndex', () => {
   it('refresh rebuilds the index from a roster', () => {
     const idx = new DepartmentIndex(DEFAULT_SEEDS);
     idx.upsertEngine(makeEngine('old', ['code-generation', 'tool-use']));
-    idx.refresh([
-      makeEngine('a', ['reasoning']),
-      makeEngine('b', ['tool-use', 'ast-analysis']),
-    ]);
+    idx.refresh([makeEngine('a', ['reasoning']), makeEngine('b', ['tool-use', 'ast-analysis'])]);
 
     expect(idx.getDepartmentsOfEngine('old')).toEqual([]);
     expect(idx.getDepartmentsOfEngine('a')).toEqual(['research']);

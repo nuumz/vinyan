@@ -4,8 +4,8 @@
 
 import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../src/core/bus.ts';
-import { attachDegradationEventBridge } from '../../src/orchestrator/degradation-strategy.ts';
 import { DegradationStatusTracker } from '../../src/observability/degradation-status.ts';
+import { attachDegradationEventBridge } from '../../src/orchestrator/degradation-strategy.ts';
 
 describe('DegradationStatusTracker', () => {
   test('records and exposes degradation events from bus', () => {

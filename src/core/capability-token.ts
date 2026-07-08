@@ -97,12 +97,7 @@ export type CapabilityCheckResult =
   | { readonly ok: true; readonly tokenId: string | null }
   | {
       readonly ok: false;
-      readonly reason:
-        | 'token_missing'
-        | 'token_expired'
-        | 'tool_forbidden'
-        | 'tool_not_allowed'
-        | 'path_out_of_scope';
+      readonly reason: 'token_missing' | 'token_expired' | 'tool_forbidden' | 'tool_not_allowed' | 'path_out_of_scope';
       readonly detail: string;
     };
 
@@ -156,9 +151,7 @@ export function issueCapabilityToken(args: {
     args.subagentType === 'explore' || args.subagentType === 'plan'
       ? [...MUTATION_TOOL_NAMES]
       : ['shell_exec', 'delegate_task'];
-  const forbiddenTools = Array.from(
-    new Set([...baseForbidden, ...(args.forbiddenTools ?? [])]),
-  );
+  const forbiddenTools = Array.from(new Set([...baseForbidden, ...(args.forbiddenTools ?? [])]));
   return {
     id,
     subagentType: args.subagentType,

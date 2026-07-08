@@ -11,9 +11,10 @@
  *   - UNIQUE constraint on (gate_run_id, oracle_name)
  *   - Window filter for time-bounded queries
  */
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
-import { OracleAccuracyStore, type OracleAccuracyRecord } from '../../src/db/oracle-accuracy-store.ts';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { type OracleAccuracyRecord, OracleAccuracyStore } from '../../src/db/oracle-accuracy-store.ts';
 
 function createTestDb(): Database {
   const db = new Database(':memory:');
@@ -92,18 +93,30 @@ describe('OracleAccuracyStore', () => {
   });
 
   test('resolveByFiles resolves records sharing affected files', () => {
-    store.recordVerdict(makeRecord({
-      id: 'r1', oracleName: 'type', gateRunId: 'gate-A',
-      affectedFiles: ['src/foo.ts', 'src/bar.ts'],
-    }));
-    store.recordVerdict(makeRecord({
-      id: 'r2', oracleName: 'ast', gateRunId: 'gate-B',
-      affectedFiles: ['src/baz.ts'],
-    }));
-    store.recordVerdict(makeRecord({
-      id: 'r3', oracleName: 'lint', gateRunId: 'gate-C',
-      affectedFiles: ['src/bar.ts'],
-    }));
+    store.recordVerdict(
+      makeRecord({
+        id: 'r1',
+        oracleName: 'type',
+        gateRunId: 'gate-A',
+        affectedFiles: ['src/foo.ts', 'src/bar.ts'],
+      }),
+    );
+    store.recordVerdict(
+      makeRecord({
+        id: 'r2',
+        oracleName: 'ast',
+        gateRunId: 'gate-B',
+        affectedFiles: ['src/baz.ts'],
+      }),
+    );
+    store.recordVerdict(
+      makeRecord({
+        id: 'r3',
+        oracleName: 'lint',
+        gateRunId: 'gate-C',
+        affectedFiles: ['src/bar.ts'],
+      }),
+    );
 
     store.resolveByFiles(['src/bar.ts'], 'confirmed_correct');
 
@@ -112,7 +125,7 @@ describe('OracleAccuracyStore', () => {
     const row3 = db.prepare('SELECT outcome FROM oracle_accuracy WHERE id = ?').get('r3') as any;
 
     expect(row1.outcome).toBe('confirmed_correct'); // shares src/bar.ts
-    expect(row2.outcome).toBe('pending');            // no overlap
+    expect(row2.outcome).toBe('pending'); // no overlap
     expect(row3.outcome).toBe('confirmed_correct'); // shares src/bar.ts
   });
 
@@ -126,7 +139,7 @@ describe('OracleAccuracyStore', () => {
 
   test('sweepStaleRecords marks old pending records as confirmed_correct', () => {
     const oldTimestamp = Date.now() - 2 * 60 * 60 * 1000; // 2 hours ago
-    const recentTimestamp = Date.now() - 10 * 1000;        // 10 seconds ago
+    const recentTimestamp = Date.now() - 10 * 1000; // 10 seconds ago
 
     store.recordVerdict(makeRecord({ id: 'r-old', gateRunId: 'gate-old', timestamp: oldTimestamp }));
     store.recordVerdict(makeRecord({ id: 'r-recent', gateRunId: 'gate-recent', timestamp: recentTimestamp }));
@@ -157,9 +170,13 @@ describe('OracleAccuracyStore', () => {
   test('computeOracleAccuracy returns null accuracy when < 10 resolved verdicts', () => {
     // Insert 5 resolved records — below bootstrap threshold
     for (let i = 0; i < 5; i++) {
-      store.recordVerdict(makeRecord({
-        id: `r${i}`, oracleName: 'type', gateRunId: `gate-${i}`,
-      }));
+      store.recordVerdict(
+        makeRecord({
+          id: `r${i}`,
+          oracleName: 'type',
+          gateRunId: `gate-${i}`,
+        }),
+      );
       store.resolveOutcome(`gate-${i}`, 'confirmed_correct');
     }
 
@@ -174,22 +191,34 @@ describe('OracleAccuracyStore', () => {
   test('computeOracleAccuracy returns correct accuracy when >= 10 resolved verdicts', () => {
     // 8 correct + 2 wrong = 10 resolved
     for (let i = 0; i < 8; i++) {
-      store.recordVerdict(makeRecord({
-        id: `correct-${i}`, oracleName: 'type', gateRunId: `gate-c-${i}`,
-      }));
+      store.recordVerdict(
+        makeRecord({
+          id: `correct-${i}`,
+          oracleName: 'type',
+          gateRunId: `gate-c-${i}`,
+        }),
+      );
       store.resolveOutcome(`gate-c-${i}`, 'confirmed_correct');
     }
     for (let i = 0; i < 2; i++) {
-      store.recordVerdict(makeRecord({
-        id: `wrong-${i}`, oracleName: 'type', gateRunId: `gate-w-${i}`,
-      }));
+      store.recordVerdict(
+        makeRecord({
+          id: `wrong-${i}`,
+          oracleName: 'type',
+          gateRunId: `gate-w-${i}`,
+        }),
+      );
       store.resolveOutcome(`gate-w-${i}`, 'confirmed_wrong');
     }
     // Add 3 pending — should not affect accuracy ratio
     for (let i = 0; i < 3; i++) {
-      store.recordVerdict(makeRecord({
-        id: `pending-${i}`, oracleName: 'type', gateRunId: `gate-p-${i}`,
-      }));
+      store.recordVerdict(
+        makeRecord({
+          id: `pending-${i}`,
+          oracleName: 'type',
+          gateRunId: `gate-p-${i}`,
+        }),
+      );
     }
 
     const stats = store.computeOracleAccuracy('type');
@@ -202,15 +231,23 @@ describe('OracleAccuracyStore', () => {
 
   test('computeOracleAccuracy counts correctly_rejected and false_alarm', () => {
     for (let i = 0; i < 5; i++) {
-      store.recordVerdict(makeRecord({
-        id: `cc-${i}`, oracleName: 'ast', gateRunId: `gate-cc-${i}`,
-      }));
+      store.recordVerdict(
+        makeRecord({
+          id: `cc-${i}`,
+          oracleName: 'ast',
+          gateRunId: `gate-cc-${i}`,
+        }),
+      );
       store.resolveOutcome(`gate-cc-${i}`, 'confirmed_correct');
     }
     for (let i = 0; i < 3; i++) {
-      store.recordVerdict(makeRecord({
-        id: `cr-${i}`, oracleName: 'ast', gateRunId: `gate-cr-${i}`,
-      }));
+      store.recordVerdict(
+        makeRecord({
+          id: `cr-${i}`,
+          oracleName: 'ast',
+          gateRunId: `gate-cr-${i}`,
+        }),
+      );
       store.resolveOutcome(`gate-cr-${i}`, 'correctly_rejected');
     }
     store.recordVerdict(makeRecord({ id: 'cw-0', oracleName: 'ast', gateRunId: 'gate-cw-0' }));
@@ -229,9 +266,9 @@ describe('OracleAccuracyStore', () => {
     // Second insert with same gate_run_id + oracle_name should be ignored (INSERT OR IGNORE)
     store.recordVerdict(makeRecord({ id: 'r2', oracleName: 'type', gateRunId: 'gate-dup' }));
 
-    const count = db.prepare(
-      'SELECT COUNT(*) as cnt FROM oracle_accuracy WHERE gate_run_id = ? AND oracle_name = ?',
-    ).get('gate-dup', 'type') as { cnt: number };
+    const count = db
+      .prepare('SELECT COUNT(*) as cnt FROM oracle_accuracy WHERE gate_run_id = ? AND oracle_name = ?')
+      .get('gate-dup', 'type') as { cnt: number };
     expect(count.cnt).toBe(1);
   });
 
@@ -241,26 +278,38 @@ describe('OracleAccuracyStore', () => {
 
     // 5 old records (30 days ago) — outside 7-day window
     for (let i = 0; i < 5; i++) {
-      store.recordVerdict(makeRecord({
-        id: `old-${i}`, oracleName: 'type', gateRunId: `gate-old-${i}`,
-        timestamp: now - 30 * oneDay,
-      }));
+      store.recordVerdict(
+        makeRecord({
+          id: `old-${i}`,
+          oracleName: 'type',
+          gateRunId: `gate-old-${i}`,
+          timestamp: now - 30 * oneDay,
+        }),
+      );
       store.resolveOutcome(`gate-old-${i}`, 'confirmed_correct');
     }
 
     // 10 recent records (1 day ago) — inside 7-day window
     for (let i = 0; i < 8; i++) {
-      store.recordVerdict(makeRecord({
-        id: `recent-${i}`, oracleName: 'type', gateRunId: `gate-recent-${i}`,
-        timestamp: now - 1 * oneDay,
-      }));
+      store.recordVerdict(
+        makeRecord({
+          id: `recent-${i}`,
+          oracleName: 'type',
+          gateRunId: `gate-recent-${i}`,
+          timestamp: now - 1 * oneDay,
+        }),
+      );
       store.resolveOutcome(`gate-recent-${i}`, 'confirmed_correct');
     }
     for (let i = 0; i < 2; i++) {
-      store.recordVerdict(makeRecord({
-        id: `recent-wrong-${i}`, oracleName: 'type', gateRunId: `gate-rw-${i}`,
-        timestamp: now - 1 * oneDay,
-      }));
+      store.recordVerdict(
+        makeRecord({
+          id: `recent-wrong-${i}`,
+          oracleName: 'type',
+          gateRunId: `gate-rw-${i}`,
+          timestamp: now - 1 * oneDay,
+        }),
+      );
       store.resolveOutcome(`gate-rw-${i}`, 'confirmed_wrong');
     }
 

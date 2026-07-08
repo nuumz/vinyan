@@ -487,6 +487,12 @@ export async function executeVerifyPhase(
       verification: verificationConfidence,
     });
     confidenceDecision = deriveConfidenceDecision(pipelineConf.composite);
+    // A3: an explicit oracle rejection is never overridden by a high confidence
+    // composite. Downgrade 'allow' to 're-verify' so the rejection routes through
+    // the existing re-verify → retry/escalate machinery instead of committing.
+    if (confidenceDecision === 'allow' && !verification.passed) {
+      confidenceDecision = 're-verify';
+    }
   }
 
   // ── Build trace ──────────────────────────────────────────────
@@ -685,7 +691,9 @@ export async function executeVerifyPhase(
         });
         const reVerDecision = deriveConfidenceDecision(reVerPipeline.composite);
 
-        if (reVerDecision === 'allow' || reVerification.passed) {
+        // A3: re-verified commit requires the oracle gate itself to pass —
+        // a high confidence composite alone cannot override an explicit rejection.
+        if (reVerification.passed) {
           trace.verificationConfidence = reVerConfidence;
           trace.confidenceDecision = {
             action: reVerDecision,

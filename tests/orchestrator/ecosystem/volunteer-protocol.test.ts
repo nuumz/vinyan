@@ -1,16 +1,16 @@
-import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { VolunteerStore } from '../../../src/db/volunteer-store.ts';
+import { describe, expect, it } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
+import { VolunteerStore } from '../../../src/db/volunteer-store.ts';
+import { HelpfulnessTracker } from '../../../src/orchestrator/ecosystem/helpfulness-tracker.ts';
 import {
-  VolunteerRegistry,
   scoreCandidate,
   selectVolunteer,
   type VolunteerCandidate,
   type VolunteerOffer,
+  VolunteerRegistry,
 } from '../../../src/orchestrator/ecosystem/volunteer-protocol.ts';
-import { HelpfulnessTracker } from '../../../src/orchestrator/ecosystem/helpfulness-tracker.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
@@ -18,11 +18,7 @@ function makeDb(): Database {
   return db;
 }
 
-function offer(
-  engineId: string,
-  taskId = 't-1',
-  offeredAt = 1_000,
-): VolunteerOffer {
+function offer(engineId: string, taskId = 't-1', offeredAt = 1_000): VolunteerOffer {
   return {
     offerId: `o-${engineId}`,
     engineId,
@@ -149,11 +145,7 @@ describe('VolunteerRegistry', () => {
       idFactory: () => `o-${++counter}`,
     });
     const o1 = reg.declareOffer({ taskId: 't', engineId: 'e1' });
-    reg.finalize(
-      't',
-      [{ offer: o1, context: { capability: 0.5, trust: 0.5, currentLoad: 0 } }],
-      'c-1',
-    );
+    reg.finalize('t', [{ offer: o1, context: { capability: 0.5, trust: 0.5, currentLoad: 0 } }], 'c-1');
 
     expect(events).toHaveLength(1);
   });
@@ -176,11 +168,7 @@ describe('HelpfulnessTracker', () => {
       idFactory: () => `o-${++counter}`,
     });
     const o = reg.declareOffer({ taskId: 't', engineId: 'e1' });
-    reg.finalize(
-      't',
-      [{ offer: o, context: { capability: 0.5, trust: 0.5, currentLoad: 0 } }],
-      'c-1',
-    );
+    reg.finalize('t', [{ offer: o, context: { capability: 0.5, trust: 0.5, currentLoad: 0 } }], 'c-1');
 
     const tracker = new HelpfulnessTracker({ store, bus, now: () => 2_000 });
     tracker.start();
@@ -212,11 +200,7 @@ describe('HelpfulnessTracker', () => {
     });
     for (const kind of ['failed', 'transferred'] as const) {
       const o = reg.declareOffer({ taskId: 't', engineId: 'e1' });
-      reg.finalize(
-        't',
-        [{ offer: o, context: { capability: 0.5, trust: 0.5, currentLoad: 0 } }],
-        `c-${kind}`,
-      );
+      reg.finalize('t', [{ offer: o, context: { capability: 0.5, trust: 0.5, currentLoad: 0 } }], `c-${kind}`);
     }
 
     const tracker = new HelpfulnessTracker({ store, bus });

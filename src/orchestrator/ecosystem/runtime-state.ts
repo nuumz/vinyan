@@ -200,10 +200,7 @@ export class RuntimeStateManager {
    */
   recoverFromCrash(reason = 'crash-recovered'): readonly RuntimeTransition[] {
     const out: RuntimeTransition[] = [];
-    for (const stuck of [
-      ...this.store.listByState('working'),
-      ...this.store.listByState('awakening'),
-    ]) {
+    for (const stuck of [...this.store.listByState('working'), ...this.store.listByState('awakening')]) {
       const t = this.now();
       const transition: RuntimeTransition = {
         agentId: stuck.agentId,

@@ -65,9 +65,7 @@ export class BackendSelector {
     if (pin) {
       const pinned = this.byId.get(pin);
       if (pinned) return pinned;
-      throw new Error(
-        `BackendSelector: pin for L${level} requests backend '${pin}' which is not registered.`,
-      );
+      throw new Error(`BackendSelector: pin for L${level} requests backend '${pin}' which is not registered.`);
     }
     for (const id of LEVEL_PREFERENCES[level]) {
       const b = this.byId.get(id);

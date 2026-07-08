@@ -102,11 +102,11 @@ describe('classifyDecisionKind', () => {
 });
 
 describe('parseWinnerVerdict', () => {
-  const PARTICIPATING = ['researcher', 'mentor', 'author'];
+  const Participating = ['researcher', 'mentor', 'author'];
 
   test('parses fenced JSON block with valid winner', () => {
     const text = `Researcher gave the most thorough answer.\n\n\`\`\`json\n{"winner":"researcher","reasoning":"strongest evidence"}\n\`\`\``;
-    const verdict = parseWinnerVerdict(text, PARTICIPATING);
+    const verdict = parseWinnerVerdict(text, Participating);
     expect(verdict).toBeDefined();
     expect(verdict!.winner).toBe('researcher');
     expect(verdict!.reasoning).toBe('strongest evidence');
@@ -114,32 +114,28 @@ describe('parseWinnerVerdict', () => {
 
   test('accepts winner=null as a deliberate tie', () => {
     const text = `\`\`\`json\n{"winner":null,"reasoning":"all three were equally compelling"}\n\`\`\``;
-    const verdict = parseWinnerVerdict(text, PARTICIPATING);
+    const verdict = parseWinnerVerdict(text, Participating);
     expect(verdict).toBeDefined();
     expect(verdict!.winner).toBeNull();
   });
 
   test('rejects hallucinated winner id (not in participating set)', () => {
     const text = `\`\`\`json\n{"winner":"phantom-agent","reasoning":"a ghost"}\n\`\`\``;
-    expect(parseWinnerVerdict(text, PARTICIPATING)).toBeUndefined();
+    expect(parseWinnerVerdict(text, Participating)).toBeUndefined();
   });
 
   test('returns undefined when no fenced block is present', () => {
-    expect(parseWinnerVerdict('Just free-text, no JSON.', PARTICIPATING)).toBeUndefined();
+    expect(parseWinnerVerdict('Just free-text, no JSON.', Participating)).toBeUndefined();
   });
 
   test('returns undefined when JSON does not parse', () => {
     const text = '```json\n{ broken json\n```';
-    expect(parseWinnerVerdict(text, PARTICIPATING)).toBeUndefined();
+    expect(parseWinnerVerdict(text, Participating)).toBeUndefined();
   });
 
   test('returns undefined when reasoning is missing or empty', () => {
-    expect(
-      parseWinnerVerdict('```json\n{"winner":"researcher"}\n```', PARTICIPATING),
-    ).toBeUndefined();
-    expect(
-      parseWinnerVerdict('```json\n{"winner":"researcher","reasoning":""}\n```', PARTICIPATING),
-    ).toBeUndefined();
+    expect(parseWinnerVerdict('```json\n{"winner":"researcher"}\n```', Participating)).toBeUndefined();
+    expect(parseWinnerVerdict('```json\n{"winner":"researcher","reasoning":""}\n```', Participating)).toBeUndefined();
   });
 
   test('keeps valid scores, drops bad-shape scores', () => {
@@ -148,7 +144,7 @@ describe('parseWinnerVerdict', () => {
       reasoning: 'clear teaching voice',
       scores: { researcher: 7, mentor: 9, author: 8 },
     })}\n\`\`\``;
-    const v = parseWinnerVerdict(goodText, PARTICIPATING);
+    const v = parseWinnerVerdict(goodText, Participating);
     expect(v?.scores).toEqual({ researcher: 7, mentor: 9, author: 8 });
 
     // Out-of-range and non-int filtered.
@@ -157,13 +153,13 @@ describe('parseWinnerVerdict', () => {
       reasoning: 'r',
       scores: { researcher: 7.5, mentor: 9, author: 11, phantom: 5 },
     })}\n\`\`\``;
-    const partial = parseWinnerVerdict(partialText, PARTICIPATING);
+    const partial = parseWinnerVerdict(partialText, Participating);
     expect(partial?.scores).toEqual({ mentor: 9 });
   });
 
   test('uses the LAST fenced json block when multiple present', () => {
     const text = `Step1: \`\`\`json\n{"winner":"author","reasoning":"early take"}\n\`\`\`\nFinal: \`\`\`json\n{"winner":"researcher","reasoning":"considered verdict"}\n\`\`\``;
-    const v = parseWinnerVerdict(text, PARTICIPATING);
+    const v = parseWinnerVerdict(text, Participating);
     expect(v?.winner).toBe('researcher');
   });
 
@@ -173,14 +169,14 @@ describe('parseWinnerVerdict', () => {
       runnerUp: 'mentor',
       reasoning: 'r',
     })}\n\`\`\``;
-    expect(parseWinnerVerdict(okText, PARTICIPATING)?.runnerUp).toBe('mentor');
+    expect(parseWinnerVerdict(okText, Participating)?.runnerUp).toBe('mentor');
 
     const badText = `\`\`\`json\n${JSON.stringify({
       winner: 'researcher',
       runnerUp: 'phantom',
       reasoning: 'r',
     })}\n\`\`\``;
-    expect(parseWinnerVerdict(badText, PARTICIPATING)?.runnerUp).toBeUndefined();
+    expect(parseWinnerVerdict(badText, Participating)?.runnerUp).toBeUndefined();
   });
 });
 

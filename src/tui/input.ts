@@ -239,7 +239,10 @@ function routeNormalKey(state: TUIState, key: KeypressInfo): TUIAction {
   if (key.name === 'n' && state.activeTab === 'tasks') return { type: 'new-task' };
 
   // Sort cycle (Tasks/Peers/Events tabs)
-  if (key.name === 's' && (state.activeTab === 'tasks' || state.activeTab === 'peers' || state.activeTab === 'events')) {
+  if (
+    key.name === 's' &&
+    (state.activeTab === 'tasks' || state.activeTab === 'peers' || state.activeTab === 'events')
+  ) {
     return { type: 'sort-cycle' };
   }
 

@@ -132,7 +132,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       reason: `Target file ${target} not found`,
       durationMs: performance.now() - start,
       opinion: fromScalar(0.5, BASE_RATE),
-      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
     });
   }
 
@@ -167,7 +172,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
         reason: `Lint clean (${lintErrors.length} warnings)`,
         durationMs,
         opinion: fromScalar(0.95, BASE_RATE),
-        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
+        temporalContext: {
+          validFrom: Date.now(),
+          validUntil: Date.now() + TTL_MS,
+          decayModel: 'exponential' as const,
+          halfLife: 300_000,
+        },
       });
     }
 
@@ -179,8 +189,14 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       fileHashes,
       reason: `${errors.length} lint error(s) found`,
       durationMs,
-      opinion: fromScalar(0.95, BASE_RATE),
-      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
+      // Oriented toward "the change is correct": lint errors are strong disbelief.
+      opinion: fromScalar(0.05, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
     });
   } catch (err) {
     return buildVerdict({
@@ -193,7 +209,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       errorCode: 'ORACLE_CRASH',
       durationMs: performance.now() - start,
       opinion: fromScalar(0, BASE_RATE),
-      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
     });
   }
 }

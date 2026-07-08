@@ -25,7 +25,6 @@
 import { basename, join } from 'node:path';
 
 import type { VinyanConfig } from '../config/schema.ts';
-import { resolveInstanceId } from './identity.ts';
 import type { EventBus, VinyanBusEvents } from '../core/bus.ts';
 import { CalibrationExchange } from './calibration.ts';
 import type { CapabilityUpdate } from './capability-updates.ts';
@@ -36,6 +35,7 @@ import type { ECPDataPart } from './ecp-data-part.ts';
 import { type ECPFeedback, FeedbackManager } from './feedback.ts';
 import { FileInvalidationRelay } from './file-invalidation-relay.ts';
 import { GossipManager } from './gossip.ts';
+import { resolveInstanceId } from './identity.ts';
 import { type ECPIntent, IntentManager } from './intent.ts';
 import { KnowledgeExchangeManager } from './knowledge-exchange.ts';
 import { type ECPAffirm, type ECPProposal, NegotiationManager } from './negotiation.ts';

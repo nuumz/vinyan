@@ -8,17 +8,18 @@
  * G12: MCP tool call → oracle verification
  * G13: All K1 gates still pass (regression)
  */
-import { describe, expect, test } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
+import { describe, expect, test } from 'bun:test';
+import type { OracleVerdict } from '../../src/core/types.ts';
 import { ProviderTrustStore } from '../../src/db/provider-trust-store.ts';
+import { MCPClientPool, type MCPGate } from '../../src/mcp/client.ts';
+import { AdvisoryFileLock } from '../../src/orchestrator/agent/file-lock.ts';
+import { DefaultConcurrentDispatcher } from '../../src/orchestrator/concurrent-dispatcher.ts';
 import { DefaultEngineSelector } from '../../src/orchestrator/engine-selector.ts';
 import { selectProvider } from '../../src/orchestrator/priority-router.ts';
-import { DefaultConcurrentDispatcher } from '../../src/orchestrator/concurrent-dispatcher.ts';
 import { createTaskQueue } from '../../src/orchestrator/task-queue.ts';
-import { AdvisoryFileLock } from '../../src/orchestrator/agent/file-lock.ts';
-import { MCPClientPool, type MCPGate } from '../../src/mcp/client.ts';
-import type { TaskInput, TaskResult, RoutingLevel } from '../../src/orchestrator/types.ts';
-import type { OracleVerdict } from '../../src/core/types.ts';
+import type { RoutingLevel, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 import { wilsonLowerBound } from '../../src/sleep-cycle/wilson.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -73,9 +74,7 @@ describe('G8: 3 concurrent tasks, wall-clock < sum', () => {
       },
     });
 
-    const tasks = Array.from({ length: taskCount }, (_, i) =>
-      makeTask(`g8-task-${i}`, [`file-${i}.ts`]),
-    );
+    const tasks = Array.from({ length: taskCount }, (_, i) => makeTask(`g8-task-${i}`, [`file-${i}.ts`]));
 
     const wallStart = performance.now();
     const results = await dispatcher.dispatch(tasks);

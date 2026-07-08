@@ -276,9 +276,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
   let memoryWikiScheduler: WikiScheduler | null = null;
   try {
     memoryWiki = MemoryWiki.create({ db: db.getDb(), workspace, bus: orchestrator.bus });
-    console.log(
-      `[vinyan] MemoryWiki.create — vault root=${memoryWiki.layout?.root ?? '(skipped)'}`,
-    );
+    console.log(`[vinyan] MemoryWiki.create — vault root=${memoryWiki.layout?.root ?? '(skipped)'}`);
     const sessionBridge = attachSessionIngestionBridge({
       bus: orchestrator.bus,
       sessionStore,
@@ -318,9 +316,7 @@ export async function serve(workspace: string, opts: ServeOptions = {}): Promise
         );
       },
     });
-    console.log(
-      '[vinyan] memory-wiki scheduler started — NREM consolidation hourly, lint 6-hourly',
-    );
+    console.log('[vinyan] memory-wiki scheduler started — NREM consolidation hourly, lint 6-hourly');
   } catch (err) {
     console.warn('[vinyan] memory-wiki wiring failed:', err);
   }

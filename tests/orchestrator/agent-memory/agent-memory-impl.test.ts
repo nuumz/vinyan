@@ -10,9 +10,9 @@ import type { RejectedApproachRow, RejectedApproachStore } from '../../../src/db
 import type { RuleStore } from '../../../src/db/rule-store.ts';
 import type { SkillStore } from '../../../src/db/skill-store.ts';
 import type { TraceStore } from '../../../src/db/trace-store.ts';
-import type { WorldGraph } from '../../../src/world-graph/world-graph.ts';
 import { AgentMemoryAPIImpl } from '../../../src/orchestrator/agent-memory/agent-memory-impl.ts';
 import type { CachedSkill, EvolutionaryRule, ExecutionTrace } from '../../../src/orchestrator/types.ts';
+import type { WorldGraph } from '../../../src/world-graph/world-graph.ts';
 
 // ── Fake stores ─────────────────────────────────────────────────────────
 

@@ -6,9 +6,9 @@
  * OCC (Optimistic Concurrency Control) via SHA-256 base hashes at commit time.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
-import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 export interface ProposedMutation {
   file: string;

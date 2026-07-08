@@ -104,8 +104,7 @@ export function buildSpecRoomContract(options: SpecRoomOptions): RoomContract {
 // Two regexes — \b cannot be relied on for Thai (Thai chars are \W).
 const SPEC_ROOM_TRIGGER_REGEX_EN =
   /\b(implement|build|add|create|design|develop)\b[^.?!]{0,80}\b(feature|api|endpoint|service|module|component|tool|cli|migration|integration|workflow)\b/iu;
-const SPEC_ROOM_TRIGGER_REGEX_TH =
-  /(ทำ|สร้าง|พัฒนา)[^.?!]{0,80}(ฟีเจอร์|ระบบ|โมดูล|รายงาน|บริการ|เครื่องมือ)/u;
+const SPEC_ROOM_TRIGGER_REGEX_TH = /(ทำ|สร้าง|พัฒนา)[^.?!]{0,80}(ฟีเจอร์|ระบบ|โมดูล|รายงาน|บริการ|เครื่องมือ)/u;
 
 const SPEC_ROOM_MIN_GOAL_LENGTH = 15;
 

@@ -164,10 +164,9 @@ export function classifyProviderError(input: ClassifyInput): NormalizedLLMProvid
  * provider get independent buckets so a per-minute quota recovery doesn't
  * release a per-day quota.
  */
-export function quotaKey(err: Pick<
-  NormalizedLLMProviderError,
-  'providerId' | 'model' | 'quotaMetric' | 'quotaId' | 'quotaDimensions'
->): string {
+export function quotaKey(
+  err: Pick<NormalizedLLMProviderError, 'providerId' | 'model' | 'quotaMetric' | 'quotaId' | 'quotaDimensions'>,
+): string {
   const dims = err.quotaDimensions
     ? Object.keys(err.quotaDimensions)
         .sort()
@@ -289,9 +288,7 @@ function classifyThrown(input: Extract<ClassifyInput, { kind: 'thrown' }>): Norm
 
   const message = err instanceof Error ? err.message : String(err);
   // AbortError / fetch-failed / ECONNRESET / ETIMEDOUT — common Bun fetch failures.
-  if (
-    /AbortError|fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network/i.test(message)
-  ) {
+  if (/AbortError|fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network/i.test(message)) {
     return base(input, {
       kind: 'network_error',
       message: truncate(`${input.providerId}: ${message}`),

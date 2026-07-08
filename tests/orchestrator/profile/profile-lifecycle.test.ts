@@ -5,15 +5,12 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import {
-  type AgentProfileBase,
-  type AgentProfileStatus,
-  type ProfileStore,
+import type {
+  AgentProfileBase,
+  AgentProfileStatus,
+  ProfileStore,
 } from '../../../src/orchestrator/profile/agent-profile.ts';
-import {
-  type LifecycleGates,
-  ProfileLifecycle,
-} from '../../../src/orchestrator/profile/profile-lifecycle.ts';
+import { type LifecycleGates, ProfileLifecycle } from '../../../src/orchestrator/profile/profile-lifecycle.ts';
 
 interface TestProfile extends AgentProfileBase {
   // carries nothing extra — pure FSM under test

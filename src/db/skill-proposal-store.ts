@@ -149,12 +149,8 @@ export class SkillProposalStore {
     const existing = this.findByName(input.profile, input.proposedName);
     if (existing) {
       // Idempotent merge — preserve approved/rejected status.
-      const mergedSourceIds = Array.from(
-        new Set([...existing.sourceTaskIds, ...(input.sourceTaskIds ?? [])]),
-      );
-      const mergedEventIds = Array.from(
-        new Set([...existing.evidenceEventIds, ...(input.evidenceEventIds ?? [])]),
-      );
+      const mergedSourceIds = Array.from(new Set([...existing.sourceTaskIds, ...(input.sourceTaskIds ?? [])]));
+      const mergedEventIds = Array.from(new Set([...existing.evidenceEventIds, ...(input.evidenceEventIds ?? [])]));
       const successCount = existing.successCount + (input.successCount ?? 1);
       const skillMd = input.skillMd;
       const safetyFlags = verdict.flags;
@@ -229,15 +225,7 @@ export class SkillProposalStore {
             actor, reason, created_at)
          VALUES (?, ?, 1, ?, ?, ?, ?, ?)`,
       )
-      .run(
-        input.profile,
-        id,
-        input.skillMd,
-        JSON.stringify(verdict.flags),
-        'auto-generator',
-        'initial create',
-        now,
-      );
+      .run(input.profile, id, input.skillMd, JSON.stringify(verdict.flags), 'auto-generator', 'initial create', now);
     const row = this.get(id, input.profile);
     if (!row) throw new Error('SkillProposalStore: insert failed to round-trip');
     return row;
@@ -293,12 +281,14 @@ export class SkillProposalStore {
       : 'quarantined';
     const now = Date.now();
     const tx = this.db.transaction(() => {
-      const latest = (this.db
-        .prepare(
-          `SELECT COALESCE(MAX(revision), 0) AS n FROM skill_proposal_revisions
+      const latest = (
+        this.db
+          .prepare(
+            `SELECT COALESCE(MAX(revision), 0) AS n FROM skill_proposal_revisions
             WHERE profile = ? AND proposal_id = ?`,
-        )
-        .get(args.profile, args.id) as { n: number }).n;
+          )
+          .get(args.profile, args.id) as { n: number }
+      ).n;
       // G2: short-circuit on stale expectation. The frontend hands
       // back the revision it was viewing when the operator started
       // editing. A mismatch means another writer landed in between.
@@ -313,13 +303,7 @@ export class SkillProposalStore {
                   status = ?
             WHERE id = ? AND profile = ?`,
         )
-        .run(
-          args.skillMd,
-          JSON.stringify(verdict.flags),
-          nextStatus,
-          args.id,
-          args.profile,
-        );
+        .run(args.skillMd, JSON.stringify(verdict.flags), nextStatus, args.id, args.profile);
       const nextRevision = latest + 1;
       this.db
         .prepare(
@@ -354,18 +338,10 @@ export class SkillProposalStore {
                  LIMIT ?
               )`,
         )
-        .run(
-          args.profile,
-          args.id,
-          args.profile,
-          args.id,
-          MAX_REVISIONS_PER_PROPOSAL - 1,
-        );
+        .run(args.profile, args.id, args.profile, args.id, MAX_REVISIONS_PER_PROPOSAL - 1);
       return { kind: 'ok' as const, revision: nextRevision };
     });
-    const result = tx() as
-      | { kind: 'ok'; revision: number }
-      | { kind: 'precondition-failed'; latestRevision: number };
+    const result = tx() as { kind: 'ok'; revision: number } | { kind: 'precondition-failed'; latestRevision: number };
     if (result.kind === 'precondition-failed') {
       return result;
     }
@@ -498,9 +474,7 @@ export class SkillProposalStore {
   }
 
   delete(id: string, profile: string): boolean {
-    const res = this.db
-      .prepare(`DELETE FROM skill_proposals WHERE id = ? AND profile = ?`)
-      .run(id, profile);
+    const res = this.db.prepare(`DELETE FROM skill_proposals WHERE id = ? AND profile = ?`).run(id, profile);
     return res.changes > 0;
   }
 
@@ -511,16 +485,10 @@ export class SkillProposalStore {
    * sanitised the SKILL.md. Tier transitions are append-only via the
    * decided_by field on the eventual approve call (A8).
    */
-  setTrustTier(
-    id: string,
-    profile: string,
-    tier: SkillProposalTrust,
-  ): SkillProposal | null {
+  setTrustTier(id: string, profile: string, tier: SkillProposalTrust): SkillProposal | null {
     const existing = this.get(id, profile);
     if (!existing) return null;
-    this.db
-      .prepare(`UPDATE skill_proposals SET trust_tier = ? WHERE id = ? AND profile = ?`)
-      .run(tier, id, profile);
+    this.db.prepare(`UPDATE skill_proposals SET trust_tier = ? WHERE id = ? AND profile = ?`).run(tier, id, profile);
     return this.get(id, profile);
   }
 }
@@ -548,9 +516,7 @@ function rowToProposal(row: SkillProposalRow): SkillProposal {
     // the correlated subquery produced NULL (no revision rows yet,
     // which is impossible after mig 032 + create() but the subquery
     // uses COALESCE for safety).
-    latestRevision: typeof row.latest_revision === 'number' && row.latest_revision > 0
-      ? row.latest_revision
-      : 1,
+    latestRevision: typeof row.latest_revision === 'number' && row.latest_revision > 0 ? row.latest_revision : 1,
   };
 }
 

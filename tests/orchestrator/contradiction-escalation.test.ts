@@ -223,9 +223,7 @@ describe('Contradiction Escalation Events', () => {
       }),
     );
 
-    const escalateDecisions = auditEntries.filter(
-      (e) => e.kind === 'decision' && e.decisionType === 'escalate',
-    );
+    const escalateDecisions = auditEntries.filter((e) => e.kind === 'decision' && e.decisionType === 'escalate');
     expect(escalateDecisions).toHaveLength(1);
 
     const decision = escalateDecisions[0]!;
@@ -265,7 +263,10 @@ describe('Contradiction Escalation Events', () => {
     expect(result.trace.governanceProvenance?.wasDerivedFrom).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ source: 'input.constraints', summary: 'MIN_ROUTING_LEVEL:0 set by caller' }),
-        expect.objectContaining({ source: 'oracle-contradiction-pair', summary: expect.stringContaining('failed=type') }),
+        expect.objectContaining({
+          source: 'oracle-contradiction-pair',
+          summary: expect.stringContaining('failed=type'),
+        }),
       ]),
     );
   });

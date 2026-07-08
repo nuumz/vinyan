@@ -250,9 +250,7 @@ export class WorkerStore {
   /** Trace counts grouped by worker_id — used for fleet diversity / Gini. */
   getTraceCountsByWorker(): Array<{ workerId: string; count: number }> {
     const rows = this.db
-      .prepare(
-        `SELECT worker_id, COUNT(*) as cnt FROM execution_traces WHERE worker_id IS NOT NULL GROUP BY worker_id`,
-      )
+      .prepare(`SELECT worker_id, COUNT(*) as cnt FROM execution_traces WHERE worker_id IS NOT NULL GROUP BY worker_id`)
       .all() as Array<{ worker_id: string; cnt: number }>;
     return rows.map((r) => ({ workerId: r.worker_id, count: r.cnt }));
   }

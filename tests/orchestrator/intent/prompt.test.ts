@@ -6,10 +6,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
-import {
-  buildClassifierUserPrompt,
-  buildComprehensionBlock,
-} from '../../../src/orchestrator/intent/prompt.ts';
+import { buildClassifierUserPrompt, buildComprehensionBlock } from '../../../src/orchestrator/intent/prompt.ts';
 import type { IntentResolverDeps } from '../../../src/orchestrator/intent/types.ts';
 import type { TaskInput } from '../../../src/orchestrator/types.ts';
 
@@ -146,11 +143,7 @@ describe('buildClassifierUserPrompt', () => {
   });
 
   it('uses provided tool list when availableTools is set', () => {
-    const prompt = buildClassifierUserPrompt(
-      input(),
-      deps({ availableTools: ['git_status', 'git_diff'] }),
-      null,
-    );
+    const prompt = buildClassifierUserPrompt(input(), deps({ availableTools: ['git_status', 'git_diff'] }), null);
     expect(prompt).toContain('Available tools: git_status, git_diff');
     expect(prompt).not.toContain('shell_exec, file_read');
   });

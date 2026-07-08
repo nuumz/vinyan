@@ -3,9 +3,10 @@
  *
  * Validates JSON-RPC handling, TaskInput mapping, confidence capping.
  */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createA2AManager } from '../../src/a2a/a2a-manager.ts';
 import { A2ABridge } from '../../src/a2a/bridge.ts';
 import { ECP_MIME_TYPE } from '../../src/a2a/ecp-data-part.ts';
@@ -306,7 +307,7 @@ describe('A2ABridge', () => {
 
 const ECP_TEST_WORKSPACE = join(import.meta.dir, '../../.test-workspace-bridge');
 
-function makeECPRequest(messageType: string, payload: Record<string, unknown> = {}) {
+function makeEcpRequest(messageType: string, payload: Record<string, unknown> = {}) {
   return {
     jsonrpc: '2.0' as const,
     id: 'req-ecp',
@@ -351,7 +352,13 @@ describe('A2ABridge — ECP routing', () => {
       workspace: ECP_TEST_WORKSPACE,
       bus: new EventBus<VinyanBusEvents>(),
       network: {
-        instances: { enabled: false, peers: [], listen_port: 3928, heartbeat_interval_ms: 15000, heartbeat_timeout_ms: 45000 },
+        instances: {
+          enabled: false,
+          peers: [],
+          listen_port: 3928,
+          heartbeat_interval_ms: 15000,
+          heartbeat_timeout_ms: 45000,
+        },
       },
     });
 
@@ -364,7 +371,7 @@ describe('A2ABridge — ECP routing', () => {
       a2aManager: mgr,
     });
 
-    const response = await bridge.handleRequest(makeECPRequest('heartbeat'));
+    const response = await bridge.handleRequest(makeEcpRequest('heartbeat'));
     expect(response.error).toBeUndefined();
     const task = response.result as { status: { state: string } };
     expect(task.status.state).toBe('completed');
@@ -377,7 +384,13 @@ describe('A2ABridge — ECP routing', () => {
       workspace: ECP_TEST_WORKSPACE,
       bus: new EventBus<VinyanBusEvents>(),
       network: {
-        instances: { enabled: false, peers: [], listen_port: 3928, heartbeat_interval_ms: 15000, heartbeat_timeout_ms: 45000 },
+        instances: {
+          enabled: false,
+          peers: [],
+          listen_port: 3928,
+          heartbeat_interval_ms: 15000,
+          heartbeat_timeout_ms: 45000,
+        },
       },
     });
 
@@ -400,7 +413,7 @@ describe('A2ABridge — ECP routing', () => {
       peer_id: 'peer-A',
     };
 
-    const response = await bridge.handleRequest(makeECPRequest('retract', retraction));
+    const response = await bridge.handleRequest(makeEcpRequest('retract', retraction));
     expect(response.error).toBeUndefined();
     expect(executeTaskCalled).toBe(false);
     expect(mgr.retractionManager.isRetracted('v-bridge-001')).toBe(true);
@@ -412,7 +425,13 @@ describe('A2ABridge — ECP routing', () => {
       workspace: ECP_TEST_WORKSPACE,
       bus: new EventBus<VinyanBusEvents>(),
       network: {
-        instances: { enabled: false, peers: [], listen_port: 3928, heartbeat_interval_ms: 15000, heartbeat_timeout_ms: 45000 },
+        instances: {
+          enabled: false,
+          peers: [],
+          listen_port: 3928,
+          heartbeat_interval_ms: 15000,
+          heartbeat_timeout_ms: 45000,
+        },
       },
     });
 
@@ -453,7 +472,13 @@ describe('A2ABridge — ECP routing', () => {
       workspace: ECP_TEST_WORKSPACE,
       bus: new EventBus<VinyanBusEvents>(),
       network: {
-        instances: { enabled: false, peers: [], listen_port: 3928, heartbeat_interval_ms: 15000, heartbeat_timeout_ms: 45000 },
+        instances: {
+          enabled: false,
+          peers: [],
+          listen_port: 3928,
+          heartbeat_interval_ms: 15000,
+          heartbeat_timeout_ms: 45000,
+        },
       },
     });
 

@@ -166,7 +166,10 @@ export class RiskRouterImpl implements RiskRouter {
       // Re-route through routeByRisk to get correct model/budget/thinkingConfig for the new level
       const escalated = routeByRisk(
         Math.max(score, minLevel === 3 ? 0.71 : minLevel === 2 ? 0.41 : 0.21),
-        blastRadius, this.thresholds, factors.environmentType, epistemicAdj,
+        blastRadius,
+        this.thresholds,
+        factors.environmentType,
+        epistemicAdj,
       );
       decision.level = escalated.level;
       decision.model = escalated.model;
@@ -246,7 +249,12 @@ function buildRiskRouterEvidence(
 
   evidence.push(
     { kind: 'routing-factor', source: 'blast-radius', observedAt, summary: `blastRadius=${factors.blastRadius}` },
-    { kind: 'routing-factor', source: 'test-coverage', observedAt, summary: `testCoverage=${formatNumber(factors.testCoverage)}` },
+    {
+      kind: 'routing-factor',
+      source: 'test-coverage',
+      observedAt,
+      summary: `testCoverage=${formatNumber(factors.testCoverage)}`,
+    },
     {
       kind: 'routing-factor',
       source: 'file-volatility',

@@ -35,7 +35,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { sanitizeForPrompt } from '../guardrails/index.ts';
-import { lintAutoMemoryContent, type LinterWarning } from './auto-memory-linter.ts';
+import { type LinterWarning, lintAutoMemoryContent } from './auto-memory-linter.ts';
 
 // ── Caps (matched to Claude Code's `memdir.ts`) ─────────────────────────
 
@@ -53,10 +53,10 @@ export const MAX_ENTRIES = 50;
  * we surface them as-is rather than silently discarding.
  */
 export type AutoMemoryEntryType =
-  | 'user'       // user profile / role / preferences
-  | 'feedback'   // collaboration guidance
-  | 'project'    // current-project context
-  | 'reference'  // external system pointers
+  | 'user' // user profile / role / preferences
+  | 'feedback' // collaboration guidance
+  | 'project' // current-project context
+  | 'reference' // external system pointers
   | 'unknown';
 
 /** A single loaded + sanitized entry. Content is TRUNCATED at MAX_ENTRY_FILE_BYTES. */
@@ -216,11 +216,7 @@ function classifyEntry(ref: string): AutoMemoryEntryType {
   return 'unknown';
 }
 
-function loadEntry(
-  entrypointDir: string,
-  ref: string,
-  description: string,
-): AutoMemoryEntry | null {
+function loadEntry(entrypointDir: string, ref: string, description: string): AutoMemoryEntry | null {
   // Reject obvious path traversal — the index should only point at
   // siblings of MEMORY.md, not arbitrary filesystem locations.
   if (ref.includes('..') || ref.startsWith('/') || ref.startsWith('~')) {

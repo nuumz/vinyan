@@ -12,9 +12,9 @@
  * Axioms: A3 (deterministic governance), A6 (zero-trust execution)
  */
 import { issueCapabilityToken } from '../core/capability-token.ts';
+import type { AgentBudgetTracker } from './agent/agent-budget.ts';
 import type { AgentBudget, DelegationRequest } from './protocol.ts';
 import type { RoutingDecision, TaskInput } from './types.ts';
-import type { AgentBudgetTracker } from './agent/agent-budget.ts';
 
 export interface DelegationDecision {
   allowed: boolean;
@@ -153,9 +153,7 @@ export function buildSubTaskInput(
   //      "Resolved clarifications: 'Which file?' => src/auth.ts; 'Keep alias?' => no"
   //  - The child's TaskUnderstanding pipeline sees this as a constraint and
   //    grounds its plan on it via agent-worker-entry's buildInitUserMessage.
-  const contextConstraint: string | undefined = request.context
-    ? `CONTEXT:${request.context}`
-    : undefined;
+  const contextConstraint: string | undefined = request.context ? `CONTEXT:${request.context}` : undefined;
 
   return {
     id: `${parent.id}-child-${Date.now()}`,

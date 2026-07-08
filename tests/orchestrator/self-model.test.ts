@@ -374,7 +374,7 @@ describe('CalibratedSelfModel', () => {
 
       expect(policy.basis).toBe('default');
       expect(policy.generationBudget).toBe(0.65);
-      expect(policy.verificationBudget).toBe(0.20);
+      expect(policy.verificationBudget).toBe(0.2);
       expect(policy.contingencyReserve).toBe(0.15);
     });
 
@@ -397,11 +397,20 @@ describe('CalibratedSelfModel', () => {
           basis: 'static-heuristic' as const,
           calibrationDataPoints: i,
         };
-        model.calibrate(pred, makeTrace({
-          id: `trace-rp-${i}`,
-          taskTypeSignature: taskSig,
-          qualityScore: { architecturalCompliance: 0.7, efficiency: 0.7, composite: 0.7, dimensionsAvailable: 2, phase: 'basic' },
-        }));
+        model.calibrate(
+          pred,
+          makeTrace({
+            id: `trace-rp-${i}`,
+            taskTypeSignature: taskSig,
+            qualityScore: {
+              architecturalCompliance: 0.7,
+              efficiency: 0.7,
+              composite: 0.7,
+              dimensionsAvailable: 2,
+              phase: 'basic',
+            },
+          }),
+        );
       }
 
       const policy = model.getReasoningPolicy(taskSig);
@@ -427,11 +436,20 @@ describe('CalibratedSelfModel', () => {
           basis: 'static-heuristic' as const,
           calibrationDataPoints: i,
         };
-        model.calibrate(pred, makeTrace({
-          id: `trace-rp-${i}`,
-          taskTypeSignature: taskSig,
-          qualityScore: { architecturalCompliance: 0.8, efficiency: 0.8, composite: 0.8, dimensionsAvailable: 2, phase: 'basic' },
-        }));
+        model.calibrate(
+          pred,
+          makeTrace({
+            id: `trace-rp-${i}`,
+            taskTypeSignature: taskSig,
+            qualityScore: {
+              architecturalCompliance: 0.8,
+              efficiency: 0.8,
+              composite: 0.8,
+              dimensionsAvailable: 2,
+              phase: 'basic',
+            },
+          }),
+        );
       }
 
       const policy = model.getReasoningPolicy(taskSig);
@@ -460,11 +478,20 @@ describe('CalibratedSelfModel', () => {
           basis: 'static-heuristic' as const,
           calibrationDataPoints: i,
         };
-        model.calibrate(pred, makeTrace({
-          id: `trace-lo-${i}`,
-          taskTypeSignature: taskSigLow,
-          qualityScore: { architecturalCompliance: 0.0, efficiency: 0.0, composite: 0.0, dimensionsAvailable: 2, phase: 'basic' },
-        }));
+        model.calibrate(
+          pred,
+          makeTrace({
+            id: `trace-lo-${i}`,
+            taskTypeSignature: taskSigLow,
+            qualityScore: {
+              architecturalCompliance: 0.0,
+              efficiency: 0.0,
+              composite: 0.0,
+              dimensionsAvailable: 2,
+              phase: 'basic',
+            },
+          }),
+        );
       }
 
       // Simulate high quality (quality → 1) → genBudget should clamp to 0.8
@@ -482,11 +509,20 @@ describe('CalibratedSelfModel', () => {
           basis: 'static-heuristic' as const,
           calibrationDataPoints: i,
         };
-        model.calibrate(pred, makeTrace({
-          id: `trace-hi-${i}`,
-          taskTypeSignature: taskSigHigh,
-          qualityScore: { architecturalCompliance: 1.0, efficiency: 1.0, composite: 1.0, dimensionsAvailable: 2, phase: 'basic' },
-        }));
+        model.calibrate(
+          pred,
+          makeTrace({
+            id: `trace-hi-${i}`,
+            taskTypeSignature: taskSigHigh,
+            qualityScore: {
+              architecturalCompliance: 1.0,
+              efficiency: 1.0,
+              composite: 1.0,
+              dimensionsAvailable: 2,
+              phase: 'basic',
+            },
+          }),
+        );
       }
 
       const policyLow = model.getReasoningPolicy(taskSigLow);
@@ -503,7 +539,8 @@ describe('CalibratedSelfModel', () => {
 
       // Default policy
       const defaultPolicy = model.getReasoningPolicy(taskSig);
-      const defaultSum = defaultPolicy.generationBudget + defaultPolicy.verificationBudget + defaultPolicy.contingencyReserve;
+      const defaultSum =
+        defaultPolicy.generationBudget + defaultPolicy.verificationBudget + defaultPolicy.contingencyReserve;
       expect(Math.abs(defaultSum - 1.0)).toBeLessThan(0.001);
 
       // Calibrated policy
@@ -521,11 +558,20 @@ describe('CalibratedSelfModel', () => {
           basis: 'static-heuristic' as const,
           calibrationDataPoints: i,
         };
-        model.calibrate(pred, makeTrace({
-          id: `trace-sum-${i}`,
-          taskTypeSignature: taskSig,
-          qualityScore: { architecturalCompliance: 0.6, efficiency: 0.6, composite: 0.6, dimensionsAvailable: 2, phase: 'basic' },
-        }));
+        model.calibrate(
+          pred,
+          makeTrace({
+            id: `trace-sum-${i}`,
+            taskTypeSignature: taskSig,
+            qualityScore: {
+              architecturalCompliance: 0.6,
+              efficiency: 0.6,
+              composite: 0.6,
+              dimensionsAvailable: 2,
+              phase: 'basic',
+            },
+          }),
+        );
       }
 
       const calibrated = model.getReasoningPolicy(taskSig);

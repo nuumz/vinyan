@@ -43,10 +43,7 @@ describe('git_pr policy gating', () => {
   test('rejects empty title', async () => {
     const ws = mkdtempSync(join(tmpdir(), 'vinyan-pr-'));
     try {
-      const result = await gitPr.execute(
-        { callId: 'q2', title: '   ', body: 'body', base: 'main' },
-        ctx(ws),
-      );
+      const result = await gitPr.execute({ callId: 'q2', title: '   ', body: 'body', base: 'main' }, ctx(ws));
       expect(result.status).toBe('denied');
       expect((result.output as { code: string }).code).toBe('pr-title-too-long');
     } finally {
@@ -57,10 +54,7 @@ describe('git_pr policy gating', () => {
   test('rejects title longer than 70 chars', async () => {
     const ws = mkdtempSync(join(tmpdir(), 'vinyan-pr-'));
     try {
-      const result = await gitPr.execute(
-        { callId: 'q3', title: 'a'.repeat(71), body: 'body', base: 'main' },
-        ctx(ws),
-      );
+      const result = await gitPr.execute({ callId: 'q3', title: 'a'.repeat(71), body: 'body', base: 'main' }, ctx(ws));
       expect(result.status).toBe('denied');
     } finally {
       rmSync(ws, { recursive: true, force: true });
@@ -75,10 +69,7 @@ describe('git_pr policy gating', () => {
     const originalPath = process.env.PATH;
     process.env.PATH = emptyBin;
     try {
-      const result = await gitPr.execute(
-        { callId: 'q4', title: 'feat: ship', body: 'body', base: 'main' },
-        ctx(ws),
-      );
+      const result = await gitPr.execute({ callId: 'q4', title: 'feat: ship', body: 'body', base: 'main' }, ctx(ws));
       expect(result.status).toBe('error');
       // Tolerate either degradation outcome:
       //   1. gh missing → output.code === 'gh_not_installed' (preferred path).

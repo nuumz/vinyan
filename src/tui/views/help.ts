@@ -107,12 +107,12 @@ export function renderHelpOverlay(state: TUIState): string {
   const title = 'Keyboard Shortcuts';
   const topLeftDash = Math.max(0, leftW - title.length - 1);
   const topRightDash = rightW + 2; // SP + rightW + SP
-  rows.push(
-    `${bc}┌─ ${bold(bc + title)}${bc} ${'─'.repeat(topLeftDash)}┬${'─'.repeat(topRightDash)}┐${ANSI.reset}`,
-  );
+  rows.push(`${bc}┌─ ${bold(bc + title)}${bc} ${'─'.repeat(topLeftDash)}┬${'─'.repeat(topRightDash)}┐${ANSI.reset}`);
 
   // Blank row after top border for breathing room
-  rows.push(`${bc}│${ANSI.reset}${' '.repeat(leftW + 2)}${bc}│${ANSI.reset}${' '.repeat(rightW + 2)}${bc}│${ANSI.reset}`);
+  rows.push(
+    `${bc}│${ANSI.reset}${' '.repeat(leftW + 2)}${bc}│${ANSI.reset}${' '.repeat(rightW + 2)}${bc}│${ANSI.reset}`,
+  );
 
   // Content rows
   const div = `${bc}│${ANSI.reset}`; // thin column divider
@@ -124,9 +124,7 @@ export function renderHelpOverlay(state: TUIState): string {
   }
 
   // Bottom border: └─────────────┴──────────────┘
-  rows.push(
-    `${bc}├${'─'.repeat(leftW + 2)}┴${'─'.repeat(rightW + 2)}┤${ANSI.reset}`,
-  );
+  rows.push(`${bc}├${'─'.repeat(leftW + 2)}┴${'─'.repeat(rightW + 2)}┤${ANSI.reset}`);
   rows.push(`${bc}│${ANSI.reset}${padVisible(dim('  Press ? or Esc to close'), innerW)}${bc}│${ANSI.reset}`);
   rows.push(`${bc}└${'─'.repeat(innerW)}┘${ANSI.reset}`);
 
@@ -134,9 +132,7 @@ export function renderHelpOverlay(state: TUIState): string {
 
   const startRow = 3;
   const maxRows = termHeight - startRow;
-  const visible = rows.length <= maxRows
-    ? rows
-    : [...rows.slice(0, maxRows - 1), rows[rows.length - 1]!];
+  const visible = rows.length <= maxRows ? rows : [...rows.slice(0, maxRows - 1), rows[rows.length - 1]!];
 
   // ── Paint with line-erase ──────────────────────────────────────
 

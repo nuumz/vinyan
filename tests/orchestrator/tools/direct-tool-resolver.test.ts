@@ -2,7 +2,12 @@
  * Tests for direct-tool-resolver — deterministic platform-aware command resolution.
  */
 import { describe, expect, test } from 'bun:test';
-import { classifyDirectTool, clearDiscoveryCache, discoverApp, resolveCommand } from '../../../src/orchestrator/tools/direct-tool-resolver.ts';
+import {
+  classifyDirectTool,
+  clearDiscoveryCache,
+  discoverApp,
+  resolveCommand,
+} from '../../../src/orchestrator/tools/direct-tool-resolver.ts';
 
 describe('classifyDirectTool', () => {
   // ── Thai app launch ──

@@ -23,9 +23,9 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseSkillMd, type SkillMdRecord } from './skill-md/index.ts';
-import type { SkillRef } from '../orchestrator/types.ts';
 import type { SyncSkillResolver } from '../orchestrator/agents/derive-persona-capabilities.ts';
+import type { SkillRef } from '../orchestrator/types.ts';
+import { parseSkillMd, type SkillMdRecord } from './skill-md/index.ts';
 
 const PERFORMANCE_WARNING_THRESHOLD = 100;
 
@@ -83,9 +83,7 @@ export function buildSyncSkillResolver(rootDir: string): BuildSyncSkillResolverR
         byId.set(id, record);
       } catch (err) {
         failedIds.push(id);
-        console.warn(
-          `[skill:sync-resolver] skill='${id}' parse-failed: ${(err as Error).message}`,
-        );
+        console.warn(`[skill:sync-resolver] skill='${id}' parse-failed: ${(err as Error).message}`);
       }
     }
   }

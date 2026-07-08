@@ -27,16 +27,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBus } from '../../src/core/bus.ts';
-import { createMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
-import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
+import type { ExternalCodingCliController } from '../../src/orchestrator/external-coding-cli/external-coding-cli-controller.ts';
 import {
-  CodingCliWorkflowStrategy,
   type CodingCliWorkflowOutcome,
   type CodingCliWorkflowStep,
+  CodingCliWorkflowStrategy,
 } from '../../src/orchestrator/external-coding-cli/external-coding-cli-workflow-strategy.ts';
-import type { ExternalCodingCliController } from '../../src/orchestrator/external-coding-cli/external-coding-cli-controller.ts';
 import { createOrchestrator as _createOrchestrator } from '../../src/orchestrator/factory.ts';
 import { clearIntentResolverCache } from '../../src/orchestrator/intent-resolver.ts';
+import { createMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
+import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { TaskInput } from '../../src/orchestrator/types.ts';
 
 // The exact prompt from the bug report — used verbatim across tests.
@@ -168,9 +168,12 @@ describe('core-loop ECC dispatch — exact Thai prompt', () => {
     ];
     for (const name of watchEvents) {
       // biome-ignore lint/suspicious/noExplicitAny: event names are typed but iterating dynamic.
-      bus.on(name as never, ((payload: unknown) => {
-        events.push({ name, payload });
-      }) as never);
+      bus.on(
+        name as never,
+        ((payload: unknown) => {
+          events.push({ name, payload });
+        }) as never,
+      );
     }
 
     const orchestrator = createOrchestrator({
@@ -216,7 +219,9 @@ describe('core-loop ECC dispatch — exact Thai prompt', () => {
 
     // 6. No shell_exec tool was invoked anywhere on the bus.
     const shellEvents = events.filter((e) =>
-      JSON.stringify(e.payload ?? {}).toLowerCase().includes('shell_exec'),
+      JSON.stringify(e.payload ?? {})
+        .toLowerCase()
+        .includes('shell_exec'),
     );
     expect(shellEvents.length).toBe(0);
 
@@ -244,9 +249,12 @@ describe('core-loop ECC dispatch — exact Thai prompt', () => {
     ];
     for (const name of watchEvents) {
       // biome-ignore lint/suspicious/noExplicitAny: event names are typed but iterating dynamic.
-      bus.on(name as never, ((payload: unknown) => {
-        events.push({ name, payload });
-      }) as never);
+      bus.on(
+        name as never,
+        ((payload: unknown) => {
+          events.push({ name, payload });
+        }) as never,
+      );
     }
 
     const orchestrator = createOrchestrator({
@@ -269,9 +277,7 @@ describe('core-loop ECC dispatch — exact Thai prompt', () => {
 
     // 3. Trace carries the dedicated unsupported decisionId.
     expect(result.trace.approach).toBe('external-coding-cli');
-    const provenance = result.trace.governanceProvenance as
-      | { decisionId?: string }
-      | undefined;
+    const provenance = result.trace.governanceProvenance as { decisionId?: string } | undefined;
     expect(provenance?.decisionId).toContain('external-coding-cli-unsupported');
 
     // 4. NO shell_exec / dangerous metacharacter anywhere.
@@ -291,9 +297,7 @@ describe('core-loop ECC dispatch — variants', () => {
       codingCliStrategyOverride: fake,
     });
 
-    const result = await orchestrator.executeTask(
-      makeInput('ask claude code cli to refactor src/foo.ts'),
-    );
+    const result = await orchestrator.executeTask(makeInput('ask claude code cli to refactor src/foo.ts'));
 
     expect(fake.capturedStep).not.toBeNull();
     expect(fake.capturedStep?.providerId).toBe('claude-code');
@@ -309,9 +313,7 @@ describe('core-loop ECC dispatch — variants', () => {
       codingCliStrategyOverride: fake,
     });
 
-    const result = await orchestrator.executeTask(
-      makeInput('use gh copilot to suggest a fix for src/foo.ts'),
-    );
+    const result = await orchestrator.executeTask(makeInput('use gh copilot to suggest a fix for src/foo.ts'));
 
     expect(fake.capturedStep).not.toBeNull();
     expect(fake.capturedStep?.providerId).toBe('github-copilot');

@@ -10,6 +10,8 @@
  *   stop()    → sets running=false; current long-poll times out naturally
  *               (pollTimeoutSec) so no request hangs forever.
  */
+
+import { buildInboundEnvelope, toMinimalInbound } from '../envelope.ts';
 import type {
   GatewayAdapter,
   GatewayAdapterContext,
@@ -17,13 +19,7 @@ import type {
   GatewayDeliveryReceipt,
   GatewayOutboundEnvelope,
 } from '../types.ts';
-import { buildInboundEnvelope, toMinimalInbound } from '../envelope.ts';
-import {
-  TelegramApi,
-  TelegramApiError,
-  type TelegramUpdate,
-  type TelegramChat,
-} from './telegram-api.ts';
+import { TelegramApi, TelegramApiError, type TelegramChat, type TelegramUpdate } from './telegram-api.ts';
 
 /** Safety margin under Telegram's 4096-char hard limit. */
 const TELEGRAM_MAX_CHARS_PER_SEND = 4000;
@@ -63,10 +59,7 @@ export class TelegramAdapter implements GatewayAdapter {
         fetchImpl: opts.fetchImpl,
         pollTimeoutSec: opts.pollTimeoutSec,
       });
-    this.allowedChats =
-      opts.allowedChats && opts.allowedChats.length > 0
-        ? new Set(opts.allowedChats)
-        : null;
+    this.allowedChats = opts.allowedChats && opts.allowedChats.length > 0 ? new Set(opts.allowedChats) : null;
   }
 
   async start(ctx: GatewayAdapterContext): Promise<void> {

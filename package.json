@@ -2,6 +2,9 @@
   "name": "vinyan-agent",
   "module": "index.ts",
   "type": "module",
+  "bin": {
+    "vinyan": "./src/cli/index.ts"
+  },
   "license": "Apache-2.0",
   "private": true,
   "scripts": {

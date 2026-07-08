@@ -165,10 +165,7 @@ const FAILURE_OR_REFUSAL_MARKERS =
  * treat the two pre-classifiers uniformly. Conservative: requires both a
  * tight retry regex AND a failure-marker on the prior assistant turn.
  */
-export function detectRetryContinuation(args: {
-  goal: string;
-  turns: Turn[] | undefined;
-}): AffirmativeMatch {
+export function detectRetryContinuation(args: { goal: string; turns: Turn[] | undefined }): AffirmativeMatch {
   const { goal, turns } = args;
   if (!RETRY_REGEX.test(goal)) return { matched: false };
   if (!turns || turns.length === 0) return { matched: false };

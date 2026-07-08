@@ -116,10 +116,7 @@ function inputRequiredResult(input: TaskInput, questions: string[]): TaskResult 
   };
 }
 
-function req(
-  path: string,
-  opts: { method?: string; headers?: Record<string, string>; body?: string } = {},
-): Request {
+function req(path: string, opts: { method?: string; headers?: Record<string, string>; body?: string } = {}): Request {
   return new Request(`http://localhost${path}`, {
     method: opts.method ?? 'GET',
     headers: opts.headers,
@@ -307,10 +304,7 @@ describe('API Server — Agent Conversation messages', () => {
 
   test('input-required round-trip: second call batches reply and preserves original goal', async () => {
     const sessionId = await createSession();
-    const questions = [
-      'Which helper did you mean — auth or utils?',
-      'Should the old one stay as an alias?',
-    ];
+    const questions = ['Which helper did you mean — auth or utils?', 'Should the old one stay as an alias?'];
     const originalGoal = 'refactor the helper';
     const replyContent = 'the auth one; no, remove it entirely';
 
@@ -465,12 +459,8 @@ describe('API Server — Agent Conversation messages', () => {
 
     // Each follow-up turn carries its own CLARIFICATION_BATCH with the
     // NEW question being answered (not the full accumulated history).
-    const batch2 = (capturedInputs[1]!.constraints ?? []).find((c) =>
-      c.startsWith('CLARIFICATION_BATCH:'),
-    )!;
-    const batch3 = (capturedInputs[2]!.constraints ?? []).find((c) =>
-      c.startsWith('CLARIFICATION_BATCH:'),
-    )!;
+    const batch2 = (capturedInputs[1]!.constraints ?? []).find((c) => c.startsWith('CLARIFICATION_BATCH:'))!;
+    const batch3 = (capturedInputs[2]!.constraints ?? []).find((c) => c.startsWith('CLARIFICATION_BATCH:'))!;
     const parsed2 = JSON.parse(batch2.slice('CLARIFICATION_BATCH:'.length)) as {
       questions: string[];
       reply: string;
@@ -506,9 +496,7 @@ describe('API Server — Agent Conversation messages', () => {
       }),
     );
 
-    const res = await server.handleRequest(
-      req(`/api/v1/sessions/${sessionId}/messages`, { headers: authHeaders }),
-    );
+    const res = await server.handleRequest(req(`/api/v1/sessions/${sessionId}/messages`, { headers: authHeaders }));
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
       session: { id: string; pendingClarifications: string[] };
@@ -547,9 +535,7 @@ describe('API Server — Agent Conversation messages', () => {
   });
 
   test('GET /messages on unknown session returns 404', async () => {
-    const res = await server.handleRequest(
-      req('/api/v1/sessions/nope/messages', { headers: authHeaders }),
-    );
+    const res = await server.handleRequest(req('/api/v1/sessions/nope/messages', { headers: authHeaders }));
     expect(res.status).toBe(404);
   });
 
@@ -565,9 +551,7 @@ describe('API Server — Agent Conversation messages', () => {
       }),
     );
 
-    const res = await server.handleRequest(
-      req(`/api/v1/sessions/${sessionId}/messages`, { headers: authHeaders }),
-    );
+    const res = await server.handleRequest(req(`/api/v1/sessions/${sessionId}/messages`, { headers: authHeaders }));
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
       session: { pendingClarifications: string[] };
@@ -585,11 +569,11 @@ describe('API Server — Agent Conversation messages', () => {
  *   data: <json>\n
  *   \n  (event delimiter)
  */
-interface SSEEvent {
+interface SseEvent {
   event: string;
   data: { event?: string; payload?: unknown; ts?: number };
 }
-function parseSSE(text: string): SSEEvent[] {
+function parseSse(text: string): SseEvent[] {
   const blocks = text.split('\n\n').filter((b) => b.trim().length > 0);
   return blocks.map((block) => {
     const lines = block.split('\n');
@@ -597,7 +581,7 @@ function parseSSE(text: string): SSEEvent[] {
     const dataLine = lines.find((l) => l.startsWith('data: '));
     return {
       event: eventLine ? eventLine.slice('event: '.length) : '',
-      data: dataLine ? (JSON.parse(dataLine.slice('data: '.length)) as SSEEvent['data']) : {},
+      data: dataLine ? (JSON.parse(dataLine.slice('data: '.length)) as SseEvent['data']) : {},
     };
   });
 }
@@ -631,7 +615,7 @@ describe('API Server — Agent Conversation streaming (stream: true)', () => {
     expect(res.headers.get('Cache-Control')).toBe('no-cache');
 
     const text = await res.text();
-    const events = parseSSE(text);
+    const events = parseSse(text);
 
     // Both the start and the end event must appear in order.
     const eventNames = events.map((e) => e.event);
@@ -690,7 +674,7 @@ describe('API Server — Agent Conversation streaming (stream: true)', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('text/event-stream');
 
-    const events = parseSSE(await res.text());
+    const events = parseSse(await res.text());
     const clarificationEvent = events.find((e) => e.event === 'agent:clarification_requested');
     expect(clarificationEvent).toBeDefined();
     const payload = clarificationEvent!.data.payload as {
@@ -810,23 +794,21 @@ describe('API Server — Agent Conversation streaming (stream: true)', () => {
  * assert on the events emitted during a session's lifetime without
  * waiting for the 60-minute safety-net cleanup.
  */
-async function readSSEUntil(
+async function readSseUntil(
   res: Response,
-  predicate: (events: SSEEvent[]) => boolean,
+  predicate: (events: SseEvent[]) => boolean,
   timeoutMs = 1500,
-): Promise<SSEEvent[]> {
+): Promise<SseEvent[]> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  const events: SSEEvent[] = [];
+  const events: SseEvent[] = [];
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeoutMs) {
     const { value, done } = await Promise.race([
       reader.read(),
-      new Promise<{ value: undefined; done: true }>((r) =>
-        setTimeout(() => r({ value: undefined, done: true }), 50),
-      ),
+      new Promise<{ value: undefined; done: true }>((r) => setTimeout(() => r({ value: undefined, done: true }), 50)),
     ]);
     if (done || !value) {
       // Check predicate even on timeout so we can return whatever
@@ -849,7 +831,7 @@ async function readSSEUntil(
       if (!eventLine) continue;
       events.push({
         event: eventLine.slice('event: '.length),
-        data: dataLine ? (JSON.parse(dataLine.slice('data: '.length)) as SSEEvent['data']) : {},
+        data: dataLine ? (JSON.parse(dataLine.slice('data: '.length)) as SseEvent['data']) : {},
       });
     }
     if (predicate(events)) break;
@@ -867,19 +849,13 @@ describe('API Server — long-lived session-scoped SSE', () => {
   test('GET /api/v1/sessions/:id/stream returns SSE content type and emits session:stream_open', async () => {
     const sessionId = await createSession();
 
-    const res = await server.handleRequest(
-      req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }),
-    );
+    const res = await server.handleRequest(req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }));
 
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('text/event-stream');
     expect(res.headers.get('Cache-Control')).toBe('no-cache');
 
-    const events = await readSSEUntil(
-      res,
-      (evts) => evts.some((e) => e.event === 'session:stream_open'),
-      500,
-    );
+    const events = await readSseUntil(res, (evts) => evts.some((e) => e.event === 'session:stream_open'), 500);
     const open = events.find((e) => e.event === 'session:stream_open');
     expect(open).toBeDefined();
     const payload = open!.data.payload as { sessionId: string; heartbeatIntervalMs: number };
@@ -888,9 +864,7 @@ describe('API Server — long-lived session-scoped SSE', () => {
   });
 
   test('GET /stream on unknown session returns JSON 404', async () => {
-    const res = await server.handleRequest(
-      req('/api/v1/sessions/does-not-exist/stream', { headers: authHeaders }),
-    );
+    const res = await server.handleRequest(req('/api/v1/sessions/does-not-exist/stream', { headers: authHeaders }));
     expect(res.status).toBe(404);
     expect(res.headers.get('Content-Type')).toContain('application/json');
   });
@@ -898,9 +872,7 @@ describe('API Server — long-lived session-scoped SSE', () => {
   test('session stream emits task:start and task:complete for tasks in its session', async () => {
     const sessionId = await createSession();
 
-    const streamRes = await server.handleRequest(
-      req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }),
-    );
+    const streamRes = await server.handleRequest(req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }));
     expect(streamRes.status).toBe(200);
 
     // Trigger a task in the session. mockExecuteTask emits task:start
@@ -916,11 +888,7 @@ describe('API Server — long-lived session-scoped SSE', () => {
     );
     expect(messageRes.status).toBe(200);
 
-    const events = await readSSEUntil(
-      streamRes,
-      (evts) => evts.some((e) => e.event === 'task:complete'),
-      1000,
-    );
+    const events = await readSseUntil(streamRes, (evts) => evts.some((e) => e.event === 'task:complete'), 1000);
     const starts = events.filter((e) => e.event === 'task:start');
     const completes = events.filter((e) => e.event === 'task:complete');
     expect(starts.length).toBeGreaterThanOrEqual(1);
@@ -934,9 +902,7 @@ describe('API Server — long-lived session-scoped SSE', () => {
     const sessionA = await createSession();
     const sessionB = await createSession();
 
-    const streamRes = await server.handleRequest(
-      req(`/api/v1/sessions/${sessionA}/stream`, { headers: authHeaders }),
-    );
+    const streamRes = await server.handleRequest(req(`/api/v1/sessions/${sessionA}/stream`, { headers: authHeaders }));
     expect(streamRes.status).toBe(200);
 
     // Run a task in session B. The stream (scoped to session A) must
@@ -951,10 +917,8 @@ describe('API Server — long-lived session-scoped SSE', () => {
     );
 
     // Wait briefly then collect whatever events fired.
-    const events = await readSSEUntil(streamRes, () => false, 300);
-    const taskEvents = events.filter(
-      (e) => e.event === 'task:start' || e.event === 'task:complete',
-    );
+    const events = await readSseUntil(streamRes, () => false, 300);
+    const taskEvents = events.filter((e) => e.event === 'task:start' || e.event === 'task:complete');
     expect(taskEvents).toHaveLength(0);
     // session:stream_open should still appear for session A's stream.
     const open = events.find((e) => e.event === 'session:stream_open');
@@ -964,9 +928,7 @@ describe('API Server — long-lived session-scoped SSE', () => {
   test('session stream stays open across multiple turns (does NOT auto-close on task:complete)', async () => {
     const sessionId = await createSession();
 
-    const streamRes = await server.handleRequest(
-      req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }),
-    );
+    const streamRes = await server.handleRequest(req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }));
 
     // Turn 1
     mockBehavior = (input) => completedResult(input, 'turn 1');
@@ -990,7 +952,7 @@ describe('API Server — long-lived session-scoped SSE', () => {
       }),
     );
 
-    const events = await readSSEUntil(
+    const events = await readSseUntil(
       streamRes,
       (evts) => evts.filter((e) => e.event === 'task:complete').length >= 2,
       1500,
@@ -1008,9 +970,7 @@ describe('API Server — long-lived session-scoped SSE', () => {
   test('session stream forwards agent:clarification_requested events during an input-required turn', async () => {
     const sessionId = await createSession();
 
-    const streamRes = await server.handleRequest(
-      req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }),
-    );
+    const streamRes = await server.handleRequest(req(`/api/v1/sessions/${sessionId}/stream`, { headers: authHeaders }));
 
     const questions = ['Which module did you mean?'];
     mockBehavior = (input) => inputRequiredResult(input, questions);
@@ -1022,7 +982,7 @@ describe('API Server — long-lived session-scoped SSE', () => {
       }),
     );
 
-    const events = await readSSEUntil(
+    const events = await readSseUntil(
       streamRes,
       (evts) => evts.some((e) => e.event === 'agent:clarification_requested'),
       1000,

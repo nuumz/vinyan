@@ -6,13 +6,13 @@
 
 import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../src/core/bus.ts';
+import type { DegradationEvent } from '../../src/orchestrator/degradation-strategy.ts';
 import {
   attachDegradationEventBridge,
   DEGRADATION_POLICY_MATRIX,
   DEGRADATION_POLICY_VERSION,
   decideDegradation,
 } from '../../src/orchestrator/degradation-strategy.ts';
-import type { DegradationEvent } from '../../src/orchestrator/degradation-strategy.ts';
 
 describe('A9 policy matrix — explicit fail-open / fail-closed contract', () => {
   test('every failure type has a matrix entry with a rationale', () => {
@@ -37,10 +37,7 @@ describe('A9 policy matrix — explicit fail-open / fail-closed contract', () =>
   });
 
   test('fail-closed entries are marked critical, blocked, non-retryable', () => {
-    const failClosedTypes: DegradationEvent['failureType'][] = [
-      'trace-store-write-failure',
-      'mutation-apply-failure',
-    ];
+    const failClosedTypes: DegradationEvent['failureType'][] = ['trace-store-write-failure', 'mutation-apply-failure'];
     for (const ft of failClosedTypes) {
       const e = DEGRADATION_POLICY_MATRIX[ft];
       expect(e.action).toBe('fail-closed');

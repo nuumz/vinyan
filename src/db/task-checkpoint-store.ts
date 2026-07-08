@@ -82,7 +82,12 @@ export class TaskCheckpointStore {
   }
 
   /** Persist checkpoint before dispatch. INSERT OR REPLACE for idempotent retries. */
-  save(checkpoint: Pick<TaskCheckpoint, 'taskId' | 'inputJson' | 'routingLevel' | 'planJson' | 'perceptionJson' | 'attemptCount'>): void {
+  save(
+    checkpoint: Pick<
+      TaskCheckpoint,
+      'taskId' | 'inputJson' | 'routingLevel' | 'planJson' | 'perceptionJson' | 'attemptCount'
+    >,
+  ): void {
     this.saveStmt.run(
       checkpoint.taskId,
       checkpoint.inputJson,

@@ -12,6 +12,8 @@
  *
  * Axiom compliance: A5 (Tiered Trust), A3 (Deterministic Governance — rule-based, no LLM).
  */
+
+import type { SubjectiveOpinion } from '../core/subjective-opinion.ts';
 import {
   computeConflictReport,
   cumulativeFusion,
@@ -20,7 +22,6 @@ import {
   projectedProbability,
   temporalDecay,
 } from '../core/subjective-opinion.ts';
-import type { SubjectiveOpinion } from '../core/subjective-opinion.ts';
 import type { OracleAbstention, OracleVerdict } from '../core/types.ts';
 
 // ── Types ───────────────────────────────────────────────────────
@@ -158,7 +159,9 @@ export function resolveConflicts(
     let beliefInterval: { belief: number; plausibility: number } | undefined;
     if (routingLevel === undefined || routingLevel >= 1) {
       const allOpinions = Object.values(oracleResults)
-        .filter((v) => !config.informationalOracles.has(Object.keys(oracleResults).find((k) => oracleResults[k] === v)!))
+        .filter(
+          (v) => !config.informationalOracles.has(Object.keys(oracleResults).find((k) => oracleResults[k] === v)!),
+        )
         .map(verdictToOpinion);
       if (allOpinions.length >= 2) {
         let fused = allOpinions[0]!;
@@ -268,15 +271,14 @@ function verdictToOpinion(verdict: OracleVerdict): SubjectiveOpinion {
   if (verdict.opinion && isValid(verdict.opinion)) {
     opinion = verdict.opinion;
   } else {
-    opinion = verdict.verified
-      ? fromScalar(verdict.confidence)
-      : fromScalar(1 - verdict.confidence);
+    opinion = verdict.verified ? fromScalar(verdict.confidence) : fromScalar(1 - verdict.confidence);
   }
 
   // Apply temporal decay if the verdict carries temporal context
   if (verdict.temporalContext && verdict.temporalContext.decayModel !== 'none') {
     const elapsed = Date.now() - verdict.temporalContext.validFrom;
-    const halfLife = verdict.temporalContext.halfLife ?? (verdict.temporalContext.validUntil - verdict.temporalContext.validFrom) / 2;
+    const halfLife =
+      verdict.temporalContext.halfLife ?? (verdict.temporalContext.validUntil - verdict.temporalContext.validFrom) / 2;
     opinion = temporalDecay(opinion, elapsed, halfLife, verdict.temporalContext.decayModel);
   }
 

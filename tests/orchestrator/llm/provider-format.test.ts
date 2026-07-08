@@ -3,12 +3,12 @@
  * Phase 6.0: Agentic Worker Protocol.
  */
 import { describe, expect, test } from 'bun:test';
-import type { HistoryMessage, Message, ToolResultMessage } from '@vinyan/orchestrator/types.ts';
 import {
   type AnthropicMessage,
-  type OpenAIMessage,
   normalizeMessages,
+  type OpenAIMessage,
 } from '@vinyan/orchestrator/llm/provider-format.ts';
+import type { HistoryMessage, Message, ToolResultMessage } from '@vinyan/orchestrator/types.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -24,10 +24,7 @@ function toolResult(toolCallId: string, content: string, isError?: boolean): Too
 
 describe('normalizeMessages — Anthropic', () => {
   test('simple user + assistant', () => {
-    const messages: HistoryMessage[] = [
-      msg('user', 'hello'),
-      msg('assistant', 'hi there'),
-    ];
+    const messages: HistoryMessage[] = [msg('user', 'hello'), msg('assistant', 'hi there')];
     const result = normalizeMessages(messages, 'anthropic') as AnthropicMessage[];
     expect(result).toHaveLength(2);
     expect(result[0]).toEqual({ role: 'user', content: 'hello' });
@@ -35,10 +32,7 @@ describe('normalizeMessages — Anthropic', () => {
   });
 
   test('system messages are skipped', () => {
-    const messages: HistoryMessage[] = [
-      msg('system', 'you are helpful'),
-      msg('user', 'hello'),
-    ];
+    const messages: HistoryMessage[] = [msg('system', 'you are helpful'), msg('user', 'hello')];
     const result = normalizeMessages(messages, 'anthropic') as AnthropicMessage[];
     expect(result).toHaveLength(1);
     expect(result[0]!.role).toBe('user');
@@ -68,10 +62,7 @@ describe('normalizeMessages — Anthropic', () => {
   });
 
   test('consecutive tool_results → single user message with multiple blocks', () => {
-    const messages: HistoryMessage[] = [
-      toolResult('tc1', 'file content here'),
-      toolResult('tc2', 'grep results here'),
-    ];
+    const messages: HistoryMessage[] = [toolResult('tc1', 'file content here'), toolResult('tc2', 'grep results here')];
     const result = normalizeMessages(messages, 'anthropic') as AnthropicMessage[];
     expect(result).toHaveLength(1);
     expect(result[0]!.role).toBe('user');
@@ -105,9 +96,7 @@ describe('normalizeMessages — Anthropic', () => {
   });
 
   test('thinking block prepended before text', () => {
-    const messages: HistoryMessage[] = [
-      msg('assistant', 'answer', { thinking: 'let me think...' }),
-    ];
+    const messages: HistoryMessage[] = [msg('assistant', 'answer', { thinking: 'let me think...' })];
     const result = normalizeMessages(messages, 'anthropic') as AnthropicMessage[];
     const content = result[0]!.content as any[];
     expect(content[0]).toEqual({ type: 'thinking', thinking: 'let me think...' });
@@ -142,11 +131,7 @@ describe('normalizeMessages — Anthropic', () => {
 
 describe('normalizeMessages — OpenAI', () => {
   test('system/user/assistant pass through', () => {
-    const messages: HistoryMessage[] = [
-      msg('system', 'you are helpful'),
-      msg('user', 'hello'),
-      msg('assistant', 'hi'),
-    ];
+    const messages: HistoryMessage[] = [msg('system', 'you are helpful'), msg('user', 'hello'), msg('assistant', 'hi')];
     const result = normalizeMessages(messages, 'openai-compat') as OpenAIMessage[];
     expect(result).toHaveLength(3);
     expect(result[0]).toEqual({ role: 'system', content: 'you are helpful' });
@@ -171,10 +156,7 @@ describe('normalizeMessages — OpenAI', () => {
   });
 
   test('tool_result → separate tool messages', () => {
-    const messages: HistoryMessage[] = [
-      toolResult('tc1', 'content1'),
-      toolResult('tc2', 'content2'),
-    ];
+    const messages: HistoryMessage[] = [toolResult('tc1', 'content1'), toolResult('tc2', 'content2')];
     const result = normalizeMessages(messages, 'openai-compat') as OpenAIMessage[];
     expect(result).toHaveLength(2);
     expect(result[0]).toEqual({ role: 'tool', content: 'content1', tool_call_id: 'tc1' });
@@ -182,9 +164,7 @@ describe('normalizeMessages — OpenAI', () => {
   });
 
   test('thinking is discarded for OpenAI', () => {
-    const messages: HistoryMessage[] = [
-      msg('assistant', 'answer', { thinking: 'reasoning' }),
-    ];
+    const messages: HistoryMessage[] = [msg('assistant', 'answer', { thinking: 'reasoning' })];
     const result = normalizeMessages(messages, 'openai-compat') as OpenAIMessage[];
     expect(result[0]!.content).toBe('answer');
     // No thinking field in OpenAI format
@@ -195,9 +175,12 @@ describe('normalizeMessages — OpenAI', () => {
 // ── Schema validation ────────────────────────────────────────────────
 
 describe('Phase 6.0 Zod schemas', () => {
-  const { WorkerTurnSchema, OrchestratorTurnSchema, AgentBudgetSchema, DelegationRequestSchema } = require(
-    '@vinyan/orchestrator/protocol.ts',
-  );
+  const {
+    WorkerTurnSchema,
+    OrchestratorTurnSchema,
+    AgentBudgetSchema,
+    DelegationRequestSchema,
+  } = require('@vinyan/orchestrator/protocol.ts');
 
   test('WorkerTurn tool_calls with tokensConsumed', () => {
     const result = WorkerTurnSchema.parse({

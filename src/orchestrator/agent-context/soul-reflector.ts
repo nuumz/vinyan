@@ -13,12 +13,18 @@
  * Source of truth: Living Agent Soul plan
  */
 import type { AgentContextStore } from '../../db/agent-context-store.ts';
-import type { LLMProvider } from '../types.ts';
-import type { ExecutionTrace } from '../types.ts';
-import type { SoulDocument, PendingInsight, DomainEntry, StrategyEntry, AntiPatternEntry } from './soul-schema.ts';
-import { parseSoulMd, renderSoulMd, createSeedSoul, SOUL_MAX_TOKENS, countSoulTokens, SOUL_SECTION_LIMITS } from './soul-schema.ts';
-import { SoulStore } from './soul-store.ts';
-import { isSignificant, isRateLimited, recordReflection } from './soul-significance-gate.ts';
+import type { ExecutionTrace, LLMProvider } from '../types.ts';
+import type { AntiPatternEntry, DomainEntry, PendingInsight, SoulDocument, StrategyEntry } from './soul-schema.ts';
+import {
+  countSoulTokens,
+  createSeedSoul,
+  parseSoulMd,
+  renderSoulMd,
+  SOUL_MAX_TOKENS,
+  SOUL_SECTION_LIMITS,
+} from './soul-schema.ts';
+import { isRateLimited, isSignificant, recordReflection } from './soul-significance-gate.ts';
+import type { SoulStore } from './soul-store.ts';
 import type { AgentContext } from './types.ts';
 
 export interface SoulReflectorDeps {
@@ -49,7 +55,11 @@ export class SoulReflector {
    *
    * Best-effort: never throws. LLM failures are silently swallowed.
    */
-  async reflectOnTrace(agentId: string, trace: ExecutionTrace, agentContext: AgentContext): Promise<PendingInsight | null> {
+  async reflectOnTrace(
+    agentId: string,
+    trace: ExecutionTrace,
+    agentContext: AgentContext,
+  ): Promise<PendingInsight | null> {
     // Check significance gate
     if (!isSignificant(trace, agentContext)) return null;
     if (isRateLimited(agentId)) return null;
@@ -106,9 +116,7 @@ export class SoulReflector {
     }
 
     // Limit insights per cycle
-    const topInsights = insights
-      .sort((a, b) => b.confidence - a.confidence)
-      .slice(0, MAX_INSIGHTS_PER_CYCLE);
+    const topInsights = insights.sort((a, b) => b.confidence - a.confidence).slice(0, MAX_INSIGHTS_PER_CYCLE);
 
     try {
       const prompt = buildSynthesisPrompt(existingSoul, topInsights, minedData);
@@ -224,7 +232,10 @@ export function buildStatisticalSoul(agentId: string, context: AgentContext): So
   }
 
   // Convert preferred approaches to strategies
-  for (const [taskSig, approach] of Object.entries(context.skills.preferredApproaches).slice(0, SOUL_SECTION_LIMITS.winningStrategies)) {
+  for (const [taskSig, approach] of Object.entries(context.skills.preferredApproaches).slice(
+    0,
+    SOUL_SECTION_LIMITS.winningStrategies,
+  )) {
     soul.winningStrategies.push({
       taskPattern: taskSig,
       strategy: approach,
@@ -245,7 +256,8 @@ export function buildStatisticalSoul(agentId: string, context: AgentContext): So
   }
 
   // Self-knowledge from weaknesses
-  soul.selfKnowledge = context.identity.weaknesses.slice(0, SOUL_SECTION_LIMITS.selfKnowledge)
+  soul.selfKnowledge = context.identity.weaknesses
+    .slice(0, SOUL_SECTION_LIMITS.selfKnowledge)
     .map((w) => `Weak area: ${w}`);
 
   return soul;
@@ -333,7 +345,9 @@ function buildSynthesisPrompt(
   if (insights.length > 0) {
     parts.push('New insights from recent tasks:');
     for (const insight of insights) {
-      parts.push(`- [${insight.category}] ${insight.content} (evidence: ${insight.evidence}, confidence: ${insight.confidence.toFixed(2)})`);
+      parts.push(
+        `- [${insight.category}] ${insight.content} (evidence: ${insight.evidence}, confidence: ${insight.confidence.toFixed(2)})`,
+      );
     }
   }
 
@@ -358,7 +372,9 @@ function buildSynthesisPrompt(
     }
   }
 
-  parts.push(`\nSection limits: philosophy=${SOUL_SECTION_LIMITS.philosophy} lines, domain=${SOUL_SECTION_LIMITS.domainExpertise}, strategies=${SOUL_SECTION_LIMITS.winningStrategies}, anti-patterns=${SOUL_SECTION_LIMITS.antiPatterns}, self-knowledge=${SOUL_SECTION_LIMITS.selfKnowledge}, experiments=${SOUL_SECTION_LIMITS.activeExperiments}`);
+  parts.push(
+    `\nSection limits: philosophy=${SOUL_SECTION_LIMITS.philosophy} lines, domain=${SOUL_SECTION_LIMITS.domainExpertise}, strategies=${SOUL_SECTION_LIMITS.winningStrategies}, anti-patterns=${SOUL_SECTION_LIMITS.antiPatterns}, self-knowledge=${SOUL_SECTION_LIMITS.selfKnowledge}, experiments=${SOUL_SECTION_LIMITS.activeExperiments}`,
+  );
   parts.push('\nOutput the complete updated SOUL.md (keep the # Soul: header and <!-- version --> comment):');
 
   return parts.join('\n');

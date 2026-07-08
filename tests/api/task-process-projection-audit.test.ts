@@ -471,8 +471,8 @@ describe('buildAuditLog — per-section completeness', () => {
     const proj = makeService().build('task-1');
     expect(proj?.bySection?.subTasks.length).toBe(1);
     expect(proj?.bySection?.subAgents.length).toBe(1);
-    const subagent = proj?.bySection?.subAgents[0]!;
-    if (subagent.kind !== 'subagent') throw new Error('expected subagent');
+    const subagent = proj?.bySection?.subAgents[0];
+    if (subagent?.kind !== 'subagent') throw new Error('expected subagent');
     expect(subagent.subAgentId).toBe('task-1-delegate-p-researcher-r0');
     expect(subagent.persona).toBe('researcher');
     expect(subagent.phase).toBe('spawn');

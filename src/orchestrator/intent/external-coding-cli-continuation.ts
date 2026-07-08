@@ -22,8 +22,8 @@
  */
 import type { Turn } from '../types.ts';
 import {
-  classifyExternalCodingCliIntent,
   type CodingCliIntentClassification,
+  classifyExternalCodingCliIntent,
 } from './external-coding-cli-classifier.ts';
 
 /**

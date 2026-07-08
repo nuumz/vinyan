@@ -5,9 +5,10 @@
  * Tracks consumption, enforces limits, and derives child budgets for delegation.
  * Uses performance.now() for precise duration tracking.
  */
+
+import type { AgentContract } from '../../core/agent-contract.ts';
 import type { AgentBudget } from '../protocol.ts';
 import type { RoutingDecision } from '../types.ts';
-import type { AgentContract } from '../../core/agent-contract.ts';
 
 /** Configurable budget allocation ratios and turn limits. */
 export interface AgentBudgetConfig {

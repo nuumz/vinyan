@@ -20,7 +20,12 @@ export function renderPeers(state: TUIState): string {
 
   const allPeers = [...state.peers.values()];
   const filtered = state.filterQuery
-    ? allPeers.filter((p) => p.peerId.includes(state.filterQuery) || p.trustLevel.includes(state.filterQuery) || p.healthState.includes(state.filterQuery))
+    ? allPeers.filter(
+        (p) =>
+          p.peerId.includes(state.filterQuery) ||
+          p.trustLevel.includes(state.filterQuery) ||
+          p.healthState.includes(state.filterQuery),
+      )
     : allPeers;
   const peers = sortPeers(filtered, state.sort.peers as SortConfig<PeerSortField> | undefined);
 

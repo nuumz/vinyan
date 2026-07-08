@@ -32,14 +32,13 @@ export function loadPriorFailedApproaches(
   actionVerb?: string,
 ): WorkingMemoryState['failedApproaches'] {
   // Gap 8A: Use verb-aware query when actionVerb is available
-  const rows = actionVerb && 'loadForTaskWithVerb' in store
-    ? store.loadForTaskWithVerb(fileTarget, taskType, actionVerb, MAX_CROSS_TASK_APPROACHES)
-    : store.loadForTask(fileTarget, taskType, MAX_CROSS_TASK_APPROACHES);
+  const rows =
+    actionVerb && 'loadForTaskWithVerb' in store
+      ? store.loadForTaskWithVerb(fileTarget, taskType, actionVerb, MAX_CROSS_TASK_APPROACHES)
+      : store.loadForTask(fileTarget, taskType, MAX_CROSS_TASK_APPROACHES);
 
   // Build dedup set from current task's approaches (approach + verdict)
-  const seen = new Set(
-    (currentApproaches ?? []).map((a) => `${a.approach}::${a.oracleVerdict}`),
-  );
+  const seen = new Set((currentApproaches ?? []).map((a) => `${a.approach}::${a.oracleVerdict}`));
 
   const result: WorkingMemoryState['failedApproaches'] = [];
   for (const row of rows) {

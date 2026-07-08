@@ -83,7 +83,9 @@ describe('INTENT_SYSTEM_PROMPT', () => {
 
   it('keeps internal roles out of user-facing workflow prompts', () => {
     expect(INTENT_SYSTEM_PROMPT).toContain('Internal role names are routing hints only');
-    expect(INTENT_SYSTEM_PROMPT).toContain('Do NOT write workflow prompts that tell the downstream agent to tell the user');
+    expect(INTENT_SYSTEM_PROMPT).toContain(
+      'Do NOT write workflow prompts that tell the downstream agent to tell the user',
+    );
     expect(INTENT_SYSTEM_PROMPT).toContain('do not expose internal role names as the answer');
   });
 });
@@ -92,10 +94,12 @@ describe('pickPrimaryProvider', () => {
   it('returns balanced when available', () => {
     const balanced = stubProvider('b', 'balanced');
     const fast = stubProvider('f', 'fast');
-    const registry = stubRegistry(new Map([
-      ['balanced', balanced],
-      ['fast', fast],
-    ]));
+    const registry = stubRegistry(
+      new Map([
+        ['balanced', balanced],
+        ['fast', fast],
+      ]),
+    );
     expect(pickPrimaryProvider(registry)).toBe(balanced);
   });
 
@@ -120,10 +124,12 @@ describe('pickAlternateProvider', () => {
   it('returns a provider with a different id from excludeId', () => {
     const balanced = stubProvider('b', 'balanced');
     const fast = stubProvider('f', 'fast');
-    const registry = stubRegistry(new Map([
-      ['balanced', balanced],
-      ['fast', fast],
-    ]));
+    const registry = stubRegistry(
+      new Map([
+        ['balanced', balanced],
+        ['fast', fast],
+      ]),
+    );
     const alt = pickAlternateProvider(registry, 'b');
     expect(alt).not.toBeNull();
     expect(alt?.id).toBe('f');
@@ -180,9 +186,7 @@ describe('classifyOnce', () => {
       id: 'p',
       tier: 'balanced',
       generate: () =>
-        new Promise((resolve) =>
-          setTimeout(() => resolve({ content: '{}' }), INTENT_TIMEOUT_MS + 1000),
-        ) as any,
+        new Promise((resolve) => setTimeout(() => resolve({ content: '{}' }), INTENT_TIMEOUT_MS + 1000)) as any,
     } as unknown as LLMProvider;
     await expect(classifyOnce(provider, 'x')).rejects.toThrow(/timeout/i);
   }, 15_000);

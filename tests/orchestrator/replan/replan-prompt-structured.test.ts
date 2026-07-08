@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { buildReplanPrompt, type FailureContext } from '../../../src/orchestrator/replan/replan-prompt.ts';
 import type { ClassifiedFailure } from '../../../src/orchestrator/failure-classifier.ts';
+import { buildReplanPrompt, type FailureContext } from '../../../src/orchestrator/replan/replan-prompt.ts';
 import type { PerceptualHierarchy, TaskInput, WorkingMemoryState } from '../../../src/orchestrator/types.ts';
 
 function makeInput(overrides?: Partial<TaskInput>): TaskInput {
@@ -35,7 +35,13 @@ function makeMemory(): WorkingMemoryState {
 function makeFailure(overrides?: Partial<FailureContext>): FailureContext {
   return {
     failedApproaches: [],
-    goalSatisfaction: { score: 0.3, basis: 'deterministic', blockers: [], passedChecks: [], failedChecks: ['type-check'] },
+    goalSatisfaction: {
+      score: 0.3,
+      basis: 'deterministic',
+      blockers: [],
+      passedChecks: [],
+      failedChecks: ['type-check'],
+    },
     previousPlanDescription: 'edit src/widget.ts',
     iteration: 1,
     ...overrides,
@@ -45,7 +51,13 @@ function makeFailure(overrides?: Partial<FailureContext>): FailureContext {
 describe('buildReplanPrompt — structured failures (Wave B)', () => {
   test('classifiedFailures present → prompt contains [FAILURE category=...] blocks', () => {
     const failures: ClassifiedFailure[] = [
-      { category: 'type_error', file: 'src/foo.ts', line: 42, message: "TS2339: Property 'bar' does not exist", severity: 'error' },
+      {
+        category: 'type_error',
+        file: 'src/foo.ts',
+        line: 42,
+        message: "TS2339: Property 'bar' does not exist",
+        severity: 'error',
+      },
     ];
     const { userPrompt } = buildReplanPrompt(
       makeInput(),
@@ -80,12 +92,7 @@ describe('buildReplanPrompt — structured failures (Wave B)', () => {
       makeMemory(),
       makeFailure({ classifiedFailures: undefined }),
     );
-    const withoutField = buildReplanPrompt(
-      makeInput(),
-      makePerception(),
-      makeMemory(),
-      makeFailure(),
-    );
+    const withoutField = buildReplanPrompt(makeInput(), makePerception(), makeMemory(), makeFailure());
 
     expect(withoutFailures.userPrompt).toBe(withoutField.userPrompt);
     expect(withoutFailures.userPrompt).not.toContain('[FAILURE');
@@ -127,9 +134,7 @@ describe('buildReplanPrompt — structured failures (Wave B)', () => {
   });
 
   test('unknown category → no recovery hint for that category', () => {
-    const failures: ClassifiedFailure[] = [
-      { category: 'unknown', message: 'something broke', severity: 'error' },
-    ];
+    const failures: ClassifiedFailure[] = [{ category: 'unknown', message: 'something broke', severity: 'error' }];
     const { userPrompt } = buildReplanPrompt(
       makeInput(),
       makePerception(),

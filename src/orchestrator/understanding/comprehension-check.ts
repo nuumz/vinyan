@@ -151,11 +151,11 @@ export function checkComprehension(
   const entities = Array.isArray(semantic.resolvedEntities) ? semantic.resolvedEntities : [];
   for (const entity of entities) {
     if (
-      entity
-      && Array.isArray(entity.resolvedPaths)
-      && entity.resolvedPaths.length > 1
-      && typeof entity.confidence === 'number'
-      && entity.confidence < entityThreshold
+      entity &&
+      Array.isArray(entity.resolvedPaths) &&
+      entity.resolvedPaths.length > 1 &&
+      typeof entity.confidence === 'number' &&
+      entity.confidence < entityThreshold
     ) {
       failedChecks.push({
         check: 'H1-ambiguous-entity',

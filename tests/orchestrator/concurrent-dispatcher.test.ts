@@ -2,9 +2,9 @@
  * Tests for K2.3 Concurrent Dispatcher — parallel multi-task dispatch.
  */
 import { describe, expect, test } from 'bun:test';
+import { AdvisoryFileLock } from '../../src/orchestrator/agent/file-lock.ts';
 import { DefaultConcurrentDispatcher } from '../../src/orchestrator/concurrent-dispatcher.ts';
 import { createTaskQueue } from '../../src/orchestrator/task-queue.ts';
-import { AdvisoryFileLock } from '../../src/orchestrator/agent/file-lock.ts';
 import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
 function makeTask(id: string, targetFiles: string[] = []): TaskInput {
@@ -94,9 +94,7 @@ describe('DefaultConcurrentDispatcher', () => {
       },
     });
 
-    const tasks = Array.from({ length: taskCount }, (_, i) =>
-      makeTask(`task-${i}`, [`file-${i}.ts`]),
-    );
+    const tasks = Array.from({ length: taskCount }, (_, i) => makeTask(`task-${i}`, [`file-${i}.ts`]));
 
     const wallStart = performance.now();
     const results = await dispatcher.dispatch(tasks);
@@ -123,10 +121,7 @@ describe('DefaultConcurrentDispatcher', () => {
     });
 
     // task-0 and task-1 share 'shared.ts' → cannot run in parallel
-    const tasks = [
-      makeTask('task-0', ['shared.ts']),
-      makeTask('task-1', ['shared.ts']),
-    ];
+    const tasks = [makeTask('task-0', ['shared.ts']), makeTask('task-1', ['shared.ts'])];
 
     const results = await dispatcher.dispatch(tasks);
     expect(results).toHaveLength(2);
@@ -168,9 +163,7 @@ describe('DefaultConcurrentDispatcher', () => {
       },
     });
 
-    const tasks = Array.from({ length: 5 }, (_, i) =>
-      makeTask(`task-${i}`, [`file-${i}.ts`]),
-    );
+    const tasks = Array.from({ length: 5 }, (_, i) => makeTask(`task-${i}`, [`file-${i}.ts`]));
 
     const results = await dispatcher.dispatch(tasks);
     expect(results.map((r) => r.id)).toEqual(tasks.map((t) => t.id));

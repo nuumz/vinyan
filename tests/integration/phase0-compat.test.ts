@@ -80,9 +80,11 @@ describe('Phase 0 Compatibility Guards', () => {
       oracleGate: alwaysFailGate,
     });
     // Force L0 routing via MIN_ROUTING_LEVEL constraint
-    const result = await orchestrator.executeTask(makeInput({
-      constraints: ['MIN_ROUTING_LEVEL:0']
-    }));
+    const result = await orchestrator.executeTask(
+      makeInput({
+        constraints: ['MIN_ROUTING_LEVEL:0'],
+      }),
+    );
     // Must escalate (never commit when oracle says no)
     expect(result.status).toBe('escalated');
     // File must remain unchanged on disk

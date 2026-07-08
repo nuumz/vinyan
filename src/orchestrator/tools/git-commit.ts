@@ -12,8 +12,8 @@
  * (stdin), so metachars are safe.
  */
 
-import { makeResult } from './tool-helpers.ts';
 import { approveCommitMessage } from './ship-policy.ts';
+import { makeResult } from './tool-helpers.ts';
 import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 export const gitCommit: Tool = {

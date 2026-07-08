@@ -16,6 +16,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import type { AgentContract } from '../../../src/core/agent-contract.ts';
+import type { AgentLoopDeps, WorkerLoopResult } from '../../../src/orchestrator/agent/agent-loop.ts';
 import { RoomDispatcher, type RoomExecuteInput } from '../../../src/orchestrator/room/room-dispatcher.ts';
 import type { GoalVerifier } from '../../../src/orchestrator/room/room-supervisor.ts';
 import type { RoleSpec, RoomContract } from '../../../src/orchestrator/room/types.ts';
@@ -25,7 +26,6 @@ import type {
   TaskInput,
   WorkingMemoryState,
 } from '../../../src/orchestrator/types.ts';
-import type { AgentLoopDeps, WorkerLoopResult } from '../../../src/orchestrator/agent/agent-loop.ts';
 
 const primary1: RoleSpec = {
   name: 'primary-1',
@@ -228,9 +228,7 @@ describe('RoomDispatcher — text-answer per-round role gating', () => {
     expect(integratorTurn!.syntheticId).toMatch(/__r3$/);
 
     // Primaries never appear on round 3 (integrator round only).
-    const primaryRound3 = turns.filter(
-      (t) => t.syntheticId.includes('__primary-') && t.syntheticId.endsWith('__r3'),
-    );
+    const primaryRound3 = turns.filter((t) => t.syntheticId.includes('__primary-') && t.syntheticId.endsWith('__r3'));
     expect(primaryRound3).toHaveLength(0);
   });
 
@@ -302,9 +300,7 @@ describe('RoomDispatcher — text-answer buildRoomContext', () => {
     });
     await dispatcher.execute(makeExecuteInput(textAnswerContract()));
 
-    const round0Primaries = turns.filter(
-      (t) => t.syntheticId.includes('__primary-') && t.syntheticId.endsWith('__r0'),
-    );
+    const round0Primaries = turns.filter((t) => t.syntheticId.includes('__primary-') && t.syntheticId.endsWith('__r0'));
     expect(round0Primaries).toHaveLength(3);
     for (const t of round0Primaries) {
       expect(t.roomContext).toBeNull();
@@ -322,9 +318,7 @@ describe('RoomDispatcher — text-answer buildRoomContext', () => {
     await dispatcher.execute(makeExecuteInput(textAnswerContract()));
 
     // Round 1 = first rebuttal round.
-    const round1Primary1 = turns.find(
-      (t) => t.syntheticId.includes('__primary-1__') && t.syntheticId.endsWith('__r1'),
-    );
+    const round1Primary1 = turns.find((t) => t.syntheticId.includes('__primary-1__') && t.syntheticId.endsWith('__r1'));
     expect(round1Primary1).toBeDefined();
     expect(round1Primary1!.roomContext).not.toBeNull();
     // Each turn's mock `proposedContent` is `${syntheticId}-content`. Round 0
@@ -336,7 +330,7 @@ describe('RoomDispatcher — text-answer buildRoomContext', () => {
     expect(round1Primary1!.roomContext!).toContain('__primary-3__r0-content');
   });
 
-  it('integrator sees ALL primaries\' transcripts including all rounds', async () => {
+  it("integrator sees ALL primaries' transcripts including all rounds", async () => {
     const { runAgentLoop, turns } = captureRunAgentLoop();
     const dispatcher = new RoomDispatcher({
       runAgentLoop,

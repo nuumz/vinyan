@@ -22,10 +22,7 @@ const baseInput = {
 
 describe('shouldActivate — cold-start gate', () => {
   test('always activates when observationCount < threshold', () => {
-    const d = shouldActivate(
-      { ...baseInput, observationCount: 0, predictionAccuracy: 0.5 },
-      debouncer,
-    );
+    const d = shouldActivate({ ...baseInput, observationCount: 0, predictionAccuracy: 0.5 }, debouncer);
     expect(d.activate).toBe(true);
     expect(d.reason).toBe('cold-start');
   });
@@ -61,10 +58,7 @@ describe('shouldActivate — risk override', () => {
   });
 
   test('risk override fires even with high prediction accuracy', () => {
-    const d = shouldActivate(
-      { ...baseInput, predictionAccuracy: 0.99, riskScore: 0.7 },
-      debouncer,
-    );
+    const d = shouldActivate({ ...baseInput, predictionAccuracy: 0.99, riskScore: 0.7 }, debouncer);
     expect(d.activate).toBe(true);
     expect(d.reason).toBe('risk-threshold');
   });
@@ -90,10 +84,7 @@ describe('shouldActivate — surprise gate', () => {
   test('activates when predictionError > 2σ AND dwell satisfied', () => {
     // p = 0.95 → sigma = sqrt(0.95 * 0.05) = ~0.218 → 2σ ≈ 0.436
     // First call: surprise observed but dwell not yet exceeded → not activate
-    const d1 = shouldActivate(
-      { ...baseInput, predictionAccuracy: 0.95, predictionError: 1.0 },
-      debouncer,
-    );
+    const d1 = shouldActivate({ ...baseInput, predictionAccuracy: 0.95, predictionError: 1.0 }, debouncer);
     expect(d1.activate).toBe(false);
     expect(d1.reason).toBe('surprise-but-dwelling');
 
@@ -101,10 +92,7 @@ describe('shouldActivate — surprise gate', () => {
     now += DEFAULT_ACTIVATION_CONFIG.minDwellMs + 1;
 
     // Second call: dwell exceeded → activate
-    const d2 = shouldActivate(
-      { ...baseInput, predictionAccuracy: 0.95, predictionError: 1.0 },
-      debouncer,
-    );
+    const d2 = shouldActivate({ ...baseInput, predictionAccuracy: 0.95, predictionError: 1.0 }, debouncer);
     expect(d2.activate).toBe(true);
     expect(d2.reason).toBe('surprise');
   });
@@ -121,22 +109,13 @@ describe('shouldActivate — surprise gate', () => {
 
   test('surprise must be sustained — single-shot does not fire', () => {
     // First surprise observation
-    shouldActivate(
-      { ...baseInput, predictionAccuracy: 0.95, predictionError: 1.0 },
-      debouncer,
-    );
+    shouldActivate({ ...baseInput, predictionAccuracy: 0.95, predictionError: 1.0 }, debouncer);
     // Right after: condition resolves (error drops)
-    const d = shouldActivate(
-      { ...baseInput, predictionAccuracy: 0.95, predictionError: 0.0 },
-      debouncer,
-    );
+    const d = shouldActivate({ ...baseInput, predictionAccuracy: 0.95, predictionError: 0.0 }, debouncer);
     expect(d.activate).toBe(false);
     // Surprise gate cleared because condition dropped
     now += DEFAULT_ACTIVATION_CONFIG.minDwellMs + 100;
-    const d2 = shouldActivate(
-      { ...baseInput, predictionAccuracy: 0.95, predictionError: 1.0 },
-      debouncer,
-    );
+    const d2 = shouldActivate({ ...baseInput, predictionAccuracy: 0.95, predictionError: 1.0 }, debouncer);
     // First time again — dwell starts over, not yet exceeded
     expect(d2.activate).toBe(false);
   });
@@ -145,10 +124,7 @@ describe('shouldActivate — surprise gate', () => {
 describe('shouldActivate — cool-down', () => {
   test('keeps activated for coolDownMs after a firing', () => {
     // Force activation via destructive mutation
-    const d1 = shouldActivate(
-      { ...baseInput, mutationAction: 'mutation-destructive' },
-      debouncer,
-    );
+    const d1 = shouldActivate({ ...baseInput, mutationAction: 'mutation-destructive' }, debouncer);
     expect(d1.activate).toBe(true);
 
     // Right after, with no surprise / risk / destructive
@@ -174,10 +150,7 @@ describe('shouldActivate — cool-down', () => {
     );
     // Different signature should NOT inherit the cool-down
     now += 1000;
-    const d = shouldActivate(
-      { ...baseInput, taskTypeSignature: 'add::py' },
-      debouncer,
-    );
+    const d = shouldActivate({ ...baseInput, taskTypeSignature: 'add::py' }, debouncer);
     expect(d.activate).toBe(false);
   });
 });

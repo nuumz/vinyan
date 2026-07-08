@@ -11,13 +11,13 @@
  *      fallback and the `delegation:remote` event).
  */
 import { describe, expect, test } from 'bun:test';
-import { A2ABridge } from '../../src/a2a/bridge.ts';
 import { A2ATransport } from '../../src/a2a/a2a-transport.ts';
+import { A2ABridge } from '../../src/a2a/bridge.ts';
 import { createBus } from '../../src/core/bus.ts';
-import { handleDelegation } from '../../src/orchestrator/agent/agent-loop.ts';
 import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
-import { DelegationRouter } from '../../src/orchestrator/delegation-router.ts';
 import type { AgentLoopDeps } from '../../src/orchestrator/agent/agent-loop.ts';
+import { handleDelegation } from '../../src/orchestrator/agent/agent-loop.ts';
+import { DelegationRouter } from '../../src/orchestrator/delegation-router.ts';
 import type { DelegationRequest } from '../../src/orchestrator/protocol.ts';
 import type { RoutingDecision, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
@@ -84,7 +84,15 @@ describe('A2ATransport.delegateTask + A2ABridge round-trip', () => {
               file: 'src/auth.ts',
               diff: '@@ -1 +1 @@\n-old\n+new',
               oracleVerdicts: {
-                ast: { verified: true, confidence: 0.9, type: 'known', evidence: [], opinion: { belief: 0.9, disbelief: 0.05, uncertainty: 0.05, baseRate: 0.5 }, durationMs: 12, fileHashes: {} },
+                ast: {
+                  verified: true,
+                  confidence: 0.9,
+                  type: 'known',
+                  evidence: [],
+                  opinion: { belief: 0.9, disbelief: 0.05, uncertainty: 0.05, baseRate: 0.5 },
+                  durationMs: 12,
+                  fileHashes: {},
+                },
               } as never,
             },
           ],
@@ -109,10 +117,7 @@ describe('A2ATransport.delegateTask + A2ABridge round-trip', () => {
         oracleName: 'task-delegation',
         instanceId: 'remote-1',
       });
-      const result = await transport.delegateTask(
-        makeParent({ id: 'sub-1', goal: 'fix bug' }),
-        5000,
-      );
+      const result = await transport.delegateTask(makeParent({ id: 'sub-1', goal: 'fix bug' }), 5000);
       expect(result).not.toBeNull();
       expect(result!.id).toBe('sub-1');
       expect(result!.status).toBe('completed');

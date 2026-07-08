@@ -197,10 +197,11 @@ describe('GET /api/v1/tasks operations console', () => {
     await submitGoalInSession(sid, 'completed-task-a');
     await submitGoalInSession(sid, 'partial-task');
 
-    const res = await server.handleRequest(
-      req(`/api/v1/tasks?sessionId=${sid}&status=partial&limit=50`),
-    );
-    const body = (await res.json()) as { tasks: Array<{ status: string }>; counts: { byStatus: Record<string, number> } };
+    const res = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&status=partial&limit=50`));
+    const body = (await res.json()) as {
+      tasks: Array<{ status: string }>;
+      counts: { byStatus: Record<string, number> };
+    };
     expect(body.tasks.every((t) => t.status === 'partial')).toBe(true);
     expect(body.tasks.length).toBeGreaterThanOrEqual(1);
   });
@@ -210,9 +211,7 @@ describe('GET /api/v1/tasks operations console', () => {
     await submitGoalInSession(sid, 'unique-marker-zebra');
     await submitGoalInSession(sid, 'unrelated');
 
-    const res = await server.handleRequest(
-      req(`/api/v1/tasks?sessionId=${sid}&search=zebra`),
-    );
+    const res = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&search=zebra`));
     const body = (await res.json()) as { tasks: Array<{ goal?: string }>; total: number };
     expect(body.total).toBe(1);
     expect(body.tasks[0]?.goal).toBe('unique-marker-zebra');
@@ -223,18 +222,14 @@ describe('GET /api/v1/tasks operations console', () => {
     for (let i = 0; i < 5; i++) {
       await submitGoalInSession(sid, `pagination-task-${i}`);
     }
-    const first = await server.handleRequest(
-      req(`/api/v1/tasks?sessionId=${sid}&limit=2&offset=0`),
-    );
+    const first = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&limit=2&offset=0`));
     const body = (await first.json()) as { tasks: unknown[]; total: number; limit: number; offset: number };
     expect(body.tasks.length).toBe(2);
     expect(body.limit).toBe(2);
     expect(body.offset).toBe(0);
     expect(body.total).toBeGreaterThanOrEqual(5);
 
-    const second = await server.handleRequest(
-      req(`/api/v1/tasks?sessionId=${sid}&limit=2&offset=2`),
-    );
+    const second = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&limit=2&offset=2`));
     const body2 = (await second.json()) as { tasks: unknown[]; offset: number };
     expect(body2.tasks.length).toBe(2);
     expect(body2.offset).toBe(2);
@@ -299,9 +294,7 @@ describe('DELETE /api/v1/tasks/:id (cancel)', () => {
       budget: { maxTokens: 100, maxDurationMs: 1000, maxRetries: 1 },
     });
 
-    const cancel = await server.handleRequest(
-      req(`/api/v1/tasks/${taskId}`, { method: 'DELETE' }),
-    );
+    const cancel = await server.handleRequest(req(`/api/v1/tasks/${taskId}`, { method: 'DELETE' }));
     expect(cancel.status).toBe(200);
 
     const list = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&limit=50&visibility=all`));
@@ -406,9 +399,7 @@ describe('archive / unarchive', () => {
     const sid = await createSession();
     const taskId = await submitGoalInSession(sid, 'archive-task');
 
-    const archive = await server.handleRequest(
-      req(`/api/v1/tasks/${taskId}/archive`, { method: 'POST' }),
-    );
+    const archive = await server.handleRequest(req(`/api/v1/tasks/${taskId}/archive`, { method: 'POST' }));
     expect(archive.status).toBe(200);
 
     // Default visibility=active → archived row is hidden.
@@ -416,9 +407,7 @@ describe('archive / unarchive', () => {
     const activeBody = (await active.json()) as { tasks: Array<{ taskId: string }> };
     expect(activeBody.tasks.find((t) => t.taskId === taskId)).toBeUndefined();
 
-    const archivedView = await server.handleRequest(
-      req(`/api/v1/tasks?sessionId=${sid}&visibility=archived&limit=50`),
-    );
+    const archivedView = await server.handleRequest(req(`/api/v1/tasks?sessionId=${sid}&visibility=archived&limit=50`));
     const archivedBody = (await archivedView.json()) as { tasks: Array<{ taskId: string; archivedAt: number | null }> };
     const found = archivedBody.tasks.find((t) => t.taskId === taskId);
     expect(found).toBeDefined();

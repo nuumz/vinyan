@@ -35,55 +35,99 @@ export interface UserPreference {
 
 const APP_CATEGORY_MAP = new Map<string, string>([
   // Mail
-  ['gmail', 'mail'], ['mail', 'mail'], ['outlook', 'mail'], ['thunderbird', 'mail'],
-  ['protonmail', 'mail'], ['yahoo mail', 'mail'], ['hotmail', 'mail'],
+  ['gmail', 'mail'],
+  ['mail', 'mail'],
+  ['outlook', 'mail'],
+  ['thunderbird', 'mail'],
+  ['protonmail', 'mail'],
+  ['yahoo mail', 'mail'],
+  ['hotmail', 'mail'],
 
   // Browser
-  ['chrome', 'browser'], ['google chrome', 'browser'], ['firefox', 'browser'],
-  ['safari', 'browser'], ['brave', 'browser'], ['edge', 'browser'], ['arc', 'browser'],
+  ['chrome', 'browser'],
+  ['google chrome', 'browser'],
+  ['firefox', 'browser'],
+  ['safari', 'browser'],
+  ['brave', 'browser'],
+  ['edge', 'browser'],
+  ['arc', 'browser'],
   ['opera', 'browser'],
 
   // Music
-  ['spotify', 'music'], ['apple music', 'music'], ['youtube music', 'music'],
+  ['spotify', 'music'],
+  ['apple music', 'music'],
+  ['youtube music', 'music'],
 
   // Chat/Communication
-  ['slack', 'chat'], ['discord', 'chat'], ['teams', 'chat'], ['microsoft teams', 'chat'],
-  ['line', 'chat'], ['telegram', 'chat'], ['zoom', 'video-call'],
+  ['slack', 'chat'],
+  ['discord', 'chat'],
+  ['teams', 'chat'],
+  ['microsoft teams', 'chat'],
+  ['line', 'chat'],
+  ['telegram', 'chat'],
+  ['zoom', 'video-call'],
 
   // Editor
-  ['vscode', 'editor'], ['visual studio code', 'editor'], ['cursor', 'editor'],
-  ['vim', 'editor'], ['neovim', 'editor'], ['sublime', 'editor'],
+  ['vscode', 'editor'],
+  ['visual studio code', 'editor'],
+  ['cursor', 'editor'],
+  ['vim', 'editor'],
+  ['neovim', 'editor'],
+  ['sublime', 'editor'],
 
   // Notes
-  ['notion', 'notes'], ['obsidian', 'notes'], ['notes', 'notes'], ['onenote', 'notes'],
-  ['bear', 'notes'], ['evernote', 'notes'],
+  ['notion', 'notes'],
+  ['obsidian', 'notes'],
+  ['notes', 'notes'],
+  ['onenote', 'notes'],
+  ['bear', 'notes'],
+  ['evernote', 'notes'],
 
   // Calendar
-  ['calendar', 'calendar'], ['google calendar', 'calendar'], ['fantastical', 'calendar'],
+  ['calendar', 'calendar'],
+  ['google calendar', 'calendar'],
+  ['fantastical', 'calendar'],
 
   // Terminal
-  ['terminal', 'terminal'], ['iterm', 'terminal'], ['iterm2', 'terminal'],
-  ['warp', 'terminal'], ['alacritty', 'terminal'], ['kitty', 'terminal'],
+  ['terminal', 'terminal'],
+  ['iterm', 'terminal'],
+  ['iterm2', 'terminal'],
+  ['warp', 'terminal'],
+  ['alacritty', 'terminal'],
+  ['kitty', 'terminal'],
 
   // File manager
   ['finder', 'file-manager'],
 
   // Office
-  ['word', 'word-processor'], ['microsoft word', 'word-processor'],
-  ['excel', 'spreadsheet'], ['microsoft excel', 'spreadsheet'],
-  ['powerpoint', 'presentation'], ['microsoft powerpoint', 'presentation'],
+  ['word', 'word-processor'],
+  ['microsoft word', 'word-processor'],
+  ['excel', 'spreadsheet'],
+  ['microsoft excel', 'spreadsheet'],
+  ['powerpoint', 'presentation'],
+  ['microsoft powerpoint', 'presentation'],
 ]);
 
 /** Category keywords — when user says "แอพ <keyword>", map to a category. */
 const CATEGORY_KEYWORDS = new Map<string, string>([
-  ['mail', 'mail'], ['email', 'mail'], ['อีเมล', 'mail'], ['เมล', 'mail'],
-  ['browser', 'browser'], ['เบราว์เซอร์', 'browser'],
-  ['music', 'music'], ['เพลง', 'music'],
-  ['chat', 'chat'], ['แชท', 'chat'],
-  ['editor', 'editor'], ['โค้ด', 'editor'],
-  ['notes', 'notes'], ['โน้ต', 'notes'],
-  ['calendar', 'calendar'], ['ปฏิทิน', 'calendar'],
-  ['terminal', 'terminal'], ['เทอร์มินัล', 'terminal'],
+  ['mail', 'mail'],
+  ['email', 'mail'],
+  ['อีเมล', 'mail'],
+  ['เมล', 'mail'],
+  ['browser', 'browser'],
+  ['เบราว์เซอร์', 'browser'],
+  ['music', 'music'],
+  ['เพลง', 'music'],
+  ['chat', 'chat'],
+  ['แชท', 'chat'],
+  ['editor', 'editor'],
+  ['โค้ด', 'editor'],
+  ['notes', 'notes'],
+  ['โน้ต', 'notes'],
+  ['calendar', 'calendar'],
+  ['ปฏิทิน', 'calendar'],
+  ['terminal', 'terminal'],
+  ['เทอร์มินัล', 'terminal'],
 ]);
 
 /**
@@ -197,15 +241,17 @@ export class UserPreferenceStore {
 
   private warmCache(): void {
     const rows = this.db
-      .prepare('SELECT category, preferred_app, resolved_command, usage_count, last_used_at, status FROM user_app_preferences')
+      .prepare(
+        'SELECT category, preferred_app, resolved_command, usage_count, last_used_at, status FROM user_app_preferences',
+      )
       .all() as Array<{
-        category: string;
-        preferred_app: string;
-        resolved_command: string;
-        usage_count: number;
-        last_used_at: number;
-        status: string;
-      }>;
+      category: string;
+      preferred_app: string;
+      resolved_command: string;
+      usage_count: number;
+      last_used_at: number;
+      status: string;
+    }>;
     for (const row of rows) {
       this.cache.set(row.category, {
         category: row.category,
@@ -284,8 +330,8 @@ export class UserPreferenceStore {
     const active = this.getActivePreferences();
     if (active.length === 0) return '';
 
-    const lines = active.map((p) =>
-      `- For "${p.category}": user prefers "${p.preferredApp}" (used ${p.usageCount} times)`,
+    const lines = active.map(
+      (p) => `- For "${p.category}": user prefers "${p.preferredApp}" (used ${p.usageCount} times)`,
     );
     return `\nUser app preferences (learned from past behavior):\n${lines.join('\n')}`;
   }

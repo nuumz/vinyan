@@ -3,7 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { HypothesisTuple } from '../../../src/core/types.ts';
-import { verify } from '../../../src/oracle/ast/ast-verifier.ts';
+import { isAbstention } from '../../../src/core/types.ts';
+import { verify as verifyResponse } from '../../../src/oracle/ast/ast-verifier.ts';
+import { asVerdict } from '../../helpers/oracle-verdict.ts';
+
+/** Narrowing wrapper — most tests here exercise the verdict path. */
+function verify(hypothesis: HypothesisTuple) {
+  return asVerdict(verifyResponse(hypothesis));
+}
 
 describe('ast-oracle', () => {
   let tempDir: string;
@@ -84,10 +91,13 @@ export type UserId = string;
     expect(verdict.reason).toContain('not found');
   });
 
-  test('symbol-exists: missing symbolName returns error', () => {
-    const verdict = verify(makeHypothesis('symbol-exists', {}));
-    expect(verdict.verified).toBe(false);
-    expect(verdict.reason).toContain('symbolName is required');
+  test('symbol-exists: missing symbolName abstains (A2 — misconfiguration is not a failure)', () => {
+    const response = verifyResponse(makeHypothesis('symbol-exists', {}));
+    expect(isAbstention(response)).toBe(true);
+    if (isAbstention(response)) {
+      expect(response.reason).toBe('insufficient_data');
+      expect(response.prerequisites?.join(' ')).toContain('symbolName');
+    }
   });
 
   // --- function-signature ---
@@ -144,10 +154,28 @@ export type UserId = string;
 
   // --- unknown pattern ---
 
-  test('unknown pattern returns error', () => {
-    const verdict = verify(makeHypothesis('unknown-pattern'));
+  test('unknown pattern abstains as out_of_domain', () => {
+    const response = verifyResponse(makeHypothesis('unknown-pattern'));
+    expect(isAbstention(response)).toBe(true);
+    if (isAbstention(response)) {
+      expect(response.reason).toBe('out_of_domain');
+      expect(response.prerequisites?.join(' ')).toContain('Unknown pattern');
+    }
+  });
+
+  // --- opinion orientation (SL fusion input) ---
+
+  test('failing verdict carries disbelief, not belief', () => {
+    const verdict = verify(makeHypothesis('symbol-exists', { symbolName: 'nonExistent' }));
     expect(verdict.verified).toBe(false);
-    expect(verdict.reason).toContain('Unknown pattern');
+    expect(verdict.opinion).toBeDefined();
+    expect(verdict.opinion!.disbelief).toBeGreaterThan(verdict.opinion!.belief);
+  });
+
+  test('passing verdict carries belief', () => {
+    const verdict = verify(makeHypothesis('symbol-exists', { symbolName: 'greet' }));
+    expect(verdict.verified).toBe(true);
+    expect(verdict.opinion!.belief).toBeGreaterThan(verdict.opinion!.disbelief);
   });
 
   // --- file hashes ---

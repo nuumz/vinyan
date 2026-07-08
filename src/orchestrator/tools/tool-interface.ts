@@ -84,11 +84,7 @@ export interface ToolContext {
    * is available. Distinct from `onDelegate`: does NOT spawn a full child
    * pipeline, just a single cross-model LLM call with a capped budget.
    */
-  onConsult?: (req: {
-    question: string;
-    context?: string;
-    requestedTokens?: number;
-  }) => Promise<ToolResult>;
+  onConsult?: (req: { question: string; context?: string; requestedTokens?: number }) => Promise<ToolResult>;
   /**
    * Phase 7c-2: plan_update hook. The agent loop binds this to its
    * `SessionProgress.recordPlanUpdate` so the control tool can install a new

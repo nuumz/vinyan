@@ -2,14 +2,11 @@
  * LocalOracleGates tests — drift detection via OracleAccuracyStore.
  */
 
-import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { MigrationRunner, ALL_MIGRATIONS } from '../../../src/db/migrations/index.ts';
+import { describe, expect, test } from 'bun:test';
+import { ALL_MIGRATIONS, MigrationRunner } from '../../../src/db/migrations/index.ts';
 import { OracleAccuracyStore } from '../../../src/db/oracle-accuracy-store.ts';
-import {
-  LocalOracleGates,
-  type LocalOracleProfile,
-} from '../../../src/orchestrator/profile/local-oracle-gates.ts';
+import { LocalOracleGates, type LocalOracleProfile } from '../../../src/orchestrator/profile/local-oracle-gates.ts';
 
 function freshDb(): Database {
   const db = new Database(':memory:');
@@ -27,12 +24,7 @@ function mkProfile(oracleName: string): LocalOracleProfile {
   };
 }
 
-function seedResolvedVerdicts(
-  db: Database,
-  oracleName: string,
-  correct: number,
-  wrong: number,
-): void {
+function seedResolvedVerdicts(db: Database, oracleName: string, correct: number, wrong: number): void {
   const now = Date.now();
   let seq = 0;
   const insert = db.prepare(
@@ -41,24 +33,10 @@ function seedResolvedVerdicts(
      VALUES (?, ?, ?, 'pass', 0.9, 'deterministic', ?, '[]', ?, ?)`,
   );
   for (let i = 0; i < correct; i++) {
-    insert.run(
-      `r-${oracleName}-c-${seq++}`,
-      oracleName,
-      `gr-${oracleName}-c-${i}`,
-      now,
-      'confirmed_correct',
-      now,
-    );
+    insert.run(`r-${oracleName}-c-${seq++}`, oracleName, `gr-${oracleName}-c-${i}`, now, 'confirmed_correct', now);
   }
   for (let i = 0; i < wrong; i++) {
-    insert.run(
-      `r-${oracleName}-w-${seq++}`,
-      oracleName,
-      `gr-${oracleName}-w-${i}`,
-      now,
-      'confirmed_wrong',
-      now,
-    );
+    insert.run(`r-${oracleName}-w-${seq++}`, oracleName, `gr-${oracleName}-w-${i}`, now, 'confirmed_wrong', now);
   }
 }
 

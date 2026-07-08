@@ -8,12 +8,12 @@
  */
 
 export type ToolFailureType =
-  | 'not_found'     // command/app not found
-  | 'permission'    // permission denied
-  | 'timeout'       // execution timeout
-  | 'syntax'        // command syntax error
-  | 'network'       // connection error
-  | 'resource'      // resource busy/unavailable
+  | 'not_found' // command/app not found
+  | 'permission' // permission denied
+  | 'timeout' // execution timeout
+  | 'syntax' // command syntax error
+  | 'network' // connection error
+  | 'resource' // resource busy/unavailable
   | 'unknown';
 
 export interface ToolFailureAnalysis {
@@ -55,37 +55,21 @@ const RULES: ClassificationRule[] = [
   },
   // Permission denied — LLM can suggest alternative approach
   {
-    patterns: [
-      /permission denied/i,
-      /EPERM/,
-      /EACCES/,
-      /operation not permitted/i,
-      /access is denied/i,
-    ],
+    patterns: [/permission denied/i, /EPERM/, /EACCES/, /operation not permitted/i, /access is denied/i],
     type: 'permission',
     recoverable: true,
     retryable: false,
   },
   // Timeout — retry might help
   {
-    patterns: [
-      /timed? ?out/i,
-      /ETIMEDOUT/,
-      /deadline exceeded/i,
-    ],
+    patterns: [/timed? ?out/i, /ETIMEDOUT/, /deadline exceeded/i],
     type: 'timeout',
     recoverable: false,
     retryable: true,
   },
   // Network — retry might help
   {
-    patterns: [
-      /connection refused/i,
-      /ECONNREFUSED/,
-      /ECONNRESET/,
-      /network.*(unreachable|error)/i,
-      /DNS.*failed/i,
-    ],
+    patterns: [/connection refused/i, /ECONNREFUSED/, /ECONNRESET/, /network.*(unreachable|error)/i, /DNS.*failed/i],
     type: 'network',
     recoverable: false,
     retryable: true,
@@ -106,12 +90,7 @@ const RULES: ClassificationRule[] = [
   },
   // Resource busy — retry might help
   {
-    patterns: [
-      /resource busy/i,
-      /EBUSY/,
-      /already in use/i,
-      /lock/i,
-    ],
+    patterns: [/resource busy/i, /EBUSY/, /already in use/i, /lock/i],
     type: 'resource',
     recoverable: false,
     retryable: true,

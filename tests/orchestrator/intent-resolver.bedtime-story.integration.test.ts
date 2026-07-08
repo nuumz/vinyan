@@ -17,18 +17,13 @@
  * No verifier tier, no extra LLM calls — the fix attacks the root cause.
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import {
   clearIntentResolverCache,
-  resolveIntent,
   type IntentResolverDeps,
+  resolveIntent,
 } from '../../src/orchestrator/intent-resolver.ts';
-import type {
-  LLMProvider,
-  SemanticTaskUnderstanding,
-  TaskInput,
-  Turn,
-} from '../../src/orchestrator/types.ts';
+import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
+import type { LLMProvider, SemanticTaskUnderstanding, TaskInput, Turn } from '../../src/orchestrator/types.ts';
 
 /**
  * Provider that throws if invoked. The bedtime-story path must NEVER call
@@ -39,9 +34,7 @@ const throwingProvider: LLMProvider = {
   id: 'must-not-be-called',
   tier: 'balanced',
   async generate() {
-    throw new Error(
-      'LLM should not be called — deterministic creative-deliverable pre-rule must short-circuit',
-    );
+    throw new Error('LLM should not be called — deterministic creative-deliverable pre-rule must short-circuit');
   },
 };
 
@@ -62,9 +55,7 @@ function makeInput(goal: string, overrides?: Partial<TaskInput>): TaskInput {
  * — without the deterministic pre-rule — pushed the resolver into the
  * conversational shortcircuit at confidence 0.95.
  */
-function makeUnderstanding(
-  over: Partial<SemanticTaskUnderstanding> = {},
-): SemanticTaskUnderstanding {
+function makeUnderstanding(over: Partial<SemanticTaskUnderstanding> = {}): SemanticTaskUnderstanding {
   return {
     rawGoal: over.rawGoal ?? '',
     taskDomain: 'conversational',
@@ -181,10 +172,7 @@ describe('intent resolver — short-affirmative continuation fix', () => {
 
     const turns: Turn[] = [
       userTurn(0, 'ช่วยเขียนนิยายก่อนนอน สำหรับกล่อมลูกนอนให้สัก2บท'),
-      assistantTurn(
-        1,
-        'รับทราบครับ ผมจะส่งต่อให้ novelist เขียนนิทานก่อนนอนที่แสนอบอุ่นให้ทันทีครับ',
-      ),
+      assistantTurn(1, 'รับทราบครับ ผมจะส่งต่อให้ novelist เขียนนิทานก่อนนอนที่แสนอบอุ่นให้ทันทีครับ'),
     ];
 
     const result = await resolveIntent(makeInput('จัดการให้เลย', { id: 'task-followup' }), {

@@ -2,11 +2,7 @@
  * Embedding provider contract + helpers (plan commit E).
  */
 import { describe, expect, it } from 'bun:test';
-import {
-  cosineSimilarity,
-  embeddingToBuffer,
-  NullEmbeddingProvider,
-} from '../../src/memory/embedding-provider.ts';
+import { cosineSimilarity, embeddingToBuffer, NullEmbeddingProvider } from '../../src/memory/embedding-provider.ts';
 
 describe('NullEmbeddingProvider', () => {
   it('returns zero vectors of declared dimension', async () => {
@@ -79,11 +75,7 @@ describe('embeddingToBuffer', () => {
     const buf = embeddingToBuffer(vec);
     expect(buf.length).toBe(12); // 3 floats * 4 bytes
     // Round-trip: read back as Float32Array
-    const roundTrip = new Float32Array(
-      buf.buffer,
-      buf.byteOffset,
-      buf.byteLength / 4,
-    );
+    const roundTrip = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
     expect(Array.from(roundTrip)).toEqual([1.0, 2.0, 3.0]);
   });
 

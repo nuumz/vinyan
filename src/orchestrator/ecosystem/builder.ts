@@ -16,16 +16,15 @@ import { CommitmentStore } from '../../db/commitment-store.ts';
 import { TeamStore } from '../../db/team-store.ts';
 import { VolunteerStore } from '../../db/volunteer-store.ts';
 import type { ReasoningEngine } from '../types.ts';
-
+import type { TaskFacts } from './commitment-bridge.ts';
 import { CommitmentLedger } from './commitment-ledger.ts';
 import { DepartmentIndex, type DepartmentSeed } from './department.ts';
-import { EcosystemCoordinator, type CoordinatorTimerImpl } from './ecosystem-coordinator.ts';
+import { type CoordinatorTimerImpl, EcosystemCoordinator } from './ecosystem-coordinator.ts';
 import { HelpfulnessTracker } from './helpfulness-tracker.ts';
 import { RuntimeStateManager } from './runtime-state.ts';
 import { TeamManager } from './team.ts';
 import { TeamBlackboardFs } from './team-blackboard-fs.ts';
 import { VolunteerRegistry } from './volunteer-protocol.ts';
-import type { TaskFacts } from './commitment-bridge.ts';
 
 export interface BuildEcosystemConfig {
   readonly db: Database;
@@ -76,13 +75,8 @@ export function buildEcosystem(config: BuildEcosystemConfig): EcosystemBundle {
     now,
   });
 
-  const fsBlackboard = config.workspace
-    ? new TeamBlackboardFs({ root: config.workspace, now })
-    : undefined;
-  const teamStore = new TeamStore(
-    config.db,
-    fsBlackboard ? { fsBlackboard } : {},
-  );
+  const fsBlackboard = config.workspace ? new TeamBlackboardFs({ root: config.workspace, now }) : undefined;
+  const teamStore = new TeamStore(config.db, fsBlackboard ? { fsBlackboard } : {});
   // Migration 040 dropped the legacy `team_blackboard` table; filesystem
   // is now the sole source of truth. No boot-time migration needed.
   const teams = new TeamManager({
@@ -114,9 +108,7 @@ export function buildEcosystem(config: BuildEcosystemConfig): EcosystemBundle {
     engineRoster: config.engineRoster,
     now,
     ...(config.workspace ? { workspace: config.workspace } : {}),
-    ...(config.reconcileIntervalMs !== undefined
-      ? { reconcileIntervalMs: config.reconcileIntervalMs }
-      : {}),
+    ...(config.reconcileIntervalMs !== undefined ? { reconcileIntervalMs: config.reconcileIntervalMs } : {}),
     ...(config.timer ? { timer: config.timer } : {}),
   });
 

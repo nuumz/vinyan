@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import { PATTERN_SCHEMA_SQL } from '../../../src/db/pattern-schema.ts';
 import { PatternStore } from '../../../src/db/pattern-store.ts';
-import { DecompositionLearner, computeDagShapeHash } from '../../../src/orchestrator/replan/decomposition-learner.ts';
+import { computeDagShapeHash, DecompositionLearner } from '../../../src/orchestrator/replan/decomposition-learner.ts';
 import type { TaskDAG } from '../../../src/orchestrator/types.ts';
 
 function createLearner() {
@@ -93,8 +93,20 @@ describe('DecompositionLearner', () => {
     const dag: TaskDAG = {
       nodes: [
         { id: 'setup', description: 'setup env', targetFiles: ['env.ts'], dependencies: [], assignedOracles: ['type'] },
-        { id: 'impl', description: 'implement', targetFiles: ['main.ts'], dependencies: ['setup'], assignedOracles: ['type', 'test'] },
-        { id: 'verify', description: 'verify', targetFiles: ['test.ts'], dependencies: ['impl'], assignedOracles: ['test'] },
+        {
+          id: 'impl',
+          description: 'implement',
+          targetFiles: ['main.ts'],
+          dependencies: ['setup'],
+          assignedOracles: ['type', 'test'],
+        },
+        {
+          id: 'verify',
+          description: 'verify',
+          targetFiles: ['test.ts'],
+          dependencies: ['impl'],
+          assignedOracles: ['test'],
+        },
       ],
     };
     learner.recordWinningDecomposition('feat::new-feature', dag, 'trace-1');
@@ -116,8 +128,12 @@ describe('DecompositionLearner', () => {
   });
 
   test('computeDagShapeHash is deterministic and ignores file names', () => {
-    const dag1: TaskDAG = { nodes: [{ id: 'n1', description: 'a', targetFiles: ['foo.ts'], dependencies: [], assignedOracles: ['type'] }] };
-    const dag2: TaskDAG = { nodes: [{ id: 'n1', description: 'a', targetFiles: ['bar.ts'], dependencies: [], assignedOracles: ['type'] }] };
+    const dag1: TaskDAG = {
+      nodes: [{ id: 'n1', description: 'a', targetFiles: ['foo.ts'], dependencies: [], assignedOracles: ['type'] }],
+    };
+    const dag2: TaskDAG = {
+      nodes: [{ id: 'n1', description: 'a', targetFiles: ['bar.ts'], dependencies: [], assignedOracles: ['type'] }],
+    };
     // Same structure, different files → same hash
     expect(computeDagShapeHash(dag1)).toBe(computeDagShapeHash(dag2));
   });

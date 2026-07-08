@@ -12,10 +12,7 @@
  * Design ref: docs/architecture/decisions.md §D19
  */
 import { describe, expect, test } from 'bun:test';
-import {
-  LLMReasoningEngine,
-  ReasoningEngineRegistry,
-} from '../../../src/orchestrator/llm/llm-reasoning-engine.ts';
+import { LLMReasoningEngine, ReasoningEngineRegistry } from '../../../src/orchestrator/llm/llm-reasoning-engine.ts';
 import {
   createMockProvider,
   createMockReasoningEngine,
@@ -26,7 +23,7 @@ import type { RERequest, ReasoningEngine } from '../../../src/orchestrator/types
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeRERequest(overrides: Partial<RERequest> = {}): RERequest {
+function makeReRequest(overrides: Partial<RERequest> = {}): RERequest {
   return {
     systemPrompt: 'You are a test assistant.',
     userPrompt: 'Do a thing.',
@@ -36,7 +33,7 @@ function makeRERequest(overrides: Partial<RERequest> = {}): RERequest {
 }
 
 /** A minimal non-LLM RE that returns a fixed response — simulates a future symbolic solver. */
-function makeSymbolicRE(id: string, capabilities: string[] = ['reasoning']): ReasoningEngine {
+function makeSymbolicRe(id: string, capabilities: string[] = ['reasoning']): ReasoningEngine {
   return {
     id,
     engineType: 'symbolic',
@@ -68,7 +65,7 @@ describe('ReasoningEngineRegistry: register / get / listEngines', () => {
     const reg = new ReasoningEngineRegistry();
     reg.register(createMockReasoningEngine({ id: 'e1', tier: 'fast' }));
     reg.register(createMockReasoningEngine({ id: 'e2', tier: 'balanced' }));
-    reg.register(makeSymbolicRE('sym/solver'));
+    reg.register(makeSymbolicRe('sym/solver'));
     expect(reg.listEngines()).toHaveLength(3);
   });
 
@@ -116,8 +113,10 @@ describe('ReasoningEngineRegistry: selectForRoutingLevel', () => {
 describe('ReasoningEngineRegistry: selectByCapability', () => {
   test('returns engine that has all required capabilities', () => {
     const reg = new ReasoningEngineRegistry();
-    reg.register(createMockReasoningEngine({ id: 'llm/general', tier: 'fast', capabilities: ['code-generation', 'reasoning'] }));
-    reg.register(makeSymbolicRE('sym/math', ['reasoning', 'symbolic-math']));
+    reg.register(
+      createMockReasoningEngine({ id: 'llm/general', tier: 'fast', capabilities: ['code-generation', 'reasoning'] }),
+    );
+    reg.register(makeSymbolicRe('sym/math', ['reasoning', 'symbolic-math']));
 
     const result = reg.selectByCapability(['symbolic-math']);
     expect(result!.id).toBe('sym/math');
@@ -149,7 +148,9 @@ describe('ReasoningEngineRegistry: selectByCapability', () => {
   test('requires ALL listed capabilities (conjunction, not disjunction)', () => {
     const reg = new ReasoningEngineRegistry();
     reg.register(createMockReasoningEngine({ id: 'code-only', tier: 'fast', capabilities: ['code-generation'] }));
-    reg.register(createMockReasoningEngine({ id: 'both', tier: 'fast', capabilities: ['code-generation', 'reasoning'] }));
+    reg.register(
+      createMockReasoningEngine({ id: 'both', tier: 'fast', capabilities: ['code-generation', 'reasoning'] }),
+    );
 
     expect(reg.selectByCapability(['code-generation', 'reasoning'])!.id).toBe('both');
     expect(reg.selectByCapability(['code-generation', 'time-travel'])).toBeUndefined();
@@ -216,20 +217,24 @@ describe('ReasoningEngineRegistry.fromLLMRegistry', () => {
 describe('LLMReasoningEngine adapter', () => {
   test('execute() returns REResponse with correct terminationReason', async () => {
     const engine = createMockReasoningEngine({ id: 'test', stopReason: 'end_turn' });
-    const res = await engine.execute(makeRERequest());
+    const res = await engine.execute(makeReRequest());
     expect(res.terminationReason).toBe('completed');
     expect(res.engineId).toBe('test');
   });
 
   test('stopReason "tool_use" maps to terminationReason "tool_use"', async () => {
-    const engine = createMockReasoningEngine({ id: 'test', stopReason: 'tool_use', responseToolCalls: [{ id: 't1', tool: 'read_file', parameters: {} }] });
-    const res = await engine.execute(makeRERequest());
+    const engine = createMockReasoningEngine({
+      id: 'test',
+      stopReason: 'tool_use',
+      responseToolCalls: [{ id: 't1', tool: 'read_file', parameters: {} }],
+    });
+    const res = await engine.execute(makeReRequest());
     expect(res.terminationReason).toBe('tool_use');
   });
 
   test('stopReason "max_tokens" maps to terminationReason "limit_reached"', async () => {
     const engine = createMockReasoningEngine({ id: 'test', stopReason: 'max_tokens' });
-    const res = await engine.execute(makeRERequest());
+    const res = await engine.execute(makeReRequest());
     expect(res.terminationReason).toBe('limit_reached');
   });
 
@@ -250,7 +255,9 @@ describe('LLMReasoningEngine adapter', () => {
     const scripted = createScriptedMockReasoningEngine([
       { content: 'result', stopReason: 'end_turn', thinking: 'I reasoned...' },
     ]);
-    const res = await scripted.execute(makeRERequest({ providerOptions: { thinking: { type: 'enabled', budgetTokens: 500 } } }));
+    const res = await scripted.execute(
+      makeReRequest({ providerOptions: { thinking: { type: 'enabled', budgetTokens: 500 } } }),
+    );
     expect(res.thinking).toBe('I reasoned...');
   });
 });
@@ -270,14 +277,20 @@ describe('Non-LLM RE dispatch through ReasoningEngineRegistry', () => {
       tier: 'fast',
       async execute(req) {
         capturedReq = req; // capture what the registry actually passed through
-        return { content: 'ok', toolCalls: [], tokensUsed: { input: 0, output: 0 }, engineId: 'sym/spy', terminationReason: 'completed' };
+        return {
+          content: 'ok',
+          toolCalls: [],
+          tokensUsed: { input: 0, output: 0 },
+          engineId: 'sym/spy',
+          terminationReason: 'completed',
+        };
       },
     };
     reg.register(spy);
 
     const engine = reg.selectByCapability(['verification'])!;
     expect(engine.engineType).toBe('symbolic'); // registry picked the right engine
-    await engine.execute(makeRERequest({ userPrompt: 'verify this specifically' }));
+    await engine.execute(makeReRequest({ userPrompt: 'verify this specifically' }));
 
     expect(capturedReq).toBeDefined(); // execute() was actually called
     expect(capturedReq!.userPrompt).toBe('verify this specifically'); // request passed through intact
@@ -286,8 +299,10 @@ describe('Non-LLM RE dispatch through ReasoningEngineRegistry', () => {
 
   test('registry selects non-LLM RE over LLM when it uniquely has required capability', async () => {
     const reg = new ReasoningEngineRegistry();
-    reg.register(createMockReasoningEngine({ id: 'llm/general', tier: 'fast', capabilities: ['code-generation', 'reasoning'] }));
-    reg.register(makeSymbolicRE('sym/oracle', ['oracle-verification']));
+    reg.register(
+      createMockReasoningEngine({ id: 'llm/general', tier: 'fast', capabilities: ['code-generation', 'reasoning'] }),
+    );
+    reg.register(makeSymbolicRe('sym/oracle', ['oracle-verification']));
 
     const engine = reg.selectByCapability(['oracle-verification']);
     expect(engine!.id).toBe('sym/oracle');
@@ -296,8 +311,14 @@ describe('Non-LLM RE dispatch through ReasoningEngineRegistry', () => {
 
   test('mixed registry: LLM fallback when non-LLM lacks required cap', () => {
     const reg = new ReasoningEngineRegistry();
-    reg.register(createMockReasoningEngine({ id: 'llm/full', tier: 'fast', capabilities: ['code-generation', 'reasoning', 'tool-use'] }));
-    reg.register(makeSymbolicRE('sym/narrow', ['symbolic-math']));
+    reg.register(
+      createMockReasoningEngine({
+        id: 'llm/full',
+        tier: 'fast',
+        capabilities: ['code-generation', 'reasoning', 'tool-use'],
+      }),
+    );
+    reg.register(makeSymbolicRe('sym/narrow', ['symbolic-math']));
 
     const engine = reg.selectByCapability(['code-generation']);
     expect(engine!.id).toBe('llm/full');

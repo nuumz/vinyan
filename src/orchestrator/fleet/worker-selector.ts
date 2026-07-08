@@ -15,9 +15,9 @@ import type { WorkerStore } from '../../db/worker-store.ts';
 import type { BudgetEnforcer } from '../../economy/budget-enforcer.ts';
 import { costAwareScore } from '../../economy/cost-aware-scorer.ts';
 import type { CostPredictor } from '../../economy/cost-predictor.ts';
-import type { CapabilityModel } from './capability-model.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../data-gate.ts';
-import type { RoutingLevel, TaskFingerprint, EngineProfile, EngineSelectionResult } from '../types.ts';
+import type { EngineProfile, EngineSelectionResult, RoutingLevel, TaskFingerprint } from '../types.ts';
+import type { CapabilityModel } from './capability-model.ts';
 
 /** Default cycle duration for staleness penalty (10 minutes). */
 const DEFAULT_CYCLE_DURATION_MS = 600_000;

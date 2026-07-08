@@ -296,20 +296,22 @@ describe('EventForwarder', () => {
     const forwarder = new EventForwarder({
       bus,
       instanceId: 'local-1',
-      getPeers: () => [{
-        url: 'http://peer-1:3928',
-        card: { name: 'peer', url: 'http://peer-1:3928', version: '1.0' } as any,
-        ecpExtension: null,
-        isVinyanPeer: true,
-        discoveredAt: Date.now(),
-      }],
+      getPeers: () => [
+        {
+          url: 'http://peer-1:3928',
+          card: { name: 'peer', url: 'http://peer-1:3928', version: '1.0' } as any,
+          ecpExtension: null,
+          isVinyanPeer: true,
+          discoveredAt: Date.now(),
+        },
+      ],
       forwardTimeoutMs: 100,
     });
 
     forwarder.forward('test-event', { data: 'hello' });
 
     // Wait for async operations to settle
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, 200));
 
     expect(forwarded.length).toBeGreaterThanOrEqual(1);
     expect((forwarded[0] as any).event).toBe('test-event');
@@ -525,10 +527,15 @@ describe('SandboxManager', () => {
     const mockProc = {
       exited: Promise.resolve(0),
       stdout: new ReadableStream({
-        start(controller) { controller.enqueue(new TextEncoder().encode('ok')); controller.close(); },
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('ok'));
+          controller.close();
+        },
       }),
       stderr: new ReadableStream({
-        start(controller) { controller.close(); },
+        start(controller) {
+          controller.close();
+        },
       }),
       pid: 12345,
       kill: () => {},
@@ -571,7 +578,9 @@ describe('SandboxManager', () => {
         },
       }),
       stderr: new ReadableStream({
-        start(controller) { controller.close(); },
+        start(controller) {
+          controller.close();
+        },
       }),
       pid: 12345,
       kill: () => {},
@@ -593,8 +602,16 @@ describe('SandboxManager', () => {
   test('execute handles timeout', async () => {
     const mockProc = {
       exited: new Promise<number>(() => {}), // Never resolves
-      stdout: new ReadableStream({ start(c) { c.close(); } }),
-      stderr: new ReadableStream({ start(c) { c.close(); } }),
+      stdout: new ReadableStream({
+        start(c) {
+          c.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(c) {
+          c.close();
+        },
+      }),
       pid: 12345,
       kill: () => {},
     };
@@ -603,8 +620,16 @@ describe('SandboxManager', () => {
       if (args[0] === 'docker' && args[1] === 'kill') {
         return {
           exited: Promise.resolve(0),
-          stdout: new ReadableStream({ start(c) { c.close(); } }),
-          stderr: new ReadableStream({ start(c) { c.close(); } }),
+          stdout: new ReadableStream({
+            start(c) {
+              c.close();
+            },
+          }),
+          stderr: new ReadableStream({
+            start(c) {
+              c.close();
+            },
+          }),
           pid: 99,
           kill: () => {},
         };
@@ -634,8 +659,17 @@ describe('SandboxManager', () => {
 
     const mockProc = {
       exited: Promise.resolve(0),
-      stdout: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('')); c.close(); } }),
-      stderr: new ReadableStream({ start(c) { c.close(); } }),
+      stdout: new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode(''));
+          c.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(c) {
+          c.close();
+        },
+      }),
       pid: 12345,
       kill: () => {},
     };
@@ -681,8 +715,17 @@ describe('SandboxManager', () => {
     let capturedArgs: string[] = [];
     const mockProc = {
       exited: Promise.resolve(0),
-      stdout: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('')); c.close(); } }),
-      stderr: new ReadableStream({ start(c) { c.close(); } }),
+      stdout: new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode(''));
+          c.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(c) {
+          c.close();
+        },
+      }),
       pid: 12345,
       kill: () => {},
     };
@@ -692,7 +735,10 @@ describe('SandboxManager', () => {
       image: 'custom-sandbox:v2',
       memoryLimit: '1g',
       pidsLimit: 200,
-      spawnFn: ((args: string[]) => { capturedArgs = args; return mockProc; }) as any,
+      spawnFn: ((args: string[]) => {
+        capturedArgs = args;
+        return mockProc;
+      }) as any,
     });
 
     await sandbox.execute('task-custom', ['ls']);
@@ -723,14 +769,18 @@ describe('I17 enforcement in runner', () => {
     };
 
     try {
-      const verdict = await runOracle('test-speculative', {
-        target: 'test',
-        pattern: 'test',
-        workspace: '/tmp',
-      }, {
-        routingLevel: 0,
-        bus: mockBus,
-      });
+      const verdict = await runOracle(
+        'test-speculative',
+        {
+          target: 'test',
+          pattern: 'test',
+          workspace: '/tmp',
+        },
+        {
+          routingLevel: 0,
+          bus: mockBus,
+        },
+      );
 
       expect(verdict.verified).toBe(false);
       expect(verdict.errorCode).toBe('GUARDRAIL_BLOCKED');
@@ -753,13 +803,17 @@ describe('I17 enforcement in runner', () => {
     });
 
     try {
-      const verdict = await runOracle('test-speculative-l1', {
-        target: 'test',
-        pattern: 'test',
-        workspace: '/tmp',
-      }, {
-        routingLevel: 1,
-      });
+      const verdict = await runOracle(
+        'test-speculative-l1',
+        {
+          target: 'test',
+          pattern: 'test',
+          workspace: '/tmp',
+        },
+        {
+          routingLevel: 1,
+        },
+      );
 
       expect(verdict.verified).toBe(false);
       expect(verdict.errorCode).toBe('GUARDRAIL_BLOCKED');
@@ -778,13 +832,17 @@ describe('I17 enforcement in runner', () => {
     });
 
     try {
-      const verdict = await runOracle('test-speculative-l2', {
-        target: 'test',
-        pattern: 'test',
-        workspace: '/tmp',
-      }, {
-        routingLevel: 2,
-      });
+      const verdict = await runOracle(
+        'test-speculative-l2',
+        {
+          target: 'test',
+          pattern: 'test',
+          workspace: '/tmp',
+        },
+        {
+          routingLevel: 2,
+        },
+      );
 
       // Should NOT be GUARDRAIL_BLOCKED — it passed the I17 check
       expect(verdict.errorCode).not.toBe('GUARDRAIL_BLOCKED');
@@ -803,13 +861,17 @@ describe('I17 enforcement in runner', () => {
     });
 
     try {
-      const verdict = await runOracle('test-heuristic', {
-        target: 'test',
-        pattern: 'test',
-        workspace: '/tmp',
-      }, {
-        routingLevel: 0,
-      });
+      const verdict = await runOracle(
+        'test-heuristic',
+        {
+          target: 'test',
+          pattern: 'test',
+          workspace: '/tmp',
+        },
+        {
+          routingLevel: 0,
+        },
+      );
 
       // Should NOT be blocked by I17
       expect(verdict.errorCode).not.toBe('GUARDRAIL_BLOCKED');

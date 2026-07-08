@@ -6,9 +6,16 @@
  * and agent-loop → partitionTranscript → compactionLlm → buildCompactedTranscript.
  */
 import { describe, expect, test } from 'bun:test';
-import type { TaskDAG, TaskInput, PerceptualHierarchy, WorkingMemoryState, RoutingDecision, VerificationHint } from '../../src/orchestrator/types.ts';
-import { executeDAG, type NodeDispatcher, type DAGExecutionResult } from '../../src/orchestrator/dag-executor.ts';
 import { buildCompactedTranscript, partitionTranscript } from '../../src/orchestrator/agent/transcript-compactor.ts';
+import { type DAGExecutionResult, executeDAG, type NodeDispatcher } from '../../src/orchestrator/dag-executor.ts';
+import type {
+  PerceptualHierarchy,
+  RoutingDecision,
+  TaskDAG,
+  TaskInput,
+  VerificationHint,
+  WorkingMemoryState,
+} from '../../src/orchestrator/types.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,12 +87,14 @@ describe('DAG dispatch integration — EO #1+#4', () => {
     const dagResult = await executeDAG(plan, dispatcher);
 
     // Simulate the merge in core-loop.ts
-    const mergedMutations = dagResult.results.flatMap((r) => r.mutations.map((m) => ({
-      file: m.file,
-      content: m.content,
-      diff: m.diff ?? '',
-      explanation: m.explanation ?? '',
-    })));
+    const mergedMutations = dagResult.results.flatMap((r) =>
+      r.mutations.map((m) => ({
+        file: m.file,
+        content: m.content,
+        diff: m.diff ?? '',
+        explanation: m.explanation ?? '',
+      })),
+    );
 
     expect(mergedMutations).toHaveLength(2);
     expect(mergedMutations[0]!.file).toBe('file0.ts');
@@ -117,8 +126,20 @@ describe('DAG dispatch integration — EO #1+#4', () => {
   test('file conflict forces sequential even for independent nodes', async () => {
     const plan: TaskDAG = {
       nodes: [
-        { id: 'a', description: 'edit shared', targetFiles: ['shared.ts'], dependencies: [], assignedOracles: ['type'] },
-        { id: 'b', description: 'also edit shared', targetFiles: ['shared.ts'], dependencies: [], assignedOracles: ['type'] },
+        {
+          id: 'a',
+          description: 'edit shared',
+          targetFiles: ['shared.ts'],
+          dependencies: [],
+          assignedOracles: ['type'],
+        },
+        {
+          id: 'b',
+          description: 'also edit shared',
+          targetFiles: ['shared.ts'],
+          dependencies: [],
+          assignedOracles: ['type'],
+        },
       ],
     };
 

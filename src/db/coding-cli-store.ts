@@ -155,17 +155,13 @@ export class CodingCliStore {
   }
 
   get(id: string): CodingCliSessionRecord | null {
-    const row = this.db
-      .query<SessionRow, [string]>(`SELECT * FROM coding_cli_sessions WHERE id = ?`)
-      .get(id);
+    const row = this.db.query<SessionRow, [string]>(`SELECT * FROM coding_cli_sessions WHERE id = ?`).get(id);
     return row ? rowToSession(row) : null;
   }
 
   getByTaskId(taskId: string): CodingCliSessionRecord[] {
     const rows = this.db
-      .query<SessionRow, [string]>(
-        `SELECT * FROM coding_cli_sessions WHERE task_id = ? ORDER BY started_at DESC`,
-      )
+      .query<SessionRow, [string]>(`SELECT * FROM coding_cli_sessions WHERE task_id = ? ORDER BY started_at DESC`)
       .all(taskId);
     return rows.map(rowToSession);
   }
@@ -242,7 +238,13 @@ export class CodingCliStore {
     });
   }
 
-  resolveApproval(sessionId: string, requestId: string, humanDecision: string, decidedBy: string, decidedAt: number): void {
+  resolveApproval(
+    sessionId: string,
+    requestId: string,
+    humanDecision: string,
+    decidedBy: string,
+    decidedAt: number,
+  ): void {
     this.updateApproval.run({
       $coding_cli_session_id: sessionId,
       $request_id: requestId,
@@ -290,9 +292,9 @@ export class CodingCliStore {
     // SQLite has a hard parameter cap (~999 in default builds); we chunk
     // to keep the query inside that envelope without forcing callers to
     // pre-batch.
-    const CHUNK = 500;
-    for (let start = 0; start < taskIds.length; start += CHUNK) {
-      const slice = taskIds.slice(start, start + CHUNK);
+    const Chunk = 500;
+    for (let start = 0; start < taskIds.length; start += Chunk) {
+      const slice = taskIds.slice(start, start + Chunk);
       const placeholders = slice.map(() => '?').join(',');
       const rows = this.db
         .query<ApprovalRow, string[]>(

@@ -42,7 +42,7 @@ export type PeerTrustLevel = keyof typeof PEER_TRUST_CAPS;
 /** Clamp confidence by tier ceiling (A5: Tiered Trust). */
 export function clampByTier(confidence: number, tier?: string): number {
   if (!tier) return confidence;
-  const cap = TIER_CAPS[tier] ?? TIER_CAPS['heuristic']!;  // Unknown tier → heuristic default (0.9)
+  const cap = TIER_CAPS[tier] ?? TIER_CAPS['heuristic']!; // Unknown tier → heuristic default (0.9)
   return Math.min(confidence, cap);
 }
 
@@ -61,13 +61,9 @@ export function clampByPeerTrust(confidence: number, peerTrust?: PeerTrustLevel)
 }
 
 /** Clamp by tier with A2A safety: untiered A2A verdicts default to 'speculative' (0.4). */
-export function clampByTierWithOrigin(
-  confidence: number,
-  tier?: string,
-  origin?: 'local' | 'a2a' | 'mcp',
-): number {
+export function clampByTierWithOrigin(confidence: number, tier?: string, origin?: 'local' | 'a2a' | 'mcp'): number {
   if (origin === 'a2a' && !tier) {
-    return Math.min(confidence, TIER_CAPS['speculative']!);  // 0.4
+    return Math.min(confidence, TIER_CAPS['speculative']!); // 0.4
   }
   return clampByTier(confidence, tier);
 }
@@ -91,16 +87,13 @@ export function clampFull(confidence: number, tier?: string, transport?: string,
  * feeds back through P = b + u×a, so raw `excess` under-corrects.
  * delta = excess / (1 - baseRate) compensates for the baseRate×Δu term.
  */
-function scaleBeliefByCeiling(
-  opinion: SubjectiveOpinion,
-  ceiling: number,
-): SubjectiveOpinion {
+function scaleBeliefByCeiling(opinion: SubjectiveOpinion, ceiling: number): SubjectiveOpinion {
   const projected = projectedProbability(opinion);
   if (projected <= ceiling) return opinion;
 
   const excess = projected - ceiling;
   const divisor = 1 - opinion.baseRate;
-  const delta = divisor > SL_EPSILON ? excess / divisor : excess;  // guard: baseRate ≈ 1.0
+  const delta = divisor > SL_EPSILON ? excess / divisor : excess; // guard: baseRate ≈ 1.0
   const newBelief = Math.max(0, opinion.belief - delta);
   return {
     belief: newBelief,

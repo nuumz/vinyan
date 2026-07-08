@@ -7,7 +7,7 @@
  * A5 compliant: deterministic engine, highest trust tier.
  * A3 compliant: no LLM in governance path — pure constraint solving.
  */
-import type { ReasoningEngine, RERequest, REResponse } from '../types.ts';
+import type { RERequest, REResponse, ReasoningEngine } from '../types.ts';
 
 export interface Z3EngineConfig {
   /** Path to z3 binary (default: 'z3' from PATH). */

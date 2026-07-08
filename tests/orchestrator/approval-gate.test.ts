@@ -136,7 +136,12 @@ describe('ApprovalGate — idempotency on duplicate slot', () => {
     const gate = new ApprovalGate(bus, 60_000);
     const requiredEvents: Array<{ taskId: string; riskScore: number; reason: string }> = [];
     bus.on('task:approval_required', (p) => requiredEvents.push(p));
-    const dupEvents: Array<{ taskId: string; approvalKey: string; existingRequestedAt: number; ledgerDuplicate: boolean }> = [];
+    const dupEvents: Array<{
+      taskId: string;
+      approvalKey: string;
+      existingRequestedAt: number;
+      ledgerDuplicate: boolean;
+    }> = [];
     bus.on('approval:duplicate_request_ignored', (p) => dupEvents.push(p));
 
     const p1 = gate.requestApproval('task-1', 0.5, 'first');
@@ -200,10 +205,7 @@ describe('ApprovalGate — idempotency on duplicate slot', () => {
   test('clear settles all duplicate waiters as rejected', async () => {
     const bus = createBus();
     const gate = new ApprovalGate(bus, 60_000);
-    const promises = [
-      gate.requestApproval('task-c', 0.5, 'a'),
-      gate.requestApproval('task-c', 0.5, 'b'),
-    ];
+    const promises = [gate.requestApproval('task-c', 0.5, 'a'), gate.requestApproval('task-c', 0.5, 'b')];
     expect(gate.getPending().length).toBe(1);
 
     gate.clear();
@@ -224,7 +226,10 @@ describe('ApprovalGate — idempotency on duplicate slot', () => {
     // Two distinct slots — two events fire.
     expect(requiredEvents.length).toBe(2);
     expect(gate.getPending().length).toBe(2);
-    const keys = gate.getPending().map((p) => p.approvalKey).sort();
+    const keys = gate
+      .getPending()
+      .map((p) => p.approvalKey)
+      .sort();
     expect(keys).toEqual(['default', 'spec']);
 
     // Resolving the default slot does NOT settle the spec slot.

@@ -29,10 +29,7 @@ export function computeTaskUncertainty(input: {
   const taskNovelty = 1.0 - Math.min(1.0, priorTraceCount / 50);
 
   // Weighted aggregate — deterministic signals weighted higher per A5
-  const score = Math.max(0, Math.min(1,
-    planComplexity * 0.60 +
-    taskNovelty * 0.40,
-  ));
+  const score = Math.max(0, Math.min(1, planComplexity * 0.6 + taskNovelty * 0.4));
 
   return {
     score,
@@ -40,8 +37,6 @@ export function computeTaskUncertainty(input: {
       planComplexity,
       priorTraceCount: Math.min(1.0, priorTraceCount / 50),
     },
-    basis: priorTraceCount < 3 ? 'cold-start'
-      : priorTraceCount < 50 ? 'novelty-based'
-      : 'calibrated',
+    basis: priorTraceCount < 3 ? 'cold-start' : priorTraceCount < 50 ? 'novelty-based' : 'calibrated',
   };
 }

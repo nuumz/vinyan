@@ -237,12 +237,7 @@ describe('executePlanPhase — Wave 5.2 preamble → enhancedInput', () => {
 
     const outcome = await executePlanPhase(ctx, makeRouting(), makePerception(), makeUnderstanding(), undefined);
     if (outcome.action !== 'continue') throw new Error('expected continue');
-    expect(outcome.value.enhancedInput?.constraints).toEqual([
-      'USER:first',
-      'PREAMBLE:a',
-      'PREAMBLE:b',
-      'PREAMBLE:c',
-    ]);
+    expect(outcome.value.enhancedInput?.constraints).toEqual(['USER:first', 'PREAMBLE:a', 'PREAMBLE:b', 'PREAMBLE:c']);
   });
 });
 
@@ -309,9 +304,7 @@ describe('executePlanPhase — task:stage_update telemetry', () => {
 
     const input = makeInput();
     const dag: TaskDAG = {
-      nodes: [
-        { id: 'n1', description: 'fallback echo', targetFiles: [], dependencies: [], assignedOracles: [] },
-      ],
+      nodes: [{ id: 'n1', description: 'fallback echo', targetFiles: [], dependencies: [], assignedOracles: [] }],
       isFallback: true,
     } as TaskDAG;
     const ctx = makeContextWithBus(input, dag, bus);
@@ -332,9 +325,7 @@ describe('executePlanPhase — task:stage_update telemetry', () => {
 
     const input = makeInput();
     const dag: TaskDAG = {
-      nodes: [
-        { id: 'n1', description: 'do it', targetFiles: [], dependencies: [], assignedOracles: ['type'] },
-      ],
+      nodes: [{ id: 'n1', description: 'do it', targetFiles: [], dependencies: [], assignedOracles: ['type'] }],
     };
     const ctx = makeContextWithBus(input, dag, bus);
     const routingL1 = { ...makeRouting(), level: 1 } as RoutingDecision;
@@ -424,11 +415,7 @@ describe('executePlanPhase — bounded planning self-repair', () => {
         { id: 'n2', description: 'verify', targetFiles: [], dependencies: ['n1'], assignedOracles: ['type'] },
       ],
     };
-    const { ctx, callCount } = makeContextWithSequence(
-      makeInputWithBudget(60_000),
-      [fallbackDag, validDag],
-      bus,
-    );
+    const { ctx, callCount } = makeContextWithSequence(makeInputWithBudget(60_000), [fallbackDag, validDag], bus);
 
     const outcome = await executePlanPhase(ctx, makeRouting(), makePerception(), makeUnderstanding(), undefined);
     expect(outcome.action).toBe('continue');
@@ -460,11 +447,7 @@ describe('executePlanPhase — bounded planning self-repair', () => {
       nodes: [{ id: 'fb', description: 'echo', targetFiles: [], dependencies: [], assignedOracles: [] }],
       isFallback: true,
     };
-    const { ctx, callCount } = makeContextWithSequence(
-      makeInputWithBudget(60_000),
-      [fallbackDag, fallbackDag],
-      bus,
-    );
+    const { ctx, callCount } = makeContextWithSequence(makeInputWithBudget(60_000), [fallbackDag, fallbackDag], bus);
 
     const outcome = await executePlanPhase(ctx, makeRouting(), makePerception(), makeUnderstanding(), undefined);
     expect(outcome.action).toBe('continue');
@@ -494,12 +477,9 @@ describe('executePlanPhase — bounded planning self-repair', () => {
     };
     // Remaining = 60_000 - 55_000 = 5_000 ms < 15_000 ms headroom → skip.
     const budgetMs = 60_000;
-    const { ctx, callCount } = makeContextWithSequence(
-      makeInputWithBudget(budgetMs),
-      [fallbackDag],
-      bus,
-      { startTime: Date.now() - (budgetMs - 5_000) },
-    );
+    const { ctx, callCount } = makeContextWithSequence(makeInputWithBudget(budgetMs), [fallbackDag], bus, {
+      startTime: Date.now() - (budgetMs - 5_000),
+    });
 
     const outcome = await executePlanPhase(ctx, makeRouting(), makePerception(), makeUnderstanding(), undefined);
     expect(outcome.action).toBe('continue');

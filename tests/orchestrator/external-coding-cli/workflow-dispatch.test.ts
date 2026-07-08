@@ -10,17 +10,17 @@
  *   - schema accepts the new strategy in WorkflowStepSchema.
  */
 import { describe, expect, test } from 'bun:test';
-import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
 import { createBus } from '../../../src/core/bus.ts';
+import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
+import { CodingCliVerifier } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-verifier.ts';
 import {
   CodingCliConfigSchema,
   CodingCliWorkflowStrategy,
   ExternalCodingCliController,
 } from '../../../src/orchestrator/external-coding-cli/index.ts';
-import { CodingCliVerifier } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-verifier.ts';
-import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
-import { WorkflowStepSchema } from '../../../src/orchestrator/workflow/types.ts';
 import type { TaskInput } from '../../../src/orchestrator/types.ts';
+import { WorkflowStepSchema } from '../../../src/orchestrator/workflow/types.ts';
+import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 import { FakeAdapter, makeFakeResultBlock } from './fake-adapter.ts';
 
 function baseTaskInput(overrides: Partial<TaskInput> = {}): TaskInput {
@@ -56,12 +56,13 @@ describe('workflow executor dispatch — external-coding-cli', () => {
       bus,
       // No codingCliStrategy injected — simulate misconfigured deployment.
       llmRegistry: undefined,
-      executeTask: async () => ({
-        status: 'failed',
-        answer: '',
-        mutations: [],
-        trace: { tokensConsumed: 0 },
-      } as never),
+      executeTask: async () =>
+        ({
+          status: 'failed',
+          answer: '',
+          mutations: [],
+          trace: { tokensConsumed: 0 },
+        }) as never,
       // Provide a tiny stub plan via the planner — instead of going through
       // the planner, we'll exercise dispatch directly by invoking the
       // exported function via a mocked planner. For clarity we go via a

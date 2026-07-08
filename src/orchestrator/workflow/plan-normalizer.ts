@@ -167,9 +167,7 @@ function clampRetryBudget(step: WorkflowStep): number {
  *     non-trivial input shape; not a safe drop-in for a failed
  *     delegate-sub-agent.
  */
-function normalizeExplicitFallback(
-  fallback: WorkflowStepStrategy | undefined,
-): WorkflowStepStrategy | undefined {
+function normalizeExplicitFallback(fallback: WorkflowStepStrategy | undefined): WorkflowStepStrategy | undefined {
   if (!fallback) return undefined;
   if (!DELEGATE_FALLBACK_ALLOWED.has(fallback)) return undefined;
   return fallback;

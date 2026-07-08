@@ -5,17 +5,7 @@
  * Right panel: market phase indicator, engine trust table.
  */
 
-import {
-  ANSI,
-  bold,
-  color,
-  dim,
-  gauge,
-  padEnd,
-  panel,
-  sideBySide,
-  sparkline,
-} from '../renderer.ts';
+import { ANSI, bold, color, dim, gauge, padEnd, panel, sideBySide, sparkline } from '../renderer.ts';
 import type { TUIState } from '../types.ts';
 
 export const ECONOMY_PANEL_COUNT = 2;
@@ -52,7 +42,12 @@ export function renderEconomy(state: TUIState): string {
     const leftWidth = Math.floor(termWidth * 0.5);
     const rightWidth = termWidth - leftWidth - 1;
     const panelHeight = termHeight - 4;
-    const left = panel('Budget', dim('Economy OS not enabled. Set economy.enabled = true in vinyan.json.'), leftWidth, panelHeight);
+    const left = panel(
+      'Budget',
+      dim('Economy OS not enabled. Set economy.enabled = true in vinyan.json.'),
+      leftWidth,
+      panelHeight,
+    );
     const right = panel('Market & Trust', '', rightWidth, panelHeight);
     return sideBySide(left, right);
   }
@@ -80,7 +75,9 @@ function renderBudgetPanel(economy: EconomyDisplayState, width: number, height: 
   for (const w of economy.budgetWindows) {
     const gaugeColor = w.pct >= 90 ? ANSI.red : w.pct >= 70 ? ANSI.yellow : ANSI.green;
     const gaugeWidth = Math.max(10, width - 30);
-    lines.push(`  ${padEnd(w.label, 10)} ${gauge(w.pct / 100, gaugeWidth)} ${color(`${w.pct.toFixed(0)}%`, gaugeColor)}`);
+    lines.push(
+      `  ${padEnd(w.label, 10)} ${gauge(w.pct / 100, gaugeWidth)} ${color(`${w.pct.toFixed(0)}%`, gaugeColor)}`,
+    );
     lines.push(`  ${dim(`$${w.spent.toFixed(4)} / $${w.limit.toFixed(2)}`)}`);
   }
   if (economy.budgetWindows.length === 0) {
@@ -136,10 +133,13 @@ function renderMarketTrustPanel(economy: EconomyDisplayState, width: number, hei
       const scorePct = engine.score * 100;
       const scoreColor = scorePct >= 70 ? ANSI.green : scorePct >= 40 ? ANSI.yellow : ANSI.red;
       const bar = gauge(engine.score, barWidth);
-      const name = engine.provider.length > nameWidth
-        ? engine.provider.slice(0, nameWidth - 2) + '..'
-        : padEnd(engine.provider, nameWidth);
-      lines.push(`  ${name} ${bar} ${color(engine.score.toFixed(2), scoreColor)} (${engine.successes}/${engine.total})`);
+      const name =
+        engine.provider.length > nameWidth
+          ? engine.provider.slice(0, nameWidth - 2) + '..'
+          : padEnd(engine.provider, nameWidth);
+      lines.push(
+        `  ${name} ${bar} ${color(engine.score.toFixed(2), scoreColor)} (${engine.successes}/${engine.total})`,
+      );
     }
     if (economy.engineTrust.length > 15) {
       lines.push(dim(`  ... and ${economy.engineTrust.length - 15} more`));

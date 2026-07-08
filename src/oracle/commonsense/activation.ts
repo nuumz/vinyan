@@ -194,7 +194,7 @@ export function shouldActivate(
   // 5. Surprise gate (Bernoulli-variance proxy)
   const p = clampUnit(input.predictionAccuracy);
   const sigma = Math.sqrt(p * (1 - p));
-  const error = input.predictionError ?? (1 - p);
+  const error = input.predictionError ?? 1 - p;
   const surprised = error > sigma * config.sigmaMultiplier;
 
   debouncer.observe(key, surprised);

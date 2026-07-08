@@ -5,18 +5,18 @@
  * Axioms: A2 (first-class uncertainty), A3 (deterministic governance), A5 (tiered trust)
  */
 import { describe, expect, test } from 'bun:test';
+import { fromScalar } from '../../src/core/subjective-opinion.ts';
+import type { OracleVerdict } from '../../src/core/types.ts';
 import {
   computeAggregateConfidence,
   computeSLAggregate,
   deriveEpistemicDecision,
+  type EpistemicGateDecision,
+  type FusionInput,
   generateResolutionHints,
   THRESHOLDS,
   TIER_WEIGHTS,
-  type EpistemicGateDecision,
-  type FusionInput,
 } from '../../src/gate/epistemic-decision.ts';
-import { fromScalar } from '../../src/core/subjective-opinion.ts';
-import type { OracleVerdict } from '../../src/core/types.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -41,12 +41,12 @@ describe('deriveEpistemicDecision', () => {
   });
 
   test("returns 'allow-with-caveats' for adequate confidence", () => {
-    expect(deriveEpistemicDecision(0.70, false)).toBe('allow-with-caveats');
-    expect(deriveEpistemicDecision(0.60, false)).toBe('allow-with-caveats');
+    expect(deriveEpistemicDecision(0.7, false)).toBe('allow-with-caveats');
+    expect(deriveEpistemicDecision(0.6, false)).toBe('allow-with-caveats');
   });
 
   test("returns 'uncertain' for low confidence", () => {
-    expect(deriveEpistemicDecision(0.40, false)).toBe('uncertain');
+    expect(deriveEpistemicDecision(0.4, false)).toBe('uncertain');
     expect(deriveEpistemicDecision(0.25, false)).toBe('uncertain');
   });
 

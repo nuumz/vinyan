@@ -17,11 +17,7 @@
  */
 import type { VinyanBus } from '../../core/bus.ts';
 import type { SimpleSkill } from './loader.ts';
-import {
-  detectExplicitInvocation,
-  matchSkillsForTask,
-  type MatchOptions,
-} from './matcher.ts';
+import { detectExplicitInvocation, type MatchOptions, matchSkillsForTask } from './matcher.ts';
 import type { SimpleSkillRegistry } from './registry.ts';
 
 export interface ResolveSimpleSkillsOptions {
@@ -47,9 +43,7 @@ export interface ResolvedSimpleSkills {
  * - Matcher errors degrade to "no bodies inlined" — boot never fails because
  *   of a single broken skill (A9).
  */
-export function resolveSimpleSkillsForDispatch(
-  opts: ResolveSimpleSkillsOptions,
-): ResolvedSimpleSkills {
+export function resolveSimpleSkillsForDispatch(opts: ResolveSimpleSkillsOptions): ResolvedSimpleSkills {
   if (!opts.registry) return { simpleSkills: [], simpleSkillBodies: [] };
   const snapshot = opts.registry.getForAgent(opts.agentId);
   if (snapshot.length === 0) return { simpleSkills: [], simpleSkillBodies: [] };
@@ -60,9 +54,7 @@ export function resolveSimpleSkillsForDispatch(
     if (explicit) {
       bodies = [explicit];
     } else {
-      bodies = matchSkillsForTask(opts.goal, snapshot, opts.matcherOpts ?? {}).map(
-        (m) => m.skill,
-      );
+      bodies = matchSkillsForTask(opts.goal, snapshot, opts.matcherOpts ?? {}).map((m) => m.skill);
     }
   } catch (err) {
     console.warn(`[skill:simple-match] matcher failed: ${(err as Error).message}`);
@@ -119,7 +111,7 @@ function renderAvailable(skills: readonly SimpleSkill[]): string {
 function renderActive(bodies: readonly SimpleSkill[]): string {
   const lines = ['[ACTIVE SKILLS]'];
   lines.push(
-    "Bodies of skills matched to this task. Apply when the situation fits the skill's \"when to use\" guidance.",
+    'Bodies of skills matched to this task. Apply when the situation fits the skill\'s "when to use" guidance.',
   );
   for (const skill of bodies) {
     lines.push('');

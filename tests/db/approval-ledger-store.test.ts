@@ -13,9 +13,9 @@
  */
 import { Database } from 'bun:sqlite';
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { ApprovalLedgerStore } from '../../src/db/approval-ledger-store.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
-import { ApprovalLedgerStore } from '../../src/db/approval-ledger-store.ts';
 
 function freshDb(): Database {
   const db = new Database(':memory:');
@@ -60,9 +60,7 @@ describe('ApprovalLedgerStore.createPending', () => {
 
   test('rejects a duplicate pending for same (taskId, approvalKey)', () => {
     const store = makeStore();
-    expect(
-      store.createPending({ taskId: 't', riskScore: 0.5, reason: 'r' }).ok,
-    ).toBe(true);
+    expect(store.createPending({ taskId: 't', riskScore: 0.5, reason: 'r' }).ok).toBe(true);
     const second = store.createPending({ taskId: 't', riskScore: 0.5, reason: 'r' });
     expect(second.ok).toBe(false);
     if (!second.ok) {
@@ -72,12 +70,8 @@ describe('ApprovalLedgerStore.createPending', () => {
 
   test('different approvalKeys on same task may both be pending', () => {
     const store = makeStore();
-    expect(
-      store.createPending({ taskId: 't', approvalKey: 'commit', riskScore: 0.5, reason: 'r' }).ok,
-    ).toBe(true);
-    expect(
-      store.createPending({ taskId: 't', approvalKey: 'shell', riskScore: 0.5, reason: 'r' }).ok,
-    ).toBe(true);
+    expect(store.createPending({ taskId: 't', approvalKey: 'commit', riskScore: 0.5, reason: 'r' }).ok).toBe(true);
+    expect(store.createPending({ taskId: 't', approvalKey: 'shell', riskScore: 0.5, reason: 'r' }).ok).toBe(true);
   });
 
   test('persists provenance JSON', () => {

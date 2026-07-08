@@ -1,8 +1,9 @@
 /**
  * Tests for K2 Priority Router — Wilson LB provider selection.
  */
-import { describe, expect, test } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
+import { describe, expect, test } from 'bun:test';
 import { ProviderTrustStore } from '../../src/db/provider-trust-store.ts';
 import { selectProvider } from '../../src/orchestrator/priority-router.ts';
 

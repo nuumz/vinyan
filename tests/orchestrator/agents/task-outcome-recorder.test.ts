@@ -10,10 +10,10 @@
  */
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
-import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { SKILL_OUTCOME_SCHEMA_SQL } from '../../../src/db/skill-outcome-schema.ts';
 import { SkillOutcomeStore } from '../../../src/db/skill-outcome-store.ts';
 import type { SyncSkillResolver } from '../../../src/orchestrator/agents/derive-persona-capabilities.ts';
@@ -135,7 +135,12 @@ describe('recordTaskOutcomeForPersona', () => {
   test('persona has no loaded skills → no rows', () => {
     const { reg, store, cleanup } = setup([]);
     try {
-      const out = recordTaskOutcomeForPersona(makeInput({ agentId: asPersonaId('developer') }), makeResult(), reg, store);
+      const out = recordTaskOutcomeForPersona(
+        makeInput({ agentId: asPersonaId('developer') }),
+        makeResult(),
+        reg,
+        store,
+      );
       expect(out.skillsRecorded).toBe(0);
     } finally {
       cleanup();

@@ -1,7 +1,7 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import {
-  ThinkingPolicySchema,
   TaskUncertaintySignalSchema,
+  ThinkingPolicySchema,
   ThinkingProfileIdSchema,
 } from '../../src/orchestrator/thinking/thinking-policy.ts';
 
@@ -29,19 +29,23 @@ describe('TaskUncertaintySignalSchema', () => {
   });
 
   test('rejects score out of range', () => {
-    expect(TaskUncertaintySignalSchema.safeParse({
-      score: 1.5,
-      components: { planComplexity: 0.5, priorTraceCount: 0.5 },
-      basis: 'cold-start',
-    }).success).toBe(false);
+    expect(
+      TaskUncertaintySignalSchema.safeParse({
+        score: 1.5,
+        components: { planComplexity: 0.5, priorTraceCount: 0.5 },
+        basis: 'cold-start',
+      }).success,
+    ).toBe(false);
   });
 
   test('rejects invalid basis', () => {
-    expect(TaskUncertaintySignalSchema.safeParse({
-      score: 0.5,
-      components: { planComplexity: 0.5, priorTraceCount: 0.5 },
-      basis: 'invalid',
-    }).success).toBe(false);
+    expect(
+      TaskUncertaintySignalSchema.safeParse({
+        score: 0.5,
+        components: { planComplexity: 0.5, priorTraceCount: 0.5 },
+        basis: 'invalid',
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -84,16 +88,20 @@ describe('ThinkingPolicySchema', () => {
   });
 
   test('rejects invalid policyBasis', () => {
-    expect(ThinkingPolicySchema.safeParse({
-      policyBasis: 'auto',
-      thinking: { type: 'disabled' },
-      profileId: 'A',
-    }).success).toBe(false);
+    expect(
+      ThinkingPolicySchema.safeParse({
+        policyBasis: 'auto',
+        thinking: { type: 'disabled' },
+        profileId: 'A',
+      }).success,
+    ).toBe(false);
   });
 
   test('rejects missing required fields', () => {
-    expect(ThinkingPolicySchema.safeParse({
-      policyBasis: 'default',
-    }).success).toBe(false);
+    expect(
+      ThinkingPolicySchema.safeParse({
+        policyBasis: 'default',
+      }).success,
+    ).toBe(false);
   });
 });

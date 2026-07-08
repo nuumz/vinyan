@@ -174,8 +174,7 @@ export class ComprehensionCalibrator {
     const rawAccuracy = positives / sampleSize;
     // weightedAccuracy null when no records carried a weight field (pre-
     // AXM#5 data) — consumer treats as "same as rawAccuracy" in that case.
-    const weightedAccuracy =
-      anyWeighted && totalWeight > 0 ? weightedPositives / totalWeight : null;
+    const weightedAccuracy = anyWeighted && totalWeight > 0 ? weightedPositives / totalWeight : null;
 
     // Fold oldest → newest so recent outcomes dominate the EMA.
     let ema = rawAccuracy; // seed with raw to avoid cold-start distortion
@@ -247,8 +246,7 @@ export class ComprehensionCalibrator {
     const recentCI = wilson95(rPos, recent.length);
     const historicalCI = wilson95(hPos, historical.length);
     const deltaPassesThreshold = -delta >= threshold;
-    const ciSeparates =
-      recentCI != null && historicalCI != null && recentCI.upper < historicalCI.lower;
+    const ciSeparates = recentCI != null && historicalCI != null && recentCI.upper < historicalCI.lower;
     const diverged = deltaPassesThreshold && ciSeparates;
 
     return {
@@ -313,7 +311,10 @@ export class ComprehensionCalibrator {
    * Returns `insufficient` when fewer than DATA_GATE_MIN records — same
    * A2 honesty pattern as `confidenceCeiling`. Caller decides fallback.
    */
-  brierScore(engineId: string, engineType?: ComprehensionEngineType): {
+  brierScore(
+    engineId: string,
+    engineType?: ComprehensionEngineType,
+  ): {
     readonly brier: number | null;
     /**
      * GAP#4 — weighted Brier using AXM#5 label confidence. Null when no
@@ -357,8 +358,7 @@ export class ComprehensionCalibrator {
       weightedSumSquaredError += effectiveW * sq;
     }
     const insufficient = n < DATA_GATE_MIN;
-    const weighted =
-      anyWeighted && totalWeight > 0 ? weightedSumSquaredError / totalWeight : null;
+    const weighted = anyWeighted && totalWeight > 0 ? weightedSumSquaredError / totalWeight : null;
     return {
       brier: insufficient ? null : labeled > 0 ? sumSquaredError / labeled : null,
       weightedBrier: insufficient ? null : weighted,
@@ -390,10 +390,7 @@ export class ComprehensionCalibrator {
     // it's never higher than rawAccuracy for realistic inputs. Using
     // min(ema, weighted) means a noisy-label engine that LOOKS accurate
     // by naive count gets clamped by its honest weighted rate.
-    const ceiling =
-      acc.weightedAccuracy != null
-        ? Math.min(acc.ema, acc.weightedAccuracy)
-        : acc.ema;
+    const ceiling = acc.weightedAccuracy != null ? Math.min(acc.ema, acc.weightedAccuracy) : acc.ema;
     return {
       kind: 'known',
       value: Math.max(0, Math.min(1, ceiling)),

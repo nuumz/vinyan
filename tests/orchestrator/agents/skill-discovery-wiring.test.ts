@@ -17,7 +17,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { VinyanConfig } from '../../../src/config/schema.ts';

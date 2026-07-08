@@ -48,7 +48,10 @@ export class AgentSession implements IAgentSession {
   private buffer = '';
   private onDelta?: AgentSessionDeltaHandler;
 
-  constructor(private readonly proc: SubprocessHandle, onDelta?: AgentSessionDeltaHandler) {
+  constructor(
+    private readonly proc: SubprocessHandle,
+    onDelta?: AgentSessionDeltaHandler,
+  ) {
     // biome-ignore lint: Bun's ReadableStreamDefaultReader has extra `readMany` — duck-type is sufficient
     this.reader = proc.stdout.getReader() as any;
     this.onDelta = onDelta;
@@ -104,11 +107,7 @@ export class AgentSession implements IAgentSession {
 
       // Phase 2 streaming: `text_delta` frames are observational, not turns.
       // Forward to the handler and keep reading for a real WorkerTurn.
-      if (
-        parsed &&
-        typeof parsed === 'object' &&
-        (parsed as { type?: unknown }).type === 'text_delta'
-      ) {
+      if (parsed && typeof parsed === 'object' && (parsed as { type?: unknown }).type === 'text_delta') {
         const d = parsed as { taskId?: unknown; turnId?: unknown; text?: unknown };
         if (typeof d.text === 'string' && d.text.length > 0 && this.onDelta) {
           try {

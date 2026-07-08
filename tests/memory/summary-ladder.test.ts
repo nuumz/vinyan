@@ -143,12 +143,8 @@ describe('summarizeTurns — KEY-DECISION inline rendering (Phase 1 port)', () =
       }),
     ]);
     expect(summary?.decisionLines).toHaveLength(2);
-    expect(summary?.decisionLines[0]).toBe(
-      "→ [Turn 2, decision] assistant: I'll scaffold the repo first",
-    );
-    expect(summary?.decisionLines[1]).toBe(
-      '→ [Turn 4, clarification] assistant: [INPUT-REQUIRED]',
-    );
+    expect(summary?.decisionLines[0]).toBe("→ [Turn 2, decision] assistant: I'll scaffold the repo first");
+    expect(summary?.decisionLines[1]).toBe('→ [Turn 4, clarification] assistant: [INPUT-REQUIRED]');
     // Rendered into `text` after other sections
     expect(summary?.text).toContain('→ [Turn 2, decision]');
     expect(summary?.text).toContain('→ [Turn 4, clarification]');
@@ -212,10 +208,10 @@ describe('summarizeTurns — KEY-DECISION inline rendering (Phase 1 port)', () =
     // interleaving chit-chat turns.
     const summary = summarizeTurns([
       turn({ role: 'user', blocks: [{ type: 'text', text: 'chat 1' }] }),
-      turn({ role: 'assistant', blocks: [{ type: 'text', text: "Plan: extract helper" }] }),
+      turn({ role: 'assistant', blocks: [{ type: 'text', text: 'Plan: extract helper' }] }),
       turn({ role: 'user', blocks: [{ type: 'text', text: 'chat 2' }] }),
       turn({ role: 'assistant', blocks: [{ type: 'text', text: 'chat 3' }] }),
-      turn({ role: 'assistant', blocks: [{ type: 'text', text: "Let me push this now" }] }),
+      turn({ role: 'assistant', blocks: [{ type: 'text', text: 'Let me push this now' }] }),
       turn({ role: 'user', blocks: [{ type: 'text', text: 'chat 4' }] }),
       turn({ role: 'assistant', blocks: [{ type: 'text', text: 'chat 5' }] }),
       turn({ role: 'assistant', blocks: [{ type: 'text', text: 'Going to merge' }] }),

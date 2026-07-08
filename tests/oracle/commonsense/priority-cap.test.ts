@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { CommonSenseRegistry } from '../../../src/oracle/commonsense/registry.ts';
 import type { CommonSenseRuleInput } from '../../../src/oracle/commonsense/types.ts';
 
@@ -8,7 +8,9 @@ let registry: CommonSenseRegistry;
 
 beforeEach(() => {
   const db = new Database(':memory:');
-  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at INTEGER NOT NULL);`);
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at INTEGER NOT NULL);`,
+  );
   migration001.up(db);
   registry = new CommonSenseRegistry(db);
 });
@@ -45,34 +47,58 @@ describe('Registry priority caps — M4', () => {
 
   test('configured rules clamp to [40, 80]', () => {
     const high = registry.insertRule(
-      makeRule({ source: 'configured', priority: 95, pattern: { kind: 'exact-match', target_field: 'command', value: 'h' } }),
+      makeRule({
+        source: 'configured',
+        priority: 95,
+        pattern: { kind: 'exact-match', target_field: 'command', value: 'h' },
+      }),
     );
     expect(high.priority).toBe(80);
 
     const low = registry.insertRule(
-      makeRule({ source: 'configured', priority: 10, pattern: { kind: 'exact-match', target_field: 'command', value: 'l' } }),
+      makeRule({
+        source: 'configured',
+        priority: 10,
+        pattern: { kind: 'exact-match', target_field: 'command', value: 'l' },
+      }),
     );
     expect(low.priority).toBe(40);
 
     const mid = registry.insertRule(
-      makeRule({ source: 'configured', priority: 60, pattern: { kind: 'exact-match', target_field: 'command', value: 'm' } }),
+      makeRule({
+        source: 'configured',
+        priority: 60,
+        pattern: { kind: 'exact-match', target_field: 'command', value: 'm' },
+      }),
     );
     expect(mid.priority).toBe(60);
   });
 
   test('promoted-from-pattern rules clamp to [30, 70]', () => {
     const high = registry.insertRule(
-      makeRule({ source: 'promoted-from-pattern', priority: 95, pattern: { kind: 'exact-match', target_field: 'command', value: 'pH' } }),
+      makeRule({
+        source: 'promoted-from-pattern',
+        priority: 95,
+        pattern: { kind: 'exact-match', target_field: 'command', value: 'pH' },
+      }),
     );
     expect(high.priority).toBe(70);
 
     const low = registry.insertRule(
-      makeRule({ source: 'promoted-from-pattern', priority: 10, pattern: { kind: 'exact-match', target_field: 'command', value: 'pL' } }),
+      makeRule({
+        source: 'promoted-from-pattern',
+        priority: 10,
+        pattern: { kind: 'exact-match', target_field: 'command', value: 'pL' },
+      }),
     );
     expect(low.priority).toBe(30);
 
     const mid = registry.insertRule(
-      makeRule({ source: 'promoted-from-pattern', priority: 50, pattern: { kind: 'exact-match', target_field: 'command', value: 'pM' } }),
+      makeRule({
+        source: 'promoted-from-pattern',
+        priority: 50,
+        pattern: { kind: 'exact-match', target_field: 'command', value: 'pM' },
+      }),
     );
     expect(mid.priority).toBe(50);
   });

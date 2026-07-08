@@ -115,10 +115,7 @@ describe('resolveSimpleSkillsForDispatch', () => {
       goal: 'web-search shared',
       agentId: 'researcher',
     });
-    expect(forResearcher.simpleSkills.map((s) => s.name).sort()).toEqual([
-      'shared-thing',
-      'web-search',
-    ]);
+    expect(forResearcher.simpleSkills.map((s) => s.name).sort()).toEqual(['shared-thing', 'web-search']);
 
     const forOther = resolveSimpleSkillsForDispatch({
       registry: reg,

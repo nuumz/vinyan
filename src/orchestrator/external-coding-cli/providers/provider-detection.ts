@@ -88,7 +88,9 @@ export async function probeBinary(
       stderr: 'pipe',
     });
     const timer = setTimeout(() => {
-      try { proc?.kill('SIGTERM'); } catch {}
+      try {
+        proc?.kill('SIGTERM');
+      } catch {}
     }, timeoutMs);
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout as unknown as ReadableStream).text(),

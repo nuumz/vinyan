@@ -8,21 +8,17 @@
 import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
 import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
+import type { IdeationResult } from '../../../src/orchestrator/intent/ideation-types.ts';
 import {
   BRAINSTORM_PHASE_CONSTRAINTS,
   executeBrainstormPhase,
   formatCandidatesForDisplay,
+  type IdeationDrafter,
   projectIdeationIntoInput,
   shouldRunBrainstormPhase,
-  type IdeationDrafter,
 } from '../../../src/orchestrator/phases/phase-brainstorm.ts';
 import type { PhaseContext } from '../../../src/orchestrator/phases/types.ts';
-import type { IdeationResult } from '../../../src/orchestrator/intent/ideation-types.ts';
-import type {
-  RoutingDecision,
-  SemanticTaskUnderstanding,
-  TaskInput,
-} from '../../../src/orchestrator/types.ts';
+import type { RoutingDecision, SemanticTaskUnderstanding, TaskInput } from '../../../src/orchestrator/types.ts';
 
 function makeIdeation(overrides: Partial<IdeationResult> = {}): IdeationResult {
   return {
@@ -95,7 +91,10 @@ function makeRouting(level: 0 | 1 | 2 | 3 = 1): RoutingDecision {
   } as unknown as RoutingDecision;
 }
 
-function makeContext(input: TaskInput, withApprovalGate = false): {
+function makeContext(
+  input: TaskInput,
+  withApprovalGate = false,
+): {
   ctx: PhaseContext;
   bus: ReturnType<typeof createBus>;
   approvalGate?: ApprovalGate;
@@ -146,10 +145,7 @@ describe('shouldRunBrainstormPhase', () => {
 
   test('disabled for routine goals regardless of defaults', () => {
     expect(
-      shouldRunBrainstormPhase(
-        makeInput({ goal: 'Add a column user_id to the users table' }),
-        makeUnderstanding(),
-      ),
+      shouldRunBrainstormPhase(makeInput({ goal: 'Add a column user_id to the users table' }), makeUnderstanding()),
     ).toBe(false);
   });
 });
@@ -170,8 +166,7 @@ describe('projectIdeationIntoInput', () => {
 
   test('does not duplicate an already-present APPROACH constraint', () => {
     const ideation = makeIdeation({ approvedCandidateId: 'cand-0' });
-    const constraint =
-      'APPROACH: Approach A — Use a single-table-design DynamoDB schema (risks: Vendor lock-in)';
+    const constraint = 'APPROACH: Approach A — Use a single-table-design DynamoDB schema (risks: Vendor lock-in)';
     const input = makeInput({ constraints: [constraint] });
     const result = projectIdeationIntoInput(input, ideation);
     const occurrences = result.constraints!.filter((c) => c === constraint).length;
@@ -222,9 +217,7 @@ describe('executeBrainstormPhase — behavior', () => {
     if (outcome.action === 'continue') {
       expect(outcome.value.skipped).toBe(false);
       expect(outcome.value.ideation?.approvedCandidateId).toBe('cand-0');
-      expect(
-        outcome.value.enhancedInput?.constraints?.some((c) => c.startsWith('APPROACH: Approach A')),
-      ).toBe(true);
+      expect(outcome.value.enhancedInput?.constraints?.some((c) => c.startsWith('APPROACH: Approach A'))).toBe(true);
     }
   });
 

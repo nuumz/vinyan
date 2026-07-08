@@ -22,11 +22,12 @@
  *
  * See `docs/design/commonsense-substrate-system-design.md` §6 (M4).
  */
-import { wilsonLowerBound } from './wilson.ts';
+
 import { inferMicrotheory, inferRuleMatcher } from '../oracle/commonsense/microtheory-inferer.ts';
 import type { CommonSenseRegistry } from '../oracle/commonsense/registry.ts';
 import type { CommonSenseRule, DefaultOutcome } from '../oracle/commonsense/types.ts';
 import type { ExecutionTrace, ExtractedPattern } from '../orchestrator/types.ts';
+import { wilsonLowerBound } from './wilson.ts';
 
 // ── Public types ─────────────────────────────────────────────────────────
 
@@ -123,10 +124,7 @@ export function walkForwardBacktest(
  * pattern → same content-addressed rule id (via `computeRuleId`); registry
  * insert is `INSERT OR REPLACE`.
  */
-export function promotePatternToCommonsense(
-  pattern: ExtractedPattern,
-  options: PromotionOptions,
-): PromotionResult {
+export function promotePatternToCommonsense(pattern: ExtractedPattern, options: PromotionOptions): PromotionResult {
   const wilsonThreshold = options.wilsonThreshold ?? 0.95;
   const minObservations = options.minObservations ?? 30;
   const k = options.walkForwardWindows ?? 5;
@@ -182,15 +180,14 @@ export function promotePatternToCommonsense(
   if (!matcher) {
     return {
       promoted: false,
-      reason: "pattern.approach is empty or too short — no matcher inferable",
+      reason: 'pattern.approach is empty or too short — no matcher inferable',
       diagnostics: { ...baseDiag, walkForwardPassing: wf.passingWindows, walkForwardTotal: wf.total },
     };
   }
 
   // ── Generate rule ────────────────────────────────────────────────────
   const microtheory = inferMicrotheory(pattern);
-  const defaultOutcome: DefaultOutcome =
-    pattern.type === 'anti-pattern' ? 'escalate' : 'allow';
+  const defaultOutcome: DefaultOutcome = pattern.type === 'anti-pattern' ? 'escalate' : 'allow';
 
   // Confidence: clamp to pragmatic band [0.5, 0.7].
   const confidence = clampToPragmatic(pattern.confidence);
@@ -229,10 +226,7 @@ export function promotePatternToCommonsense(
  * Promote a batch of patterns. Returns per-pattern results so callers
  * (sleep-cycle runner, audit dashboards) can record metrics.
  */
-export function promoteAllPatterns(
-  patterns: ExtractedPattern[],
-  options: PromotionOptions,
-): PromotionResult[] {
+export function promoteAllPatterns(patterns: ExtractedPattern[], options: PromotionOptions): PromotionResult[] {
   return patterns.map((p) => promotePatternToCommonsense(p, options));
 }
 
@@ -269,9 +263,9 @@ function clampToPragmatic(c: number): number {
 //                claims would be discarded at task end anyway).
 // ─────────────────────────────────────────────────────────────────────────
 
-import type { CapabilityClaim, CapabilityRequirement } from '../orchestrator/types.ts';
-import type { AgentRegistry } from '../orchestrator/agents/registry.ts';
 import type { VinyanBus } from '../core/bus.ts';
+import type { AgentRegistry } from '../orchestrator/agents/registry.ts';
+import type { CapabilityClaim, CapabilityRequirement } from '../orchestrator/types.ts';
 
 export interface CapabilityPromotionOptions {
   agentRegistry: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;

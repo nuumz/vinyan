@@ -6,8 +6,9 @@
  *
  * Source of truth: WP-5 Observability Extension (Phase 5.15)
  */
-import type { SystemMetrics } from './metrics.ts';
+
 import type { DegradationStatusSnapshot } from './degradation-status.ts';
+import type { SystemMetrics } from './metrics.ts';
 
 export interface PrometheusMetric {
   name: string;
@@ -138,11 +139,9 @@ export function renderPrometheus(
       'failure_type="tool-failure"': eventCounters['degradation.failure.tool-failure'] ?? 0,
       'failure_type="rate-limit"': eventCounters['degradation.failure.rate-limit'] ?? 0,
       'failure_type="peer-unavailable"': eventCounters['degradation.failure.peer-unavailable'] ?? 0,
-      'failure_type="trace-store-write-failure"':
-        eventCounters['degradation.failure.trace-store-write-failure'] ?? 0,
+      'failure_type="trace-store-write-failure"': eventCounters['degradation.failure.trace-store-write-failure'] ?? 0,
       'failure_type="budget-pressure"': eventCounters['degradation.failure.budget-pressure'] ?? 0,
-      'failure_type="economy-accounting-failure"':
-        eventCounters['degradation.failure.economy-accounting-failure'] ?? 0,
+      'failure_type="economy-accounting-failure"': eventCounters['degradation.failure.economy-accounting-failure'] ?? 0,
       'failure_type="session-persistence-failure"':
         eventCounters['degradation.failure.session-persistence-failure'] ?? 0,
       'failure_type="mutation-apply-failure"': eventCounters['degradation.failure.mutation-apply-failure'] ?? 0,

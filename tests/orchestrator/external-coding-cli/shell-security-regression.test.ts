@@ -12,10 +12,10 @@
  *      and produce a safe `ls`/`cat` command.
  */
 import { describe, expect, test } from 'bun:test';
+import { classifyExternalCodingCliIntent } from '../../../src/orchestrator/intent/external-coding-cli-classifier.ts';
 import { classifyDirectTool } from '../../../src/orchestrator/tools/direct-tool-resolver.ts';
 import { parseShellCommand } from '../../../src/orchestrator/tools/shell-command-parser.ts';
 import { evaluateCommand } from '../../../src/orchestrator/tools/shell-policy.ts';
-import { classifyExternalCodingCliIntent } from '../../../src/orchestrator/intent/external-coding-cli-classifier.ts';
 
 describe('shell-policy regression — metacharacters STILL rejected after ECC fix', () => {
   test.each([
@@ -103,9 +103,7 @@ describe('ECC classifier — does NOT match generic shell intents', () => {
   });
 
   test('"ช่วยรัน verify flow" without provider mention does not trigger ECC', () => {
-    const cli = classifyExternalCodingCliIntent(
-      'ช่วยรัน verify flow `/tmp/spec`',
-    );
+    const cli = classifyExternalCodingCliIntent('ช่วยรัน verify flow `/tmp/spec`');
     // Has a backticked path AND a delegation-shaped verb — but no provider
     // mention. ECC must decline; the prompt then routes through normal
     // resolution (which would either ask for clarification or surface

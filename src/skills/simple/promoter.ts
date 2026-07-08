@@ -20,19 +20,14 @@
  * A4 ordering (matters): write artifact FIRST, then ledger.
  * A9: per-skill failure does not block siblings.
  */
-import { computeContentHash } from '../skill-md/hash.ts';
-import type {
-  SkillMdBody,
-  SkillMdFrontmatter,
-  SkillMdRecord,
-} from '../skill-md/index.ts';
-import { SkillArtifactNotFoundError, type SkillArtifactStore } from '../artifact-store.ts';
-import type {
-  SkillOutcomeStore,
-} from '../../db/skill-outcome-store.ts';
+
+import type { SkillOutcomeStore } from '../../db/skill-outcome-store.ts';
 import type { SkillTrustLedgerStore } from '../../db/skill-trust-ledger-store.ts';
-import type { SimpleSkillRegistry } from './registry.ts';
+import { SkillArtifactNotFoundError, type SkillArtifactStore } from '../artifact-store.ts';
+import { computeContentHash } from '../skill-md/hash.ts';
+import type { SkillMdBody, SkillMdFrontmatter, SkillMdRecord } from '../skill-md/index.ts';
 import type { SimpleSkill } from './loader.ts';
+import type { SimpleSkillRegistry } from './registry.ts';
 
 export const MIN_PROMOTION_TRIALS = 15;
 export const MIN_PROMOTION_SUCCESS_RATE = 0.8;
@@ -126,9 +121,7 @@ export async function runSimpleSkillPromoter(deps: SimpleSkillPromoterDeps): Pro
         skipped.push({ skillName: reportName, reason: 'already promoted, content unchanged' });
         continue;
       }
-      const finalRecord = existing
-        ? rebumpVersion(newRecord, existing.frontmatter.version)
-        : newRecord;
+      const finalRecord = existing ? rebumpVersion(newRecord, existing.frontmatter.version) : newRecord;
 
       // A4: write artifact FIRST, ledger second.
       await deps.artifactStore.write(finalRecord);
@@ -208,11 +201,7 @@ function aggregateOutcomes(skillName: string, store: SkillOutcomeStore): Outcome
  * skill's bound agent. A skill named `code-review` bound to `developer`
  * never inherits outcomes recorded against `reviewer`.
  */
-function aggregateOutcomesForAgent(
-  skillName: string,
-  agentId: string,
-  store: SkillOutcomeStore,
-): OutcomeAggregate {
+function aggregateOutcomesForAgent(skillName: string, agentId: string, store: SkillOutcomeStore): OutcomeAggregate {
   const rows = store.listForSkill(skillName).filter((r) => r.personaId === agentId);
   let successes = 0;
   let failures = 0;
@@ -229,10 +218,7 @@ function aggregateOutcomesForAgent(
   };
 }
 
-async function tryReadExisting(
-  artifactStore: SkillArtifactStore,
-  skillId: string,
-): Promise<SkillMdRecord | null> {
+async function tryReadExisting(artifactStore: SkillArtifactStore, skillId: string): Promise<SkillMdRecord | null> {
   try {
     return await artifactStore.read(skillId);
   } catch (err) {

@@ -5,10 +5,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createBus } from '../../src/core/bus.ts';
 import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
-import { createOrchestrator } from '../../src/orchestrator/factory.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
+import { createOrchestrator } from '../../src/orchestrator/factory.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
-import type { LLMProvider, LLMRequest, EngineProfile } from '../../src/orchestrator/types.ts';
+import type { EngineProfile, LLMProvider, LLMRequest } from '../../src/orchestrator/types.ts';
 import { FileWatcher } from '../../src/world-graph/file-watcher.ts';
 
 // Re-implement autoRegisterWorkers test harness — the function is module-private,

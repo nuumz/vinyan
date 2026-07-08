@@ -14,21 +14,19 @@
  * tests/orchestrator/clarification.test.ts).
  */
 import { describe, expect, it } from 'bun:test';
-import {
-  checkComprehension,
-  COMPREHENSION_CHECK_OFF_CONSTRAINT,
-  isComprehensionCheckDisabled,
-} from '../../src/orchestrator/understanding/comprehension-check.ts';
 import type {
   ResolvedEntity,
   SemanticTaskUnderstanding,
   TaskUnderstanding,
   VerifiedClaim,
 } from '../../src/orchestrator/types.ts';
+import {
+  COMPREHENSION_CHECK_OFF_CONSTRAINT,
+  checkComprehension,
+  isComprehensionCheckDisabled,
+} from '../../src/orchestrator/understanding/comprehension-check.ts';
 
-function makeBaseUnderstanding(
-  overrides: Partial<TaskUnderstanding> = {},
-): TaskUnderstanding {
+function makeBaseUnderstanding(overrides: Partial<TaskUnderstanding> = {}): TaskUnderstanding {
   return {
     rawGoal: 'do something',
     actionVerb: 'modify',
@@ -41,9 +39,7 @@ function makeBaseUnderstanding(
   };
 }
 
-function makeSemanticUnderstanding(
-  overrides: Partial<SemanticTaskUnderstanding> = {},
-): SemanticTaskUnderstanding {
+function makeSemanticUnderstanding(overrides: Partial<SemanticTaskUnderstanding> = {}): SemanticTaskUnderstanding {
   return {
     ...makeBaseUnderstanding(),
     taskDomain: 'code-mutation',
@@ -192,9 +188,7 @@ describe('checkComprehension — H1 multi-path ambiguous entity', () => {
       confidence: 0.7,
     });
     // Default threshold is 0.6 — 0.7 is above → confident
-    expect(checkComprehension(makeSemanticUnderstanding({ resolvedEntities: [entity] })).confident).toBe(
-      true,
-    );
+    expect(checkComprehension(makeSemanticUnderstanding({ resolvedEntities: [entity] })).confident).toBe(true);
     // Raise threshold to 0.8 — now 0.7 is below → fires
     expect(
       checkComprehension(makeSemanticUnderstanding({ resolvedEntities: [entity] }), {
@@ -214,9 +208,7 @@ describe('checkComprehension — H1 multi-path ambiguous entity', () => {
 describe('checkComprehension — H4 contradictory verified claims', () => {
   it('fires when one verifiedClaim has type=contradictory', () => {
     const u = makeSemanticUnderstanding({
-      verifiedClaims: [
-        makeClaim({ claim: 'File src/foo.ts exists', type: 'contradictory' }),
-      ],
+      verifiedClaims: [makeClaim({ claim: 'File src/foo.ts exists', type: 'contradictory' })],
     });
     const verdict = checkComprehension(u);
     expect(verdict.confident).toBe(false);
@@ -270,10 +262,7 @@ describe('checkComprehension — composite verdicts', () => {
     const verdict = checkComprehension(u);
     expect(verdict.confident).toBe(false);
     expect(verdict.failedChecks).toHaveLength(2);
-    expect(verdict.failedChecks.map((c) => c.check).sort()).toEqual([
-      'H1-ambiguous-entity',
-      'H4-contradictory-claim',
-    ]);
+    expect(verdict.failedChecks.map((c) => c.check).sort()).toEqual(['H1-ambiguous-entity', 'H4-contradictory-claim']);
     expect(verdict.questions).toHaveLength(2);
   });
 
@@ -313,11 +302,7 @@ describe('isComprehensionCheckDisabled', () => {
 
   it('returns true when the constraint is mixed with other constraints', () => {
     expect(
-      isComprehensionCheckDisabled([
-        'MIN_ROUTING_LEVEL:2',
-        COMPREHENSION_CHECK_OFF_CONSTRAINT,
-        'THINKING:enabled',
-      ]),
+      isComprehensionCheckDisabled(['MIN_ROUTING_LEVEL:2', COMPREHENSION_CHECK_OFF_CONSTRAINT, 'THINKING:enabled']),
     ).toBe(true);
   });
 

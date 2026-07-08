@@ -112,7 +112,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
         reason: `All tests passed (${relativeTestFiles.join(', ')})`,
         durationMs,
         opinion: fromScalar(0.95, BASE_RATE),
-        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 900_000 },
+        temporalContext: {
+          validFrom: Date.now(),
+          validUntil: Date.now() + TTL_MS,
+          decayModel: 'exponential' as const,
+          halfLife: 900_000,
+        },
       });
     }
 
@@ -124,8 +129,14 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       fileHashes,
       reason: `Tests failed (exit code ${exitCode}): ${output.slice(0, 300)}`,
       durationMs,
-      opinion: fromScalar(0.95, BASE_RATE),
-      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 900_000 },
+      // Oriented toward "the change is correct": failing tests are strong disbelief.
+      opinion: fromScalar(0.05, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 900_000,
+      },
     });
   } catch (err) {
     // A2: ENOENT (runner binary not found) → uncertain, not unknown
@@ -143,7 +154,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
         errorCode: 'ORACLE_CRASH',
         durationMs: performance.now() - start,
         opinion: fromScalar(0.2, BASE_RATE),
-        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 900_000 },
+        temporalContext: {
+          validFrom: Date.now(),
+          validUntil: Date.now() + TTL_MS,
+          decayModel: 'exponential' as const,
+          halfLife: 900_000,
+        },
       });
     }
 
@@ -157,7 +173,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       errorCode: 'ORACLE_CRASH',
       durationMs: performance.now() - start,
       opinion: fromScalar(0, BASE_RATE),
-      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 900_000 },
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 900_000,
+      },
     });
   }
 }

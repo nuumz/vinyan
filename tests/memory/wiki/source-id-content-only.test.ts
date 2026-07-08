@@ -67,9 +67,9 @@ describe('ingestor.ingestSession — content-only dedupe', () => {
       summaryMarkdown: body,
     });
 
-    const count = (db
-      .query('SELECT COUNT(*) as c FROM memory_wiki_sources WHERE session_id = ?')
-      .get('s-1') as { c: number } | null)?.c;
+    const count = (
+      db.query('SELECT COUNT(*) as c FROM memory_wiki_sources WHERE session_id = ?').get('s-1') as { c: number } | null
+    )?.c;
     expect(count).toBe(1);
   });
 

@@ -6,7 +6,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { AgentMemoryAPI } from '../../../src/orchestrator/agent-memory/agent-memory-api.ts';
-import { formatSkillHintConstraints, resolveRuntimeSkillHintConstraints } from '../../../src/orchestrator/skill-hints.ts';
+import {
+  formatSkillHintConstraints,
+  resolveRuntimeSkillHintConstraints,
+} from '../../../src/orchestrator/skill-hints.ts';
 import type { CachedSkill, TaskInput } from '../../../src/orchestrator/types.ts';
 
 function skill(overrides: Partial<CachedSkill> = {}): CachedSkill {
@@ -31,7 +34,9 @@ describe('formatSkillHintConstraints', () => {
   });
 
   test('single skill → header + one entry', () => {
-    const result = formatSkillHintConstraints([skill({ approach: 'refactor with helper', successRate: 0.9, usageCount: 12 })]);
+    const result = formatSkillHintConstraints([
+      skill({ approach: 'refactor with helper', successRate: 0.9, usageCount: 12 }),
+    ]);
     expect(result).toHaveLength(2);
     expect(result[0]).toContain('[SKILL HINTS]');
     expect(result[0]).toContain('1 proven');

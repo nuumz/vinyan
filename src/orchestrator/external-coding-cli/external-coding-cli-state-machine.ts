@@ -128,9 +128,7 @@ export class StateMachineError extends Error {
     public readonly to: CodingCliSessionState,
     reason?: string,
   ) {
-    super(
-      `illegal coding-cli state transition: ${from} → ${to}${reason ? ` (${reason})` : ''}`,
-    );
+    super(`illegal coding-cli state transition: ${from} → ${to}${reason ? ` (${reason})` : ''}`);
     this.name = 'StateMachineError';
   }
 }

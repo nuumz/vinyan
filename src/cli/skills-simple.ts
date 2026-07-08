@@ -7,18 +7,11 @@
  * version/hash/signature. Survives `vinyan skills mode` flips because the
  * file format is the same on disk; the loader is tolerant.
  */
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { loadSimpleSkills, parseFrontmatter, type SimpleSkill } from '../skills/simple/loader.ts';
@@ -73,9 +66,7 @@ function runNew(args: readonly string[], opts: CommandOptions): void {
   const { positional, flags } = parseArgs(args);
   const name = positional[0];
   if (!name) {
-    throw new Error(
-      'Usage: vinyan skills new <name> [--scope=user|project] [--agent=<id>] [--description="..."]',
-    );
+    throw new Error('Usage: vinyan skills new <name> [--scope=user|project] [--agent=<id>] [--description="..."]');
   }
   validateName(name);
 
@@ -141,10 +132,7 @@ function runList(args: readonly string[], opts: CommandOptions): void {
     // Pass — show every skill including all per-agent variants.
   } else if (agentFilter) {
     // Show shared + this agent's per-agent skills only.
-    filtered = filtered.filter(
-      (s) =>
-        s.scope === 'user' || s.scope === 'project' || s.agentId === agentFilter,
-    );
+    filtered = filtered.filter((s) => s.scope === 'user' || s.scope === 'project' || s.agentId === agentFilter);
   } else {
     // Default: shared scopes only — backward-compat with pre-per-agent CLI.
     filtered = filtered.filter((s) => s.scope === 'user' || s.scope === 'project');
@@ -164,7 +152,10 @@ function runList(args: readonly string[], opts: CommandOptions): void {
     const where = scopeFilter ? `${scopeFilter}-scope` : 'either scope';
     const ag = agentFilter && agentFilter !== 'ALL' ? ` for agent '${agentFilter}'` : '';
     console.log(`No simple skills found in ${where}${ag}.`);
-    const flagHint = [scopeFilter ? ` --scope=${scopeFilter}` : '', agentFilter && agentFilter !== 'ALL' ? ` --agent=${agentFilter}` : ''].join('');
+    const flagHint = [
+      scopeFilter ? ` --scope=${scopeFilter}` : '',
+      agentFilter && agentFilter !== 'ALL' ? ` --agent=${agentFilter}` : '',
+    ].join('');
     console.log(`Create one: vinyan skills new <name>${flagHint}`);
     return;
   }
@@ -173,9 +164,7 @@ function runList(args: readonly string[], opts: CommandOptions): void {
   const nameWidth = Math.max(4, ...filtered.map((s) => s.name.length));
   const scopeWidth = Math.max(7, ...filtered.map((s) => s.scope.length));
   const agentWidth = Math.max(5, ...filtered.map((s) => (s.agentId ?? '').length));
-  console.log(
-    `${'NAME'.padEnd(nameWidth)}  ${'SCOPE'.padEnd(scopeWidth)}  ${'AGENT'.padEnd(agentWidth)}  DESCRIPTION`,
-  );
+  console.log(`${'NAME'.padEnd(nameWidth)}  ${'SCOPE'.padEnd(scopeWidth)}  ${'AGENT'.padEnd(agentWidth)}  DESCRIPTION`);
   for (const skill of filtered) {
     const desc = truncate(skill.description, 80);
     const agent = skill.agentId ?? '-';
@@ -184,7 +173,9 @@ function runList(args: readonly string[], opts: CommandOptions): void {
     );
   }
   if (result.failedNames.length > 0) {
-    console.warn(`\n[skill:list] ${result.failedNames.length} skill(s) failed to load: ${result.failedNames.join(', ')}`);
+    console.warn(
+      `\n[skill:list] ${result.failedNames.length} skill(s) failed to load: ${result.failedNames.join(', ')}`,
+    );
   }
 }
 
@@ -204,7 +195,9 @@ function runShow(args: readonly string[], opts: CommandOptions): void {
   const skill = findByName(name, opts.workspace, findOpts);
   if (!skill) {
     const where = flags.agent ? ` for agent '${flags.agent}'` : '';
-    throw new Error(`Skill '${name}'${where} not found. Run 'vinyan skills list${flags.agent ? ` --agent=${flags.agent}` : ''}' to see available skills.`);
+    throw new Error(
+      `Skill '${name}'${where} not found. Run 'vinyan skills list${flags.agent ? ` --agent=${flags.agent}` : ''}' to see available skills.`,
+    );
   }
 
   console.log(`name: ${skill.name}`);
@@ -231,9 +224,7 @@ function runSearch(args: readonly string[], opts: CommandOptions): void {
   if (flags.agent) {
     validateAgentId(flags.agent);
     // Mirror dispatch-time visibility: shared + this agent's per-agent skills.
-    pool = pool.filter(
-      (s) => s.scope === 'user' || s.scope === 'project' || s.agentId === flags.agent,
-    );
+    pool = pool.filter((s) => s.scope === 'user' || s.scope === 'project' || s.agentId === flags.agent);
   } else {
     // Default to shared scopes only — no random per-agent variants leaking
     // into a query that didn't ask for them.
@@ -319,7 +310,7 @@ function runMode(args: readonly string[], opts: CommandOptions): void {
     // Read current mode from vinyan.json
     const cfgPath = join(opts.workspace, 'vinyan.json');
     if (!existsSync(cfgPath)) {
-      console.log("mode: simple (no vinyan.json — default)");
+      console.log('mode: simple (no vinyan.json — default)');
       return;
     }
     try {
@@ -448,11 +439,7 @@ interface FindByNameOptions {
   userSkillsDir?: string;
 }
 
-function findByName(
-  name: string,
-  workspace: string,
-  opts: FindByNameOptions = {},
-): SimpleSkill | null {
+function findByName(name: string, workspace: string, opts: FindByNameOptions = {}): SimpleSkill | null {
   const result = loadSimpleSkills({
     workspace,
     ...(opts.userSkillsDir !== undefined ? { userSkillsDir: opts.userSkillsDir } : {}),
@@ -545,12 +532,7 @@ export const SYSTEM_SKILL_NAMES = [
  * remove them from a user's dir, but only when the file content matches the
  * bundled example byte-for-byte (so user-customised copies are left alone).
  */
-export const RETIRED_STARTER_NAMES = [
-  'code-review',
-  'debug-trace',
-  'git-commit-message',
-  'unit-test-plan',
-] as const;
+export const RETIRED_STARTER_NAMES = ['code-review', 'debug-trace', 'git-commit-message', 'unit-test-plan'] as const;
 
 /** Maximum directory levels to walk up when searching for `templates/`. */
 const MAX_TEMPLATE_SEARCH_DEPTH = 6;
@@ -561,9 +543,7 @@ const MAX_TEMPLATE_SEARCH_DEPTH = 6;
  * source and shipped builds). Shared by `vinyan init`, `install-system`, and
  * `install-examples`.
  */
-export function locateBundledSkillsDir(
-  ...subPath: readonly string[]
-): string | null {
+export function locateBundledSkillsDir(...subPath: readonly string[]): string | null {
   const startDir = dirname(fileURLToPath(import.meta.url));
   let cur = startDir;
   for (let i = 0; i < MAX_TEMPLATE_SEARCH_DEPTH; i++) {
@@ -585,7 +565,10 @@ export function locateBundledSkillsDir(
  * starter pack or anything else) do NOT get the system pack auto-installed —
  * they run `vinyan skills install-system` explicitly.
  */
-export function ensureSystemSkillPack(templatesRoot: string, userSkillsDir: string): {
+export function ensureSystemSkillPack(
+  templatesRoot: string,
+  userSkillsDir: string,
+): {
   copied: readonly string[];
   reason?: string;
 } {

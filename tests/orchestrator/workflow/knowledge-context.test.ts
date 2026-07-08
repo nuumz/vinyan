@@ -15,10 +15,7 @@ describe('buildKnowledgeContext', () => {
       ],
     } as any;
 
-    const ctx = await buildKnowledgeContext(
-      { worldGraph },
-      { targetFiles: ['src/auth.ts'] },
-    );
+    const ctx = await buildKnowledgeContext({ worldGraph }, { targetFiles: ['src/auth.ts'] });
     expect(ctx).toContain('[VERIFIED FACTS]');
     expect(ctx).toContain('AuthService');
     expect(ctx).toContain('0.90');
@@ -32,10 +29,7 @@ describe('buildKnowledgeContext', () => {
       queryFailedApproaches: async () => [],
     } as any;
 
-    const ctx = await buildKnowledgeContext(
-      { agentMemory },
-      { taskSignature: 'fix::ts::small' },
-    );
+    const ctx = await buildKnowledgeContext({ agentMemory }, { taskSignature: 'fix::ts::small' });
     expect(ctx).toContain('[PROVEN APPROACHES]');
     expect(ctx).toContain('test-first refactor');
     expect(ctx).toContain('85%');
@@ -44,25 +38,28 @@ describe('buildKnowledgeContext', () => {
   test('agentMemory with rejected approaches → [APPROACHES TO AVOID] section', async () => {
     const agentMemory = {
       queryRelatedSkills: async () => [],
-      queryFailedApproaches: async () => [
-        { approach: 'inline everything', oracle_verdict: 'type error TS2322' },
-      ],
+      queryFailedApproaches: async () => [{ approach: 'inline everything', oracle_verdict: 'type error TS2322' }],
     } as any;
 
-    const ctx = await buildKnowledgeContext(
-      { agentMemory },
-      { taskSignature: 'fix::ts::small' },
-    );
+    const ctx = await buildKnowledgeContext({ agentMemory }, { taskSignature: 'fix::ts::small' });
     expect(ctx).toContain('[APPROACHES TO AVOID]');
     expect(ctx).toContain('inline everything');
     expect(ctx).toContain('TS2322');
   });
 
   test('store errors → graceful empty sections', async () => {
-    const worldGraph = { queryFacts: () => { throw new Error('db down'); } } as any;
+    const worldGraph = {
+      queryFacts: () => {
+        throw new Error('db down');
+      },
+    } as any;
     const agentMemory = {
-      queryRelatedSkills: async () => { throw new Error('cache miss'); },
-      queryFailedApproaches: async () => { throw new Error('timeout'); },
+      queryRelatedSkills: async () => {
+        throw new Error('cache miss');
+      },
+      queryFailedApproaches: async () => {
+        throw new Error('timeout');
+      },
     } as any;
 
     const ctx = await buildKnowledgeContext(
@@ -74,17 +71,15 @@ describe('buildKnowledgeContext', () => {
 
   test('maxFactsPerFile limits output', async () => {
     const worldGraph = {
-      queryFacts: () => Array.from({ length: 20 }, (_, i) => ({
-        target: 'src/big.ts',
-        pattern: `fact-${i}`,
-        confidence: 0.8,
-      })),
+      queryFacts: () =>
+        Array.from({ length: 20 }, (_, i) => ({
+          target: 'src/big.ts',
+          pattern: `fact-${i}`,
+          confidence: 0.8,
+        })),
     } as any;
 
-    const ctx = await buildKnowledgeContext(
-      { worldGraph },
-      { targetFiles: ['src/big.ts'], maxFactsPerFile: 3 },
-    );
+    const ctx = await buildKnowledgeContext({ worldGraph }, { targetFiles: ['src/big.ts'], maxFactsPerFile: 3 });
     const factCount = (ctx.match(/fact-/g) ?? []).length;
     expect(factCount).toBe(3);
   });

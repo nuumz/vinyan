@@ -43,9 +43,7 @@ export interface RegisterSlackAdapterResult {
 const PLUGIN_ID = 'vinyan.bundled.slack';
 const ZERO_SHA = '0'.repeat(64);
 
-export async function registerSlackAdapter(
-  opts: RegisterSlackAdapterOptions,
-): Promise<RegisterSlackAdapterResult> {
+export async function registerSlackAdapter(opts: RegisterSlackAdapterOptions): Promise<RegisterSlackAdapterResult> {
   const manifest = buildSlackManifest();
 
   const registryAny = opts.registry as unknown as RegistryWithInternalIngest;

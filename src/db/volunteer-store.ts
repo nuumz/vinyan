@@ -82,9 +82,7 @@ export class VolunteerStore {
           SET declined_reason = ?
         WHERE offer_id = ? AND accepted_at IS NULL AND declined_reason IS NULL`,
     );
-    this.sGetOfferByCommitment = db.prepare(
-      'SELECT * FROM volunteer_offers WHERE commitment_id = ?',
-    );
+    this.sGetOfferByCommitment = db.prepare('SELECT * FROM volunteer_offers WHERE commitment_id = ?');
 
     const upsert = db.prepare(`
       INSERT INTO engine_helpfulness (engine_id, offers_made, offers_accepted, deliveries_completed, last_updated_at)
@@ -121,12 +119,7 @@ export class VolunteerStore {
 
   // ── Offers ───────────────────────────────────────────────────────
 
-  insertOffer(offer: {
-    offerId: string;
-    taskId: string;
-    engineId: string;
-    offeredAt: number;
-  }): void {
+  insertOffer(offer: { offerId: string; taskId: string; engineId: string; offeredAt: number }): void {
     this.sInsertOffer.run(offer.offerId, offer.taskId, offer.engineId, offer.offeredAt);
     this.ensureHelpfulnessRow(offer.engineId, offer.offeredAt);
     this.sBumpOfferCount.run(offer.offeredAt, offer.engineId);
@@ -142,11 +135,7 @@ export class VolunteerStore {
   }
 
   acceptOffer(params: { offerId: string; commitmentId: string; at: number }): boolean {
-    const r = this.sAcceptOffer.run(
-      params.at,
-      params.commitmentId,
-      params.offerId,
-    ) as { changes: number };
+    const r = this.sAcceptOffer.run(params.at, params.commitmentId, params.offerId) as { changes: number };
     if (r.changes > 0) {
       const offer = this.getOffer(params.offerId);
       if (offer) {

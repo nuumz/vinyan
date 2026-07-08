@@ -6,8 +6,8 @@
  * These tests pin the invariants every creation path relies on.
  */
 import { describe, expect, test } from 'bun:test';
-import { SkillMdFrontmatterSchema } from '../../../src/skills/skill-md/schema.ts';
 import { buildStubDraftGenerator, type DraftRequest } from '../../../src/skills/autonomous/index.ts';
+import { SkillMdFrontmatterSchema } from '../../../src/skills/skill-md/schema.ts';
 
 const baseRequest: DraftRequest = {
   taskSignature: 'refactor::extract-method',

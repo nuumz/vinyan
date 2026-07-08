@@ -74,9 +74,7 @@ export function migrateExport(exported: AbstractPatternExport): AbstractPatternE
     );
   }
   if (exported.version < MIN_SUPPORTED_VERSION) {
-    throw new Error(
-      `Export version ${exported.version} is too old to migrate (min: ${MIN_SUPPORTED_VERSION}).`,
-    );
+    throw new Error(`Export version ${exported.version} is too old to migrate (min: ${MIN_SUPPORTED_VERSION}).`);
   }
 
   let migrated = { ...exported };

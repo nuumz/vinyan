@@ -139,10 +139,7 @@ export class CalibrationEngineImpl implements CalibrationEngine {
 
   scoreTestOutcome(predicted: TestOutcomeDistribution, actual: 'pass' | 'partial' | 'fail'): number {
     const [iPass, iPartial, iFail] = indicatorVector(actual);
-    const bs =
-      (predicted.pPass - iPass) ** 2 +
-      (predicted.pPartial - iPartial) ** 2 +
-      (predicted.pFail - iFail) ** 2;
+    const bs = (predicted.pPass - iPass) ** 2 + (predicted.pPartial - iPartial) ** 2 + (predicted.pFail - iFail) ** 2;
 
     this.scoredPredictions.push({
       predicted,
@@ -226,10 +223,7 @@ export class CalibrationEngineImpl implements CalibrationEngine {
     const baseFail = failCount / totalWeight;
 
     // 3-class uncertainty: Σ base_k × (1 - base_k)
-    const unc =
-      basePass * (1 - basePass) +
-      basePartial * (1 - basePartial) +
-      baseFail * (1 - baseFail);
+    const unc = basePass * (1 - basePass) + basePartial * (1 - basePartial) + baseFail * (1 - baseFail);
 
     // Bin by predicted pPass (primary outcome) for decomposition
     const numBins = adaptiveBinCount(n);
@@ -349,12 +343,9 @@ export class CalibrationEngineImpl implements CalibrationEngine {
     const blastScores = this.continuousScores.filter((s) => s.kind === 'blast');
     const qualityScores = this.continuousScores.filter((s) => s.kind === 'quality');
 
-    const crpsBlastAvg = blastScores.length > 0
-      ? blastScores.reduce((s, c) => s + c.crps, 0) / blastScores.length
-      : 0;
-    const crpsQualityAvg = qualityScores.length > 0
-      ? qualityScores.reduce((s, c) => s + c.crps, 0) / qualityScores.length
-      : 0;
+    const crpsBlastAvg = blastScores.length > 0 ? blastScores.reduce((s, c) => s + c.crps, 0) / blastScores.length : 0;
+    const crpsQualityAvg =
+      qualityScores.length > 0 ? qualityScores.reduce((s, c) => s + c.crps, 0) / qualityScores.length : 0;
 
     // Determine basis from most recent prediction
     const lastPred = this.scoredPredictions[this.scoredPredictions.length - 1];
@@ -373,18 +364,20 @@ export class CalibrationEngineImpl implements CalibrationEngine {
     const blastIntervals = this.intervalScores.filter((s) => s.kind === 'blast');
     const qualityIntervals = this.intervalScores.filter((s) => s.kind === 'quality');
 
-    const intervalScoreBlast = blastIntervals.length > 0
-      ? blastIntervals.reduce((s, c) => s + c.score, 0) / blastIntervals.length
-      : undefined;
-    const intervalScoreQuality = qualityIntervals.length > 0
-      ? qualityIntervals.reduce((s, c) => s + c.score, 0) / qualityIntervals.length
-      : undefined;
-    const coverageBlast = blastIntervals.length > 0
-      ? blastIntervals.filter((s) => s.insideInterval).length / blastIntervals.length
-      : undefined;
-    const coverageQuality = qualityIntervals.length > 0
-      ? qualityIntervals.filter((s) => s.insideInterval).length / qualityIntervals.length
-      : undefined;
+    const intervalScoreBlast =
+      blastIntervals.length > 0 ? blastIntervals.reduce((s, c) => s + c.score, 0) / blastIntervals.length : undefined;
+    const intervalScoreQuality =
+      qualityIntervals.length > 0
+        ? qualityIntervals.reduce((s, c) => s + c.score, 0) / qualityIntervals.length
+        : undefined;
+    const coverageBlast =
+      blastIntervals.length > 0
+        ? blastIntervals.filter((s) => s.insideInterval).length / blastIntervals.length
+        : undefined;
+    const coverageQuality =
+      qualityIntervals.length > 0
+        ? qualityIntervals.filter((s) => s.insideInterval).length / qualityIntervals.length
+        : undefined;
 
     return {
       brierScore: decomp.brierScore,
@@ -416,9 +409,7 @@ export class CalibrationEngineImpl implements CalibrationEngine {
     };
   }
 
-  updateEdgeWeights(
-    observations: Array<{ edgeType: CausalEdgeType | 'imports'; brokeTarget: boolean }>,
-  ): void {
+  updateEdgeWeights(observations: Array<{ edgeType: CausalEdgeType | 'imports'; brokeTarget: boolean }>): void {
     const now = Date.now();
 
     for (const obs of observations) {

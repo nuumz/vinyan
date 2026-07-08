@@ -81,12 +81,8 @@ export class TeamStore {
       INSERT INTO teams (team_id, name, department_id, created_at) VALUES (?, ?, ?, ?)
     `);
     this.sGetTeam = db.prepare('SELECT * FROM teams WHERE team_id = ?');
-    this.sListActiveTeams = db.prepare(
-      'SELECT * FROM teams WHERE archived_at IS NULL ORDER BY created_at',
-    );
-    this.sArchiveTeam = db.prepare(
-      'UPDATE teams SET archived_at = ? WHERE team_id = ? AND archived_at IS NULL',
-    );
+    this.sListActiveTeams = db.prepare('SELECT * FROM teams WHERE archived_at IS NULL ORDER BY created_at');
+    this.sArchiveTeam = db.prepare('UPDATE teams SET archived_at = ? WHERE team_id = ? AND archived_at IS NULL');
 
     this.sInsertMember = db.prepare(`
       INSERT INTO team_members (team_id, engine_id, role, joined_at)
@@ -116,18 +112,8 @@ export class TeamStore {
 
   // ── Teams ────────────────────────────────────────────────────────
 
-  createTeam(params: {
-    teamId: string;
-    name: string;
-    departmentId?: string;
-    createdAt: number;
-  }): void {
-    this.sInsertTeam.run(
-      params.teamId,
-      params.name,
-      params.departmentId ?? null,
-      params.createdAt,
-    );
+  createTeam(params: { teamId: string; name: string; departmentId?: string; createdAt: number }): void {
+    this.sInsertTeam.run(params.teamId, params.name, params.departmentId ?? null, params.createdAt);
   }
 
   getTeam(teamId: string): TeamRecord | null {
@@ -146,18 +132,8 @@ export class TeamStore {
 
   // ── Members ──────────────────────────────────────────────────────
 
-  addMember(params: {
-    teamId: string;
-    engineId: string;
-    role?: string;
-    joinedAt: number;
-  }): void {
-    this.sInsertMember.run(
-      params.teamId,
-      params.engineId,
-      params.role ?? null,
-      params.joinedAt,
-    );
+  addMember(params: { teamId: string; engineId: string; role?: string; joinedAt: number }): void {
+    this.sInsertMember.run(params.teamId, params.engineId, params.role ?? null, params.joinedAt);
   }
 
   listMembers(teamId: string): readonly TeamMemberRecord[] {

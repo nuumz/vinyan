@@ -20,16 +20,16 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBus } from '../../../src/core/bus.ts';
+import type { ExternalCodingCliController } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-controller.ts';
 import {
-  CodingCliWorkflowStrategy,
   type CodingCliWorkflowOutcome,
   type CodingCliWorkflowStep,
+  CodingCliWorkflowStrategy,
 } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-workflow-strategy.ts';
-import type { ExternalCodingCliController } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-controller.ts';
 import { createMockProvider } from '../../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../../src/orchestrator/llm/provider-registry.ts';
-import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 import type { TaskInput } from '../../../src/orchestrator/types.ts';
+import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 
 let tempDir: string;
 
@@ -104,12 +104,8 @@ function makeRegistryReturningEccPlan() {
   const synthResponse = 'Refactor complete via Claude Code.';
   const registry = new LLMProviderRegistry();
   // Planner picks balanced first, then fast as fallback.
-  registry.register(
-    createMockProvider({ id: 'mock/balanced', tier: 'balanced', responseContent: planResponse }),
-  );
-  registry.register(
-    createMockProvider({ id: 'mock/fast', tier: 'fast', responseContent: synthResponse }),
-  );
+  registry.register(createMockProvider({ id: 'mock/balanced', tier: 'balanced', responseContent: planResponse }));
+  registry.register(createMockProvider({ id: 'mock/fast', tier: 'fast', responseContent: synthResponse }));
   return registry;
 }
 
@@ -192,4 +188,3 @@ describe('workflow plan stage-manifest', () => {
     expect(eventStr).toContain('"ownerType":"tool"');
   });
 });
-

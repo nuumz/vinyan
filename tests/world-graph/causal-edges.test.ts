@@ -104,10 +104,10 @@ describe('WorldGraph causal edges', () => {
 
     // Artificially age the first edge
     const oldTimestamp = Date.now() - 100 * 24 * 60 * 60 * 1000;
-    (wg as any).db.run(
-      'UPDATE causal_edges SET last_observed_at = ? WHERE source_file = ?',
-      [oldTimestamp, 'src/a.ts'],
-    );
+    (wg as any).db.run('UPDATE causal_edges SET last_observed_at = ? WHERE source_file = ?', [
+      oldTimestamp,
+      'src/a.ts',
+    ]);
 
     const pruned = wg.pruneStaleCausalEdges(90);
     expect(pruned).toBe(1);
@@ -126,10 +126,7 @@ describe('WorldGraph causal edges', () => {
 
     // Age to 10 days ago
     const tenDaysAgo = Date.now() - 10 * 24 * 60 * 60 * 1000;
-    (wg as any).db.run(
-      'UPDATE causal_edges SET last_observed_at = ? WHERE source_file = ?',
-      [tenDaysAgo, 'src/a.ts'],
-    );
+    (wg as any).db.run('UPDATE causal_edges SET last_observed_at = ? WHERE source_file = ?', [tenDaysAgo, 'src/a.ts']);
 
     // With default 90 days — should NOT prune
     expect(wg.pruneStaleCausalEdges(90)).toBe(0);

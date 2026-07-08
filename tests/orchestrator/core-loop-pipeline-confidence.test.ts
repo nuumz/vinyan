@@ -180,7 +180,10 @@ describe('Pipeline Confidence — L0 Binary Backward Compatibility', () => {
           latencyBudgetMs: 2000,
         }) as RoutingDecision,
     };
-    const result = await executeTask(makeInput({ budget: { maxTokens: 10_000, maxDurationMs: 2_000, maxRetries: 1 } }), deps);
+    const result = await executeTask(
+      makeInput({ budget: { maxTokens: 10_000, maxDurationMs: 2_000, maxRetries: 1 } }),
+      deps,
+    );
 
     // L0 + failed → should escalate or fail
     expect(['failed', 'escalated']).toContain(result.status);
@@ -361,7 +364,10 @@ describe('Pipeline Confidence — Decision Paths', () => {
         recordedTraces.push(trace);
       },
     };
-    const result = await executeTask(makeInput({ budget: { maxTokens: 10_000, maxDurationMs: 2_000, maxRetries: 1 } }), deps);
+    const result = await executeTask(
+      makeInput({ budget: { maxTokens: 10_000, maxDurationMs: 2_000, maxRetries: 1 } }),
+      deps,
+    );
 
     expect(['failed', 'escalated']).toContain(result.status);
     // The first L1 trace should show the escalate or refuse decision
@@ -402,7 +408,10 @@ describe('Pipeline Confidence — Decision Paths', () => {
         recordedTraces.push(trace);
       },
     };
-    const result = await executeTask(makeInput({ budget: { maxTokens: 10_000, maxDurationMs: 2_000, maxRetries: 1 } }), deps);
+    const result = await executeTask(
+      makeInput({ budget: { maxTokens: 10_000, maxDurationMs: 2_000, maxRetries: 1 } }),
+      deps,
+    );
 
     expect(['failed', 'escalated']).toContain(result.status);
     // Check that a refuse event was emitted for the L1 trace
@@ -417,7 +426,10 @@ describe('Pipeline Confidence — Decision Paths', () => {
     expect(l1Trace!.governanceProvenance?.reason).toContain('below refuse boundary 0.30');
     expect(l1Trace!.governanceProvenance?.wasDerivedFrom).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ source: 'verification-confidence', summary: expect.stringContaining('verification=') }),
+        expect.objectContaining({
+          source: 'verification-confidence',
+          summary: expect.stringContaining('verification='),
+        }),
         expect.objectContaining({ source: 'pipeline-confidence-thresholds', summary: 'refuse when composite < 0.30' }),
       ]),
     );
@@ -525,7 +537,10 @@ describe('Pipeline Confidence — ExecutionTrace Fields', () => {
           latencyBudgetMs: 2000,
         }) as RoutingDecision,
     };
-    const result = await executeTask(makeInput({ budget: { maxTokens: 10_000, maxDurationMs: 2_000, maxRetries: 1 } }), deps);
+    const result = await executeTask(
+      makeInput({ budget: { maxTokens: 10_000, maxDurationMs: 2_000, maxRetries: 1 } }),
+      deps,
+    );
 
     // The final escalation trace (all-levels-exhausted) won't have pipeline confidence
     if (result.trace.approach === 'all-levels-exhausted') {

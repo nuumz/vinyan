@@ -13,8 +13,8 @@ import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 
 import { SkillOutcomeStore } from '../../../src/db/skill-outcome-store.ts';
 import {
-  recordSimpleSkillOutcomes,
   deriveTaskSignature,
+  recordSimpleSkillOutcomes,
 } from '../../../src/orchestrator/agents/task-outcome-recorder.ts';
 import type { TaskInput, TaskResult } from '../../../src/orchestrator/types.ts';
 
@@ -74,10 +74,14 @@ describe('recordSimpleSkillOutcomes', () => {
     const taskSig = deriveTaskSignature(codeReviewInput);
     expect(taskSig).toBe('code::review');
 
-    expect(store.getOutcome({ personaId: 'developer', skillId: 'code-review', taskSignature: taskSig }))
-      .toMatchObject({ successes: 1, failures: 0 });
-    expect(store.getOutcome({ personaId: 'developer', skillId: 'debug-trace', taskSignature: taskSig }))
-      .toMatchObject({ successes: 1, failures: 0 });
+    expect(store.getOutcome({ personaId: 'developer', skillId: 'code-review', taskSignature: taskSig })).toMatchObject({
+      successes: 1,
+      failures: 0,
+    });
+    expect(store.getOutcome({ personaId: 'developer', skillId: 'debug-trace', taskSignature: taskSig })).toMatchObject({
+      successes: 1,
+      failures: 0,
+    });
   });
 
   test('failed task records failure for each invoked skill', () => {
@@ -86,8 +90,10 @@ describe('recordSimpleSkillOutcomes', () => {
     expect(result.recorded).toBe(1);
 
     const taskSig = deriveTaskSignature(codeReviewInput);
-    expect(store.getOutcome({ personaId: 'developer', skillId: 'code-review', taskSignature: taskSig }))
-      .toMatchObject({ successes: 0, failures: 1 });
+    expect(store.getOutcome({ personaId: 'developer', skillId: 'code-review', taskSignature: taskSig })).toMatchObject({
+      successes: 0,
+      failures: 1,
+    });
   });
 
   test('multiple invocations of the same skill across tasks accumulate', () => {
@@ -108,13 +114,7 @@ describe('recordSimpleSkillOutcomes', () => {
 
   test('missing agentId → no-op', () => {
     const noPersona: TaskInput = { ...codeReviewInput, agentId: undefined };
-    const result = recordSimpleSkillOutcomes(
-      noPersona,
-      completedResult,
-      new Set(['anything']),
-      store,
-      100,
-    );
+    const result = recordSimpleSkillOutcomes(noPersona, completedResult, new Set(['anything']), store, 100);
     expect(result.recorded).toBe(0);
   });
 

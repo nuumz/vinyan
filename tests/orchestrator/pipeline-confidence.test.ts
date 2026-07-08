@@ -10,7 +10,7 @@ describe('computePipelineConfidence', () => {
   test('verification=1.0 and generation=1.0 → composite close to 1.0', () => {
     const pc = computePipelineConfidence({ verification: 1.0, generation: 1.0 });
     // Missing dims use 0.7; 0.7^(0.15+0.05+0.10+0.20) * 1^(0.10+0.40) ≈ 0.7^0.50 ≈ 0.837
-    expect(pc.composite).toBeGreaterThan(0.80);
+    expect(pc.composite).toBeGreaterThan(0.8);
     expect(pc.composite).toBeLessThanOrEqual(1.0);
   });
 
@@ -102,7 +102,7 @@ describe('deriveConfidenceDecision', () => {
   });
 
   test('0.20 → refuse', () => {
-    expect(deriveConfidenceDecision(0.20)).toBe('refuse');
+    expect(deriveConfidenceDecision(0.2)).toBe('refuse');
   });
 
   test('0.0 → refuse', () => {

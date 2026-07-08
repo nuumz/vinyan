@@ -27,21 +27,18 @@
 import { describe, expect, test } from 'bun:test';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { maybeEmitCreativeClarificationGate } from '../../src/orchestrator/creative-clarification-gate.ts';
-import {
-  clearIntentResolverCache,
-  resolveIntent,
-} from '../../src/orchestrator/intent-resolver.ts';
+import { clearIntentResolverCache, resolveIntent } from '../../src/orchestrator/intent-resolver.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
-import { executeWorkflow } from '../../src/orchestrator/workflow/workflow-executor.ts';
 import type {
-  Turn,
   ExecutionTrace,
   LLMProvider,
   LLMRequest,
   LLMResponse,
   RoutingDecision,
   TaskInput,
+  Turn,
 } from '../../src/orchestrator/types.ts';
+import { executeWorkflow } from '../../src/orchestrator/workflow/workflow-executor.ts';
 
 function makeInput(goal: string, overrides: Partial<TaskInput> = {}): TaskInput {
   return {
@@ -105,7 +102,11 @@ function instrumentBus(): { bus: VinyanBus; events: Array<{ name: string; payloa
 function makeTraceCollector() {
   const recorded: ExecutionTrace[] = [];
   return {
-    collector: { record: async (t: ExecutionTrace) => { recorded.push(t); } },
+    collector: {
+      record: async (t: ExecutionTrace) => {
+        recorded.push(t);
+      },
+    },
     recorded,
   };
 }
@@ -133,10 +134,7 @@ describe('creative-workflow E2E — turn 1 (fresh session)', () => {
     registry.register(provider);
 
     // Step 1 — intent resolution.
-    const intent = await resolveIntent(
-      makeInput('อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง'),
-      { registry, sessionId: 's1' },
-    );
+    const intent = await resolveIntent(makeInput('อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง'), { registry, sessionId: 's1' });
     expect(intent.strategy).toBe('agentic-workflow');
 
     // Step 2 — creative-clarification gate (fresh session → fires).
@@ -156,17 +154,12 @@ describe('creative-workflow E2E — turn 1 (fresh session)', () => {
 
     // Step 3 — bus event sequence.
     const sequence = events.map((e) => e.name);
-    expect(sequence).toEqual([
-      'trace:record',
-      'agent:clarification_requested',
-      'task:complete',
-    ]);
+    expect(sequence).toEqual(['trace:record', 'agent:clarification_requested', 'task:complete']);
 
-    const clarifyPayload = events.find((e) => e.name === 'agent:clarification_requested')!
-      .payload as {
-        structuredQuestions: Array<{ id: string; kind: string; options?: unknown[] }>;
-        source: string;
-      };
+    const clarifyPayload = events.find((e) => e.name === 'agent:clarification_requested')!.payload as {
+      structuredQuestions: Array<{ id: string; kind: string; options?: unknown[] }>;
+      source: string;
+    };
     expect(clarifyPayload.source).toBe('orchestrator');
     const ids = clarifyPayload.structuredQuestions.map((q) => q.id);
     expect(ids).toContain('genre');
@@ -189,8 +182,24 @@ describe('creative-workflow E2E — turn 2 (with history) → executor approval 
     const { collector } = makeTraceCollector();
 
     const prior: Turn[] = [
-      { id: `${'t0'}-1`, sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'อยากเขียนนิยาย' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-      { id: `${'t0'}-2`, sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'ตอบคำถามตามตัวเลือก...' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+      {
+        id: `${'t0'}-1`,
+        sessionId: 's',
+        seq: 0,
+        role: 'user',
+        blocks: [{ type: 'text', text: 'อยากเขียนนิยาย' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 1,
+      },
+      {
+        id: `${'t0'}-2`,
+        sessionId: 's',
+        seq: 0,
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'ตอบคำถามตามตัวเลือก...' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 2,
+      },
     ];
 
     // Gate must skip (session has history).
@@ -208,13 +217,10 @@ describe('creative-workflow E2E — turn 2 (with history) → executor approval 
     // Executor runs; approval required because 'auto' + long-form. Using an
     // empty provider registry means planWorkflow falls back to a single-step
     // plan — sufficient to exercise the approval gate.
-    const runPromise = executeWorkflow(
-      makeInput('อยากเขียนนิยายเว็บตูนโรแมนซ์แฟนตาซีครับ เป็นเรื่องยาวหลายตอน'),
-      {
-        bus,
-        workflowConfig: { requireUserApproval: 'auto', approvalTimeoutMs: 30_000 },
-      },
-    );
+    const runPromise = executeWorkflow(makeInput('อยากเขียนนิยายเว็บตูนโรแมนซ์แฟนตาซีครับ เป็นเรื่องยาวหลายตอน'), {
+      bus,
+      workflowConfig: { requireUserApproval: 'auto', approvalTimeoutMs: 30_000 },
+    });
 
     // Let the executor subscribe + emit plan_ready.
     await new Promise((r) => setTimeout(r, 20));

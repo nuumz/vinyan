@@ -8,10 +8,8 @@
 
 import { describe, expect, test } from 'bun:test';
 import { newRuleComprehender } from '../../../src/orchestrator/comprehension/rule-comprehender.ts';
-import {
-  ComprehendedTaskMessageSchema,
-} from '../../../src/orchestrator/comprehension/types.ts';
-import type { Turn, TaskInput } from '../../../src/orchestrator/types.ts';
+import { ComprehendedTaskMessageSchema } from '../../../src/orchestrator/comprehension/types.ts';
+import type { TaskInput, Turn } from '../../../src/orchestrator/types.ts';
 
 function makeInput(overrides: {
   goal: string;
@@ -39,9 +37,7 @@ function makeInput(overrides: {
 describe('RuleComprehender', () => {
   test('fresh session with substantial goal → isNewTopic=true, not clarification, deterministic', async () => {
     const eng = newRuleComprehender(() => 1_700_000_000_000);
-    const out = await eng.comprehend(
-      makeInput({ goal: 'ช่วยแต่งนิยายก่อนนอนให้สักเรื่อง' }),
-    );
+    const out = await eng.comprehend(makeInput({ goal: 'ช่วยแต่งนิยายก่อนนอนให้สักเรื่อง' }));
 
     // Envelope validates against the Zod schema.
     ComprehendedTaskMessageSchema.parse(out);
@@ -61,8 +57,24 @@ describe('RuleComprehender', () => {
   test('clarification-answer preserves rootGoal as resolvedGoal', async () => {
     const eng = newRuleComprehender();
     const history: Turn[] = [
-      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'ช่วยแต่งนิยายก่อนนอน' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- แนวอะไร?\n- ยาวแค่ไหน?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+      {
+        id: 't-0-1',
+        sessionId: 's',
+        seq: 0,
+        role: 'user',
+        blocks: [{ type: 'text', text: 'ช่วยแต่งนิยายก่อนนอน' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 1,
+      },
+      {
+        id: 't-0-2',
+        sessionId: 's',
+        seq: 0,
+        role: 'assistant',
+        blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- แนวอะไร?\n- ยาวแค่ไหน?' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 2,
+      },
     ];
     const out = await eng.comprehend(
       makeInput({
@@ -80,10 +92,7 @@ describe('RuleComprehender', () => {
     // Root-goal anchoring: downstream sees the ORIGINAL task as the goal.
     expect(out.params.data?.resolvedGoal).toBe('ช่วยแต่งนิยายก่อนนอน');
     expect(out.params.data?.literalGoal).toBe('โรแมนติก สั้นๆ');
-    expect(out.params.data?.state.pendingQuestions).toEqual([
-      'แนวอะไร?',
-      'ยาวแค่ไหน?',
-    ]);
+    expect(out.params.data?.state.pendingQuestions).toEqual(['แนวอะไร?', 'ยาวแค่ไหน?']);
 
     // Evidence chain must carry the clarification claim.
     const claims = out.params.evidence_chain.map((e) => e.source);
@@ -97,8 +106,24 @@ describe('RuleComprehender', () => {
       makeInput({
         goal: 'ok',
         history: [
-          { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'please review my code' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-          { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'Reviewed. Want me to apply the fixes?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+          {
+            id: 't-0-1',
+            sessionId: 's',
+            seq: 0,
+            role: 'user',
+            blocks: [{ type: 'text', text: 'please review my code' }],
+            tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+            createdAt: 1,
+          },
+          {
+            id: 't-0-2',
+            sessionId: 's',
+            seq: 0,
+            role: 'assistant',
+            blocks: [{ type: 'text', text: 'Reviewed. Want me to apply the fixes?' }],
+            tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+            createdAt: 2,
+          },
         ],
       }),
     );
@@ -131,7 +156,15 @@ describe('RuleComprehender', () => {
     const args = makeInput({
       goal: 'do the thing',
       history: [
-        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'earlier' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+        {
+          id: 't-0-1',
+          sessionId: 's',
+          seq: 0,
+          role: 'user',
+          blocks: [{ type: 'text', text: 'earlier' }],
+          tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+          createdAt: 1,
+        },
       ],
     });
     const a = await eng.comprehend(args);
@@ -147,7 +180,15 @@ describe('RuleComprehender', () => {
     const extended = makeInput({
       goal: 'continue',
       history: [
-        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'earlier turn' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+        {
+          id: 't-0-1',
+          sessionId: 's',
+          seq: 0,
+          role: 'user',
+          blocks: [{ type: 'text', text: 'earlier turn' }],
+          tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+          createdAt: 1,
+        },
       ],
     });
     const b = await eng.comprehend(extended);
@@ -157,12 +198,26 @@ describe('RuleComprehender', () => {
   test('follow-up without pending clarification stays non-clarification-answer', async () => {
     const eng = newRuleComprehender();
     const history: Turn[] = [
-      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'analyze this code' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'Done — looks fine.' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+      {
+        id: 't-0-1',
+        sessionId: 's',
+        seq: 0,
+        role: 'user',
+        blocks: [{ type: 'text', text: 'analyze this code' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 1,
+      },
+      {
+        id: 't-0-2',
+        sessionId: 's',
+        seq: 0,
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'Done — looks fine.' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 2,
+      },
     ];
-    const out = await eng.comprehend(
-      makeInput({ goal: 'now add unit tests', history }),
-    );
+    const out = await eng.comprehend(makeInput({ goal: 'now add unit tests', history }));
     expect(out.params.data?.state.isClarificationAnswer).toBe(false);
     expect(out.params.data?.state.isFollowUp).toBe(true);
     expect(out.params.data?.state.isNewTopic).toBe(false);
@@ -170,9 +225,7 @@ describe('RuleComprehender', () => {
 
   test('evidence chain entries all have confidence in [0,1]', async () => {
     const eng = newRuleComprehender();
-    const out = await eng.comprehend(
-      makeInput({ goal: 'test', pendingQuestions: ['a?'] }),
-    );
+    const out = await eng.comprehend(makeInput({ goal: 'test', pendingQuestions: ['a?'] }));
     for (const e of out.params.evidence_chain) {
       expect(e.confidence).toBeGreaterThanOrEqual(0);
       expect(e.confidence).toBeLessThanOrEqual(1);
@@ -184,8 +237,24 @@ describe('RuleComprehender', () => {
   test('rootGoal is surfaced both at envelope.params and inside data.state', async () => {
     const eng = newRuleComprehender();
     const history: Turn[] = [
-      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- genre?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+      {
+        id: 't-0-1',
+        sessionId: 's',
+        seq: 0,
+        role: 'user',
+        blocks: [{ type: 'text', text: 'write a bedtime story' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 1,
+      },
+      {
+        id: 't-0-2',
+        sessionId: 's',
+        seq: 0,
+        role: 'assistant',
+        blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- genre?' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 2,
+      },
     ];
     const out = await eng.comprehend(
       makeInput({
@@ -210,8 +279,24 @@ describe('RuleComprehender', () => {
   test('priorContextSummary surfaces root goal and clarification intent', async () => {
     const eng = newRuleComprehender();
     const history: Turn[] = [
-      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a poem' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- what style?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+      {
+        id: 't-0-1',
+        sessionId: 's',
+        seq: 0,
+        role: 'user',
+        blocks: [{ type: 'text', text: 'write a poem' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 1,
+      },
+      {
+        id: 't-0-2',
+        sessionId: 's',
+        seq: 0,
+        role: 'assistant',
+        blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- what style?' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 2,
+      },
     ];
     const out = await eng.comprehend(
       makeInput({

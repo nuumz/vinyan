@@ -3,7 +3,7 @@
  * (name + description). Plus explicit /skill-name invocation parsing.
  */
 import { describe, expect, test } from 'bun:test';
-
+import type { SimpleSkill } from '../../../src/skills/simple/loader.ts';
 import {
   DEFAULT_THRESHOLD,
   detectExplicitInvocation,
@@ -11,7 +11,6 @@ import {
   matchSkillsForTask,
   tokenize,
 } from '../../../src/skills/simple/matcher.ts';
-import type { SimpleSkill } from '../../../src/skills/simple/loader.ts';
 
 function skill(name: string, description: string): SimpleSkill {
   return { name, description, body: 'body', scope: 'project', path: `/tmp/${name}/SKILL.md` };
@@ -83,10 +82,7 @@ describe('matchSkillsForTask — happy path', () => {
   });
 
   test('ordered by score desc, then name asc on tie', () => {
-    const skills = [
-      skill('zebra', 'review code'),
-      skill('alpha', 'review code'),
-    ];
+    const skills = [skill('zebra', 'review code'), skill('alpha', 'review code')];
     const matches = matchSkillsForTask('review code', skills);
     expect(matches.map((m) => m.skill.name)).toEqual(['alpha', 'zebra']);
   });

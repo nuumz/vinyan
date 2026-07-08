@@ -24,13 +24,12 @@
  * persona binding. Filter by `agentId` on the read side when surfacing
  * per-agent context (e.g. the Agent drawer's Skills tab).
  */
-import type {
-  SkillArtifactStore,
-} from '../skills/artifact-store.ts';
-import type { SimpleSkill, SimpleSkillScope } from '../skills/simple/loader.ts';
-import type { SimpleSkillRegistry } from '../skills/simple/registry.ts';
+
 import type { SkillStore } from '../db/skill-store.ts';
 import type { CachedSkill } from '../orchestrator/types.ts';
+import type { SkillArtifactStore } from '../skills/artifact-store.ts';
+import type { SimpleSkill, SimpleSkillScope } from '../skills/simple/loader.ts';
+import type { SimpleSkillRegistry } from '../skills/simple/registry.ts';
 import type { SkillMdRecord } from '../skills/skill-md/index.ts';
 
 export type SkillCatalogKind = 'simple' | 'heavy' | 'cached';
@@ -41,10 +40,7 @@ export type SkillCatalogKind = 'simple' | 'heavy' | 'cached';
  * `'cached_skills'` covers cached. Per-scope detail still rides on
  * `SkillCatalogItem.scope`.
  */
-export type SkillCatalogSource =
-  | SimpleSkillScope
-  | 'artifact-store'
-  | 'cached_skills';
+export type SkillCatalogSource = SimpleSkillScope | 'artifact-store' | 'cached_skills';
 
 export interface SkillCatalogItem {
   /** Unified id — kind-prefixed. Use as React key and for detail/CRUD. */

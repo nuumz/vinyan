@@ -36,8 +36,22 @@ function makeRequest(): DraftRequest {
   return {
     taskSignature: 'code::refactor::extract-helper',
     representativeSamples: [
-      { taskId: 't1', taskSignature: 'code::refactor::extract-helper', compositeError: 0.12, outcome: 'success', ts: 1, personaId: 'developer' },
-      { taskId: 't2', taskSignature: 'code::refactor::extract-helper', compositeError: 0.10, outcome: 'success', ts: 2, personaId: 'developer' },
+      {
+        taskId: 't1',
+        taskSignature: 'code::refactor::extract-helper',
+        compositeError: 0.12,
+        outcome: 'success',
+        ts: 1,
+        personaId: 'developer',
+      },
+      {
+        taskId: 't2',
+        taskSignature: 'code::refactor::extract-helper',
+        compositeError: 0.1,
+        outcome: 'success',
+        ts: 2,
+        personaId: 'developer',
+      },
     ],
     workspaceHint: { files: ['src/foo.ts', 'src/bar.ts'] },
     expectedReduction: { baseline: 0.3, target: 0.15, window: 30 },

@@ -2,8 +2,8 @@
  * Session transcript formatter tests — public-API behavior only.
  */
 import { describe, expect, it } from 'bun:test';
-import { formatSessionTranscript } from '../../../src/orchestrator/workflow/session-transcript.ts';
 import type { Turn } from '../../../src/orchestrator/types.ts';
+import { formatSessionTranscript } from '../../../src/orchestrator/workflow/session-transcript.ts';
 
 function turn(seq: number, role: 'user' | 'assistant', text: string): Turn {
   return {
@@ -70,11 +70,7 @@ describe('formatSessionTranscript', () => {
     const big = 'a'.repeat(1500);
     const med = 'b'.repeat(1500);
     const small = 'c'.repeat(1500);
-    const turns: Turn[] = [
-      turn(0, 'user', big),
-      turn(1, 'assistant', med),
-      turn(2, 'user', small),
-    ];
+    const turns: Turn[] = [turn(0, 'user', big), turn(1, 'assistant', med), turn(2, 'user', small)];
     const out = formatSessionTranscript(turns, { maxCharsPerTurn: 1500, maxTotalChars: 4000 });
     expect(out).toContain('turn 2'); // newest survives
     expect(out.length).toBeLessThanOrEqual(4000 + 200); // some header overhead OK

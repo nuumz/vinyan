@@ -24,10 +24,7 @@
  *                                        is enforced by RoomDispatcher)
  */
 import type { RoutingDecision, TaskDAG, TaskInput } from '../types.ts';
-import {
-  buildCreativeWritingRoomContract,
-  shouldUseCreativeWritingRoom,
-} from './presets/creative-writing-room.ts';
+import { buildCreativeWritingRoomContract, shouldUseCreativeWritingRoom } from './presets/creative-writing-room.ts';
 import type { RoleSpec, RoomContract } from './types.ts';
 
 /** Minimum node count for room eligibility. */
@@ -150,9 +147,7 @@ export function selectRoomContract(dag: TaskDAG, routing: RoutingDecision, input
   // Rule 5 — aggregate risk floor
   if (aggregateRisk(dag) < RISK_FLOOR) return null;
 
-  const tokenBudget = Math.floor(
-    (routing.budgetTokens ?? input.budget.maxTokens) * ROOM_BUDGET_MULTIPLIER,
-  );
+  const tokenBudget = Math.floor((routing.budgetTokens ?? input.budget.maxTokens) * ROOM_BUDGET_MULTIPLIER);
   const roomId = `room-${input.id}`;
 
   // Rule 6 (Phase E) — creative-writing bypass: goals for long-form creative

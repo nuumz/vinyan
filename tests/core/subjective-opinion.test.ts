@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import {
   dogmatic,
   fromScalar,
-  isValid,
   isVacuous,
+  isValid,
   projectedProbability,
   resolveOpinion,
   SubjectiveOpinionSchema,

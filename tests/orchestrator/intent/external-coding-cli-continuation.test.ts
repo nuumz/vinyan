@@ -48,36 +48,25 @@ describe('detectCodingCliContinuation — positive matches', () => {
     const out = detectCodingCliContinuation({ goal: 'full-pipeline', turns });
     expect(out.matched).toBe(true);
     expect(out.reconstructed?.providerId).toBe('claude-code');
-    expect(out.reconstructed?.targetPaths).toContain(
-      '/Users/phumin.k/appl/Docs/s1_design_spec',
-    );
+    expect(out.reconstructed?.targetPaths).toContain('/Users/phumin.k/appl/Docs/s1_design_spec');
     expect(out.reconstructedFromTurnSeq).toBe(0);
   });
 
   it('matches "retry" after CLI delegation', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'ask claude code cli to refactor src/foo.ts'),
-      assistantTurn(1, 'Failed.'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'ask claude code cli to refactor src/foo.ts'), assistantTurn(1, 'Failed.')];
     const out = detectCodingCliContinuation({ goal: 'retry', turns });
     expect(out.matched).toBe(true);
     expect(out.reconstructed?.providerId).toBe('claude-code');
   });
 
   it('matches Thai "ลองใหม่" after CLI delegation', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'ใช้ claude code cli ทำ unit test'),
-      assistantTurn(1, 'ผิดพลาด'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'ใช้ claude code cli ทำ unit test'), assistantTurn(1, 'ผิดพลาด')];
     const out = detectCodingCliContinuation({ goal: 'ลองใหม่', turns });
     expect(out.matched).toBe(true);
   });
 
   it('matches "agentic-workflow" alias', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'ask claude code to help with this'),
-      assistantTurn(1, 'failed'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'ask claude code to help with this'), assistantTurn(1, 'failed')];
     const out = detectCodingCliContinuation({ goal: 'agentic-workflow', turns });
     expect(out.matched).toBe(true);
   });
@@ -101,19 +90,13 @@ describe('detectCodingCliContinuation — positive matches', () => {
 
 describe('detectCodingCliContinuation — negative matches', () => {
   it('does NOT match without a prior CLI delegation in history', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'write me a poem'),
-      assistantTurn(1, 'roses are red...'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'write me a poem'), assistantTurn(1, 'roses are red...')];
     const out = detectCodingCliContinuation({ goal: 'retry', turns });
     expect(out.matched).toBe(false);
   });
 
   it('does NOT match when goal has additional context', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'ask claude code to refactor src/foo.ts'),
-      assistantTurn(1, 'failed'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'ask claude code to refactor src/foo.ts'), assistantTurn(1, 'failed')];
     // Rich text is left to the LLM tier — the continuation classifier is
     // tight by design.
     const out = detectCodingCliContinuation({
@@ -129,10 +112,7 @@ describe('detectCodingCliContinuation — negative matches', () => {
   });
 
   it('does NOT match when prior user turn was not a delegation', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'list files in /tmp'),
-      assistantTurn(1, 'failed'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'list files in /tmp'), assistantTurn(1, 'failed')];
     const out = detectCodingCliContinuation({ goal: 'retry', turns });
     expect(out.matched).toBe(false);
   });

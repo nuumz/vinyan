@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { type AgentLoopDeps, runAgentLoop, type WorkerLoopResult } from '../../src/orchestrator/agent/agent-loop.ts';
+import type { IAgentSession, SessionState } from '../../src/orchestrator/agent/agent-session.ts';
 import { HookConfigSchema } from '../../src/orchestrator/hooks/hook-schema.ts';
 import { writeProposal } from '../../src/orchestrator/memory/memory-proposals.ts';
 import { PermissionConfigSchema } from '../../src/orchestrator/permissions/permission-schema.ts';
@@ -20,8 +22,6 @@ import type {
   ToolResult,
   WorkingMemoryState,
 } from '../../src/orchestrator/types.ts';
-import { type AgentLoopDeps, runAgentLoop, type WorkerLoopResult } from '../../src/orchestrator/agent/agent-loop.ts';
-import type { IAgentSession, SessionState } from '../../src/orchestrator/agent/agent-session.ts';
 
 // ── Mock helpers ─────────────────────────────────────────────────────
 

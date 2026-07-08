@@ -121,21 +121,48 @@ describe('ProviderDetectionRegistry', () => {
           variant: 'full' as const,
           notes: [],
           capabilities: {
-            headless: true, interactive: true, streamProtocol: true, resume: false, nativeHooks: false,
-            jsonOutput: false, approvalPrompts: false, toolEvents: false, fileEditEvents: false,
-            transcriptAccess: false, statusCommand: false, cancelSupport: true,
+            headless: true,
+            interactive: true,
+            streamProtocol: true,
+            resume: false,
+            nativeHooks: false,
+            jsonOutput: false,
+            approvalPrompts: false,
+            toolEvents: false,
+            fileEditEvents: false,
+            transcriptAccess: false,
+            statusCommand: false,
+            cancelSupport: true,
           },
         };
       },
-      getCapabilities() { return this.detect().then((d) => d.capabilities) as never; },
-      buildHeadlessCommand() { return null; },
-      buildInteractiveCommand() { throw new Error('not used'); },
-      formatInitialPrompt() { return ''; },
-      formatFollowupMessage() { return ''; },
-      parseOutputDelta() { return []; },
-      parseFinalResult() { return null; },
-      detectApprovalRequest() { return null; },
-      respondToApproval() { return { kind: 'noop', reason: 'fake' } as never; },
+      getCapabilities() {
+        return this.detect().then((d) => d.capabilities) as never;
+      },
+      buildHeadlessCommand() {
+        return null;
+      },
+      buildInteractiveCommand() {
+        throw new Error('not used');
+      },
+      formatInitialPrompt() {
+        return '';
+      },
+      formatFollowupMessage() {
+        return '';
+      },
+      parseOutputDelta() {
+        return [];
+      },
+      parseFinalResult() {
+        return null;
+      },
+      detectApprovalRequest() {
+        return null;
+      },
+      respondToApproval() {
+        return { kind: 'noop', reason: 'fake' } as never;
+      },
     };
     const registry = new ProviderDetectionRegistry(60_000);
     await registry.detectAll([adapter as never]);

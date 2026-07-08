@@ -72,9 +72,7 @@ describe('registry honours skillResolver (smoking-gun fix)', () => {
     plantSkill();
     saveBoundSkills(workspace, 'reviewer', [{ id: 'review-checklist' }]);
 
-    const { resolver, loadedCount } = buildSyncSkillResolver(
-      join(workspace, '.vinyan', 'skills'),
-    );
+    const { resolver, loadedCount } = buildSyncSkillResolver(join(workspace, '.vinyan', 'skills'));
     expect(loadedCount).toBe(1);
 
     const reg = loadAgentRegistry(workspace, undefined, undefined, {

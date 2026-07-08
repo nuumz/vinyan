@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from 'path';
 import ts from 'typescript';
 import { buildVerdict } from '../../core/index.ts';
 import { fromScalar } from '../../core/subjective-opinion.ts';
-import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
+import type { Evidence, HypothesisTuple, OracleAbstention, OracleResponse } from '../../core/types.ts';
 
 const BASE_RATE = 0.5;
 const TTL_MS = 300_000;
@@ -155,8 +155,21 @@ function verifyImportExists(
   return { found: evidence.length > 0, evidence };
 }
 
+/** Missing required context is a caller misconfiguration — the oracle cannot
+ *  form a verdict either way, so it abstains (A2) instead of emitting a
+ *  false "failure" that would distort fusion. */
+function missingContextAbstention(field: string, pattern: string, startTime: number): OracleAbstention {
+  return {
+    type: 'abstained',
+    reason: 'insufficient_data',
+    oracleName: 'ast',
+    durationMs: Math.round(performance.now() - startTime),
+    prerequisites: [`Provide context.${field} for pattern '${pattern}'`],
+  };
+}
+
 /** Main verification entry point. */
-export function verify(hypothesis: HypothesisTuple): OracleVerdict {
+export function verify(hypothesis: HypothesisTuple): OracleResponse {
   const startTime = performance.now();
   // Resolve target against workspace if relative
   const filePath = isAbsolute(hypothesis.target) ? hypothesis.target : resolve(hypothesis.workspace, hypothesis.target);
@@ -186,18 +199,7 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
       case 'symbol-exists': {
         const symbolName = context.symbolName as string;
         if (!symbolName) {
-          return buildVerdict({
-            verified: false,
-            type: 'known',
-            confidence: 1.0,
-            evidence: [],
-            fileHashes,
-            reason: "context.symbolName is required for pattern 'symbol-exists'",
-            errorCode: 'PARSE_ERROR',
-            durationMs: Math.round(performance.now() - startTime),
-            opinion: fromScalar(1.0, BASE_RATE),
-            temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
-          });
+          return missingContextAbstention('symbolName', 'symbol-exists', startTime);
         }
         const result = verifySymbolExists(sf, filePath, symbolName);
         return buildVerdict({
@@ -209,7 +211,8 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           reason: result.found ? undefined : `Symbol '${symbolName}' not found in ${filePath}`,
           errorCode: result.found ? undefined : 'SYMBOL_NOT_FOUND',
           durationMs: Math.round(performance.now() - startTime),
-          opinion: fromScalar(1.0, BASE_RATE),
+          // Opinion oriented toward "the hypothesis holds" — failure carries disbelief.
+          opinion: fromScalar(result.found ? 1.0 : 0.0, BASE_RATE),
           temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
         });
       }
@@ -217,18 +220,7 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
       case 'function-signature': {
         const functionName = context.functionName as string;
         if (!functionName) {
-          return buildVerdict({
-            verified: false,
-            type: 'known',
-            confidence: 1.0,
-            evidence: [],
-            fileHashes,
-            reason: "context.functionName is required for pattern 'function-signature'",
-            errorCode: 'PARSE_ERROR',
-            durationMs: Math.round(performance.now() - startTime),
-            opinion: fromScalar(1.0, BASE_RATE),
-            temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
-          });
+          return missingContextAbstention('functionName', 'function-signature', startTime);
         }
         const result = verifyFunctionSignature(sf, filePath, functionName, context);
         return buildVerdict({
@@ -240,7 +232,7 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           reason: result.reason,
           errorCode: !result.found ? 'SYMBOL_NOT_FOUND' : undefined,
           durationMs: Math.round(performance.now() - startTime),
-          opinion: fromScalar(1.0, BASE_RATE),
+          opinion: fromScalar(result.found && result.matches ? 1.0 : 0.0, BASE_RATE),
           temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
         });
       }
@@ -248,18 +240,7 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
       case 'import-exists': {
         const moduleSpecifier = context.moduleSpecifier as string;
         if (!moduleSpecifier) {
-          return buildVerdict({
-            verified: false,
-            type: 'known',
-            confidence: 1.0,
-            evidence: [],
-            fileHashes,
-            reason: "context.moduleSpecifier is required for pattern 'import-exists'",
-            errorCode: 'PARSE_ERROR',
-            durationMs: Math.round(performance.now() - startTime),
-            opinion: fromScalar(1.0, BASE_RATE),
-            temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
-          });
+          return missingContextAbstention('moduleSpecifier', 'import-exists', startTime);
         }
         const result = verifyImportExists(sf, filePath, moduleSpecifier);
         return buildVerdict({
@@ -271,23 +252,20 @@ export function verify(hypothesis: HypothesisTuple): OracleVerdict {
           reason: result.found ? undefined : `Import '${moduleSpecifier}' not found in ${filePath}`,
           errorCode: result.found ? undefined : 'SYMBOL_NOT_FOUND',
           durationMs: Math.round(performance.now() - startTime),
-          opinion: fromScalar(1.0, BASE_RATE),
+          opinion: fromScalar(result.found ? 1.0 : 0.0, BASE_RATE),
           temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
         });
       }
 
       default:
-        return buildVerdict({
-          verified: false,
-          type: 'known',
-          confidence: 1.0,
-          evidence: [],
-          fileHashes,
-          reason: `Unknown pattern: '${hypothesis.pattern}'`,
+        // Pattern outside this oracle's domain — abstain rather than fabricate a verdict.
+        return {
+          type: 'abstained',
+          reason: 'out_of_domain',
+          oracleName: 'ast',
           durationMs: Math.round(performance.now() - startTime),
-          opinion: fromScalar(1.0, BASE_RATE),
-          temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'none' as const },
-        });
+          prerequisites: [`Unknown pattern: '${hypothesis.pattern}'`],
+        } satisfies OracleAbstention;
     }
   } catch (err) {
     return buildVerdict({

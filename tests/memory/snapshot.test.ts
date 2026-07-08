@@ -10,13 +10,13 @@
  *   - capture without filesystem returns the preloaded snapshot intact
  */
 import { describe, expect, test } from 'bun:test';
+import type { AutoMemory, AutoMemoryEntry } from '../../src/memory/auto-memory-loader.ts';
 import {
   captureMemorySnapshot,
   isDuplicateMemoryEntry,
   isMemorySnapshotEquivalent,
   memorySafetyVerdict,
 } from '../../src/memory/snapshot.ts';
-import type { AutoMemory, AutoMemoryEntry } from '../../src/memory/auto-memory-loader.ts';
 
 function entry(overrides: Partial<AutoMemoryEntry> = {}): AutoMemoryEntry {
   return {

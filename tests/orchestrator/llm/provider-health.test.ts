@@ -48,7 +48,7 @@ describe('ProviderHealthStore', () => {
   });
 
   test('auth_error opens long cooldown', () => {
-    let now = 0;
+    const now = 0;
     const store = new ProviderHealthStore({ now: () => now });
     store.recordFailure(PROVIDER, authErr(), { taskId: 't' });
     const cool = store.getCooldown(PROVIDER, now);
@@ -79,16 +79,8 @@ describe('ProviderHealthStore', () => {
   test('different quota metrics on same provider get independent buckets', () => {
     let now = 0;
     const store = new ProviderHealthStore({ now: () => now });
-    store.recordFailure(
-      PROVIDER,
-      { ...quotaErr(10_000), quotaMetric: 'A', quotaId: 'A' },
-      {},
-    );
-    store.recordFailure(
-      PROVIDER,
-      { ...quotaErr(20_000), quotaMetric: 'B', quotaId: 'B' },
-      {},
-    );
+    store.recordFailure(PROVIDER, { ...quotaErr(10_000), quotaMetric: 'A', quotaId: 'A' }, {});
+    store.recordFailure(PROVIDER, { ...quotaErr(20_000), quotaMetric: 'B', quotaId: 'B' }, {});
     expect(store.listHealth()).toHaveLength(2);
     // Metric A expires first; provider stays unavailable while B holds.
     now = 11_000;
@@ -101,11 +93,7 @@ describe('ProviderHealthStore', () => {
     const now = 0;
     const store = new ProviderHealthStore({ now: () => now });
     // Sonnet hits 429.
-    store.recordFailure(
-      PROVIDER,
-      { ...quotaErr(60_000), model: 'claude-3-5-sonnet' },
-      {},
-    );
+    store.recordFailure(PROVIDER, { ...quotaErr(60_000), model: 'claude-3-5-sonnet' }, {});
     // Provider-wide check: blocked.
     expect(store.isAvailable(PROVIDER, now)).toBe(false);
     // Per-model on the rate-limited model: blocked.

@@ -43,16 +43,12 @@ describe('classifyTurn — baseline + precedence', () => {
   });
 
   test('tool_result beats everything when tool_result block present', () => {
-    const t = turn('user', [
-      { type: 'tool_result', tool_use_id: 'tu-1', content: 'ok' },
-    ]);
+    const t = turn('user', [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'ok' }]);
     expect(classifyTurn(t)).toBe('tool_result');
   });
 
   test('tool_result beats everything when thinking block present', () => {
-    const t = assistantText("I'll use Option A", [
-      { type: 'thinking', thinking: 'reasoning here' },
-    ]);
+    const t = assistantText("I'll use Option A", [{ type: 'thinking', thinking: 'reasoning here' }]);
     expect(classifyTurn(t)).toBe('tool_result');
   });
 
@@ -81,15 +77,15 @@ describe('classifyTurn — EN decision signals', () => {
     expect(classifyTurn(assistantText("I'll refactor the auth module"))).toBe('decision');
   });
 
-  test("assistant plan preamble `Let me` → decision (+2)", () => {
+  test('assistant plan preamble `Let me` → decision (+2)', () => {
     expect(classifyTurn(assistantText('Let me run the tests first'))).toBe('decision');
   });
 
-  test("assistant plan preamble `Plan:` → decision (+2)", () => {
+  test('assistant plan preamble `Plan:` → decision (+2)', () => {
     expect(classifyTurn(assistantText('Plan: extract helper, add tests, push'))).toBe('decision');
   });
 
-  test("assistant plan preamble `Going to` → decision (+2)", () => {
+  test('assistant plan preamble `Going to` → decision (+2)', () => {
     expect(classifyTurn(assistantText('Going to merge the conflicts now'))).toBe('decision');
   });
 
@@ -99,7 +95,7 @@ describe('classifyTurn — EN decision signals', () => {
   });
 
   test('negation + alternative fires decision (score=2)', () => {
-    expect(classifyTurn(userText("not use MySQL, use Postgres instead"))).toBe('decision');
+    expect(classifyTurn(userText('not use MySQL, use Postgres instead'))).toBe('decision');
   });
 
   test('user EN verb alone without negation/TH stays normal (score=1)', () => {
@@ -182,30 +178,22 @@ describe('classifyTurn — clarification signals', () => {
 
 describe('classifyTurn — precededByInputRequired hint', () => {
   test('user reply to IR → decision via zero-regex shortcut', () => {
-    expect(
-      classifyTurn(userText('Postgres'), { precededByInputRequired: true }),
-    ).toBe('decision');
+    expect(classifyTurn(userText('Postgres'), { precededByInputRequired: true })).toBe('decision');
   });
 
   test('assistant reply with hint does NOT trip (role gate)', () => {
     // The hint only elevates user turns; an assistant following an IR block
     // is not a decision by construction.
-    expect(
-      classifyTurn(assistantText('hmm'), { precededByInputRequired: true }),
-    ).toBe('normal');
+    expect(classifyTurn(assistantText('hmm'), { precededByInputRequired: true })).toBe('normal');
   });
 
   test('hint does not override tool_result precedence', () => {
-    const t = turn('user', [
-      { type: 'tool_result', tool_use_id: 'tu-1', content: 'ok' },
-    ]);
+    const t = turn('user', [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'ok' }]);
     expect(classifyTurn(t, { precededByInputRequired: true })).toBe('tool_result');
   });
 
   test('hint does not override clarification precedence', () => {
-    expect(
-      classifyTurn(userText('[INPUT-REQUIRED]'), { precededByInputRequired: true }),
-    ).toBe('clarification');
+    expect(classifyTurn(userText('[INPUT-REQUIRED]'), { precededByInputRequired: true })).toBe('clarification');
   });
 });
 

@@ -4,19 +4,14 @@
 import { describe, expect, test } from 'bun:test';
 import {
   BUILT_IN_WORKFLOWS,
-  WorkflowRegistry,
   type WorkflowMetadata,
+  WorkflowRegistry,
 } from '../../../src/orchestrator/workflow/workflow-registry.ts';
 
 describe('WorkflowRegistry', () => {
   test('constructs with 4 built-in workflows by default', () => {
     const registry = new WorkflowRegistry();
-    expect(registry.list()).toEqual([
-      'agentic-workflow',
-      'conversational',
-      'direct-tool',
-      'full-pipeline',
-    ]);
+    expect(registry.list()).toEqual(['agentic-workflow', 'conversational', 'direct-tool', 'full-pipeline']);
   });
 
   test('get() returns metadata for known strategy', () => {

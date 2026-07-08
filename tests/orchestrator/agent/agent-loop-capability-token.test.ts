@@ -67,7 +67,7 @@ function makeContextFromInput(input: TaskInput): ToolContext {
 }
 
 describe('R4 integration — delegation-router → agent-loop ToolContext → tool-executor', () => {
-  test("explore sub-task: file_write on a target file is denied with tool_forbidden", async () => {
+  test('explore sub-task: file_write on a target file is denied with tool_forbidden', async () => {
     const request: DelegationRequest = {
       goal: 'Survey the auth module',
       targetFiles: ['src/foo.ts'],
@@ -80,9 +80,7 @@ describe('R4 integration — delegation-router → agent-loop ToolContext → to
     const exec = new ToolExecutor();
     const ctx = makeContextFromInput(subInput);
 
-    const calls: ToolCall[] = [
-      { id: 'c1', tool: 'file_write', parameters: { path: 'src/foo.ts', content: '...' } },
-    ];
+    const calls: ToolCall[] = [{ id: 'c1', tool: 'file_write', parameters: { path: 'src/foo.ts', content: '...' } }];
     const results = await exec.executeProposedTools(calls, ctx);
     expect(results[0]?.status).toBe('denied');
     expect(results[0]?.error).toContain('capability_token');
@@ -104,9 +102,7 @@ describe('R4 integration — delegation-router → agent-loop ToolContext → to
     // Capability check should ALLOW file_edit on src/foo.ts. The tool
     // may then fail for unrelated reasons (validation, file missing) —
     // we only assert the rejection is NOT a capability_token rejection.
-    const calls: ToolCall[] = [
-      { id: 'c1', tool: 'file_edit', parameters: { path: 'src/foo.ts' } },
-    ];
+    const calls: ToolCall[] = [{ id: 'c1', tool: 'file_edit', parameters: { path: 'src/foo.ts' } }];
     const results = await exec.executeProposedTools(calls, ctx);
     expect(results[0]?.error ?? '').not.toContain('capability_token');
   });
@@ -121,9 +117,7 @@ describe('R4 integration — delegation-router → agent-loop ToolContext → to
     const subInput = buildSubTaskInput(request, makeParent(), makeRouting(), makeBudget());
     const exec = new ToolExecutor();
     const ctx = makeContextFromInput(subInput);
-    const calls: ToolCall[] = [
-      { id: 'c1', tool: 'file_edit', parameters: { path: 'src/escaped.ts', content: '...' } },
-    ];
+    const calls: ToolCall[] = [{ id: 'c1', tool: 'file_edit', parameters: { path: 'src/escaped.ts', content: '...' } }];
     const results = await exec.executeProposedTools(calls, ctx);
     expect(results[0]?.status).toBe('denied');
     expect(results[0]?.error).toContain('path_out_of_scope');
@@ -133,9 +127,7 @@ describe('R4 integration — delegation-router → agent-loop ToolContext → to
     const top: TaskInput = makeParent();
     const exec = new ToolExecutor();
     const ctx = makeContextFromInput(top); // no token, no parentTaskId
-    const calls: ToolCall[] = [
-      { id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } },
-    ];
+    const calls: ToolCall[] = [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } }];
     const results = await exec.executeProposedTools(calls, ctx);
     expect(results[0]?.error ?? '').not.toContain('capability_token');
   });

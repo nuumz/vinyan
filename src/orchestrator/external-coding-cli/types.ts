@@ -131,11 +131,26 @@ export const CodingCliTaskSchema = z.object({
   approvalPolicy: ApprovalPolicySchema.default(() => ApprovalPolicySchema.parse({})),
   model: z.string().optional(),
   /** Hard wall-clock cap. Adapter clamps to its own min/max. */
-  timeoutMs: z.number().int().positive().max(60 * 60 * 1000).default(15 * 60 * 1000),
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(60 * 60 * 1000)
+    .default(15 * 60 * 1000),
   /** Idle timeout — no output / no hook activity for this long → stalled. */
-  idleTimeoutMs: z.number().int().positive().max(30 * 60 * 1000).default(2 * 60 * 1000),
+  idleTimeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(30 * 60 * 1000)
+    .default(2 * 60 * 1000),
   /** Cap on captured stdout/stderr per session, in bytes. */
-  maxOutputBytes: z.number().int().positive().max(50 * 1024 * 1024).default(4 * 1024 * 1024),
+  maxOutputBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(50 * 1024 * 1024)
+    .default(4 * 1024 * 1024),
   /** Free-form hint to the prompt template — e.g. "no tests please". */
   notes: z.string().optional(),
   /**
@@ -470,13 +485,7 @@ export type HookEvent = z.infer<typeof HookEventSchema>;
 
 // ── Result contract ─────────────────────────────────────────────────────
 
-export const CodingCliResultStatusSchema = z.enum([
-  'completed',
-  'failed',
-  'blocked',
-  'needs_approval',
-  'partial',
-]);
+export const CodingCliResultStatusSchema = z.enum(['completed', 'failed', 'blocked', 'needs_approval', 'partial']);
 export type CodingCliResultStatus = z.infer<typeof CodingCliResultStatusSchema>;
 
 export const CodingCliResultDecisionSchema = z.object({
@@ -579,9 +588,21 @@ export const CodingCliConfigSchema = z.object({
   enabled: z.boolean().default(false),
   defaultProvider: z.enum(['auto', ...PROVIDER_IDS]).default('auto'),
   mode: z.enum(['headless', 'interactive', 'auto']).default('auto'),
-  timeoutMs: z.number().int().positive().default(15 * 60 * 1000),
-  idleTimeoutMs: z.number().int().positive().default(2 * 60 * 1000),
-  maxOutputBytes: z.number().int().positive().default(4 * 1024 * 1024),
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .default(15 * 60 * 1000),
+  idleTimeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .default(2 * 60 * 1000),
+  maxOutputBytes: z
+    .number()
+    .int()
+    .positive()
+    .default(4 * 1024 * 1024),
   providers: z
     .object({
       claudeCode: CodingCliProviderConfigSchema.default(() => ({ ...PROVIDER_DEFAULT })),

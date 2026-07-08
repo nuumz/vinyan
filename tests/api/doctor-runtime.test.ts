@@ -172,9 +172,7 @@ describe('runDoctorChecks — runtime probes', () => {
     const db = new Database(join(driftDir, '.vinyan', 'vinyan.db'));
     db.exec('PRAGMA journal_mode = WAL');
     new MigrationRunner().migrate(db, ALL_MIGRATIONS);
-    db.exec(
-      "INSERT INTO session_store (id, source, created_at, status, updated_at) VALUES ('s1','test',1,'active',1)",
-    );
+    db.exec("INSERT INTO session_store (id, source, created_at, status, updated_at) VALUES ('s1','test',1,'active',1)");
     db.close();
 
     const checks = await runDoctorChecks(driftDir, {
@@ -225,9 +223,7 @@ describe('runDoctorChecks — runtime probes', () => {
       const wiki = checks.find((c) => c.name === 'Memory Wiki')!;
       // Exact-shape snapshot. Order matters: wired → scaffold → pages → sources.
       // Singular/plural noun toggling is part of the contract.
-      expect(wiki.detail).toMatch(
-        /^wired · vault scaffolded · \d+ pages? · \d+ sources?( · \d+ open findings?)?$/,
-      );
+      expect(wiki.detail).toMatch(/^wired · vault scaffolded · \d+ pages? · \d+ sources?( · \d+ open findings?)?$/);
       expect(wiki.status).toBe('ok');
     } finally {
       // Leave the marker — siblings tests don't depend on its absence.
@@ -241,9 +237,7 @@ describe('runDoctorChecks — runtime probes', () => {
     // sqlite-only is the default in TEST_DIR's vinyan.json (no session config block).
     // archived count was added so operators can see the archive lane
     // without filtering.
-    expect(sessions.detail).toMatch(
-      /^mode=sqlite-only · sqlite=\d+ active, \d+ suspended, \d+ archived$/,
-    );
+    expect(sessions.detail).toMatch(/^mode=sqlite-only · sqlite=\d+ active, \d+ suspended, \d+ archived$/);
   });
 
   test('summarizeChecks returns critical when any fail-status check exists', async () => {
@@ -251,10 +245,7 @@ describe('runDoctorChecks — runtime probes', () => {
       runtime: { recorderActive: true },
     });
     // Manually inject a failing check and summarise.
-    const summary = summarizeChecks([
-      ...checks,
-      { name: 'forced-fail', status: 'fail', detail: 'simulated' },
-    ]);
+    const summary = summarizeChecks([...checks, { name: 'forced-fail', status: 'fail', detail: 'simulated' }]);
     expect(summary.status).toBe('critical');
   });
 });

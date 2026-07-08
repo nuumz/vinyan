@@ -8,10 +8,11 @@
  * receive direct-mutate permission within C, audited per mutation,
  * revoked on any error.
  */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { EventBus, type VinyanBusEvents } from '../../src/core/bus.ts';
 import { commitArtifacts } from '../../src/orchestrator/worker/artifact-commit.ts';
 
@@ -31,11 +32,11 @@ describe('A11 — Capability Escalation (RFC stub)', () => {
     const events: VinyanBusEvents['commit:capability_escalation_evaluated'][] = [];
     bus.on('commit:capability_escalation_evaluated', (p) => events.push(p));
 
-    const result = commitArtifacts(
-      tmp,
-      [{ path: 'src/foo.ts', content: 'export const x = 1;' }],
-      { bus, taskId: 'a11-task', actor: 'worker-1' },
-    );
+    const result = commitArtifacts(tmp, [{ path: 'src/foo.ts', content: 'export const x = 1;' }], {
+      bus,
+      taskId: 'a11-task',
+      actor: 'worker-1',
+    });
     expect(result.applied.length).toBe(1);
     expect(events.length).toBe(1);
     expect(events[0]?.taskId).toBe('a11-task');
@@ -46,9 +47,7 @@ describe('A11 — Capability Escalation (RFC stub)', () => {
   });
 
   test('legacy callers (no opts) still work — no event, no behavior change', () => {
-    const result = commitArtifacts(tmp, [
-      { path: 'src/bar.ts', content: 'export const y = 2;' },
-    ]);
+    const result = commitArtifacts(tmp, [{ path: 'src/bar.ts', content: 'export const y = 2;' }]);
     expect(result.applied.length).toBe(1);
   });
 });

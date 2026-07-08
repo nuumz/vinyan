@@ -23,7 +23,11 @@ function makeMinimalDeps(overrides: Partial<AutonomousSkillCreatorDeps>): Autono
     // Construction-time tests don't invoke the gate or critic; cast through
     // unknown so the inner shape doesn't track the real ImporterGateVerdict /
     // ImporterCriticVerdict schemas.
-    gate: (async () => ({ pass: true, aggregateConfidence: 1, oracles: [] })) as unknown as AutonomousSkillCreatorDeps['gate'],
+    gate: (async () => ({
+      pass: true,
+      aggregateConfidence: 1,
+      oracles: [],
+    })) as unknown as AutonomousSkillCreatorDeps['gate'],
     critic: (async () => ({ approved: true, notes: '' })) as unknown as AutonomousSkillCreatorDeps['critic'],
     profile: 'default',
     ...overrides,

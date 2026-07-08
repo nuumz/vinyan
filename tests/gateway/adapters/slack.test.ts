@@ -7,15 +7,11 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import { SlackAdapter, splitForSlack } from '../../../src/gateway/adapters/slack.ts';
+import { SlackApi, type SlackWebSocketCtor, type SlackWebSocketLike } from '../../../src/gateway/adapters/slack-api.ts';
 import {
-  SlackApi,
-  type SlackWebSocketCtor,
-  type SlackWebSocketLike,
-} from '../../../src/gateway/adapters/slack-api.ts';
-import {
-  isGatewayAdapter,
   type GatewayAdapterContext,
   type GatewayInboundEnvelopeMinimal,
+  isGatewayAdapter,
 } from '../../../src/gateway/types.ts';
 
 /**
@@ -328,11 +324,12 @@ describe('SlackAdapter.deliver', () => {
   test('single-shot delivery calls postMessage once', async () => {
     const api = fakeSlackApi();
     const sends: Array<{ channel: string; text: string }> = [];
-    (api as unknown as { postMessage: (c: string, t: string) => Promise<{ channel: string; ts: string }> }).postMessage =
-      async (channel, text) => {
-        sends.push({ channel, text });
-        return { channel, ts: `ts-${sends.length}` };
-      };
+    (
+      api as unknown as { postMessage: (c: string, t: string) => Promise<{ channel: string; ts: string }> }
+    ).postMessage = async (channel, text) => {
+      sends.push({ channel, text });
+      return { channel, ts: `ts-${sends.length}` };
+    };
     const adapter = new SlackAdapter({ appToken: 'x', botToken: 'y', api });
     const receipt = await adapter.deliver({
       envelopeId: crypto.randomUUID(),
@@ -348,11 +345,12 @@ describe('SlackAdapter.deliver', () => {
   test('chunks long messages into multiple postMessage calls', async () => {
     const api = fakeSlackApi();
     const sends: Array<{ channel: string; text: string }> = [];
-    (api as unknown as { postMessage: (c: string, t: string) => Promise<{ channel: string; ts: string }> }).postMessage =
-      async (channel, text) => {
-        sends.push({ channel, text });
-        return { channel, ts: `ts-${sends.length}` };
-      };
+    (
+      api as unknown as { postMessage: (c: string, t: string) => Promise<{ channel: string; ts: string }> }
+    ).postMessage = async (channel, text) => {
+      sends.push({ channel, text });
+      return { channel, ts: `ts-${sends.length}` };
+    };
     const adapter = new SlackAdapter({ appToken: 'x', botToken: 'y', api });
     const longText = 'x'.repeat(8000);
     const receipt = await adapter.deliver({

@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import {
   getApprovedCandidate,
-  ideationToConstraint,
   IdeationCandidateSchema,
-  IdeationResultSchema,
   type IdeationResult,
+  IdeationResultSchema,
+  ideationToConstraint,
 } from '../../../src/orchestrator/intent/ideation-types.ts';
 
 function makeIdeation(overrides: Partial<IdeationResult> = {}): IdeationResult {
@@ -99,9 +99,7 @@ describe('IdeationResultSchema', () => {
       estComplexity: 'small' as const,
       score: 0.5,
     }));
-    const parsed = IdeationResultSchema.safeParse(
-      makeIdeation({ candidates, rankedIds: candidates.map((c) => c.id) }),
-    );
+    const parsed = IdeationResultSchema.safeParse(makeIdeation({ candidates, rankedIds: candidates.map((c) => c.id) }));
     expect(parsed.success).toBe(false);
   });
 });

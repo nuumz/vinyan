@@ -7,11 +7,11 @@
  * - C3: Merge of SelfModel + ForwardPredictor appears on trace
  * - C4: Miscalibration event emitted when Brier exceeds threshold
  */
-import { describe, test, expect } from 'bun:test';
-import { mergeForwardAndSelfModel, scorePlanByPrediction } from '../../src/orchestrator/core-loop.ts';
+import { describe, expect, test } from 'bun:test';
 import { applyPredictionEscalation } from '../../src/gate/risk-router.ts';
+import { mergeForwardAndSelfModel, scorePlanByPrediction } from '../../src/orchestrator/core-loop.ts';
+import type { CausalRiskEntry, OutcomePrediction } from '../../src/orchestrator/forward-predictor-types.ts';
 import { CalibrationEngineImpl } from '../../src/orchestrator/prediction/calibration-engine.ts';
-import type { OutcomePrediction, CausalRiskEntry } from '../../src/orchestrator/forward-predictor-types.ts';
 import type { RoutingDecision, SelfModelPrediction, TaskDAG } from '../../src/orchestrator/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -19,7 +19,12 @@ import type { RoutingDecision, SelfModelPrediction, TaskDAG } from '../../src/or
 // ---------------------------------------------------------------------------
 
 function makeRouting(level: 0 | 1 | 2 | 3): RoutingDecision {
-  return { level, model: level === 0 ? null : 'claude-sonnet', budgetTokens: level * 25000, latencyBudgetMs: level * 15000 };
+  return {
+    level,
+    model: level === 0 ? null : 'claude-sonnet',
+    budgetTokens: level * 25000,
+    latencyBudgetMs: level * 15000,
+  };
 }
 
 function makeSelfModelPrediction(pPass?: number): SelfModelPrediction {
@@ -40,7 +45,11 @@ function makeSelfModelPrediction(pPass?: number): SelfModelPrediction {
 }
 
 function makeRiskEntry(filePath: string, breakProb: number): CausalRiskEntry {
-  return { filePath, breakProbability: breakProb, causalChain: [{ fromFile: 'a.ts', toFile: filePath, edgeType: 'imports' }] };
+  return {
+    filePath,
+    breakProbability: breakProb,
+    causalChain: [{ fromFile: 'a.ts', toFile: filePath, edgeType: 'imports' }],
+  };
 }
 
 function makePrediction(overrides?: Partial<OutcomePrediction>): OutcomePrediction {
@@ -60,7 +69,7 @@ function makePrediction(overrides?: Partial<OutcomePrediction>): OutcomePredicti
   };
 }
 
-function makeDAG(files: string[][]): TaskDAG {
+function makeDag(files: string[][]): TaskDAG {
   return {
     nodes: files.map((targetFiles, i) => ({
       id: `n${i + 1}`,
@@ -99,11 +108,7 @@ describe('Prediction Wiring Integration', () => {
   test('C1: aggregate risk > 0.7 escalates to L3', () => {
     const routing = makeRouting(1);
     const fp = makePrediction({
-      causalRiskFiles: [
-        makeRiskEntry('a.ts', 0.5),
-        makeRiskEntry('b.ts', 0.5),
-        makeRiskEntry('c.ts', 0.5),
-      ],
+      causalRiskFiles: [makeRiskEntry('a.ts', 0.5), makeRiskEntry('b.ts', 0.5), makeRiskEntry('c.ts', 0.5)],
     });
     // aggregateRisk = 1 - (0.5)^3 = 0.875 > 0.7
     const result = applyPredictionEscalation(routing, fp);
@@ -118,13 +123,9 @@ describe('Prediction Wiring Integration', () => {
   });
 
   test('C2: plan nodes reordered by causal risk (fail-fast)', () => {
-    const plan = makeDAG([['low.ts'], ['high.ts'], ['mid.ts']]);
+    const plan = makeDag([['low.ts'], ['high.ts'], ['mid.ts']]);
     const fp = makePrediction({
-      causalRiskFiles: [
-        makeRiskEntry('high.ts', 0.9),
-        makeRiskEntry('mid.ts', 0.4),
-        makeRiskEntry('low.ts', 0.1),
-      ],
+      causalRiskFiles: [makeRiskEntry('high.ts', 0.9), makeRiskEntry('mid.ts', 0.4), makeRiskEntry('low.ts', 0.1)],
     });
 
     scorePlanByPrediction(plan, fp);
@@ -136,7 +137,7 @@ describe('Prediction Wiring Integration', () => {
   });
 
   test('C2: plan nodes without matching risk files get riskScore 0', () => {
-    const plan = makeDAG([['unrelated.ts']]);
+    const plan = makeDag([['unrelated.ts']]);
     const fp = makePrediction({
       causalRiskFiles: [makeRiskEntry('other.ts', 0.8)],
     });
@@ -182,7 +183,7 @@ describe('Prediction Wiring Integration', () => {
     expect(escalated.level).toBe(3);
 
     // 3. Plan scored by risk
-    const plan = makeDAG([['util.ts'], ['core.ts']]);
+    const plan = makeDag([['util.ts'], ['core.ts']]);
     scorePlanByPrediction(plan, fp);
     expect(plan.nodes[0]!.targetFiles).toContain('core.ts'); // higher risk first
 

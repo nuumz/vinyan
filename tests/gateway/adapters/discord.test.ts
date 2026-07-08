@@ -10,9 +10,9 @@ import {
   type DiscordWebSocketLike,
 } from '../../../src/gateway/adapters/discord-api.ts';
 import {
-  isGatewayAdapter,
   type GatewayAdapterContext,
   type GatewayInboundEnvelopeMinimal,
+  isGatewayAdapter,
 } from '../../../src/gateway/types.ts';
 
 class FakeWs implements DiscordWebSocketLike {

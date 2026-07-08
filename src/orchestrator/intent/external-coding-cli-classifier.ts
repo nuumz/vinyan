@@ -128,16 +128,10 @@ const CONVERSATIONAL_INQUIRY_ENGLISH =
 
 function detectRequestedMode(text: string): CodingCliRequestedMode {
   const lower = text.toLowerCase();
-  if (
-    /\binteractive\b/.test(lower) ||
-    /พูดคุย|สนทนา|คุยกับ|chat\s+with|conversation/.test(lower)
-  ) {
+  if (/\binteractive\b/.test(lower) || /พูดคุย|สนทนา|คุยกับ|chat\s+with|conversation/.test(lower)) {
     return 'interactive';
   }
-  if (
-    /\bheadless\b/.test(lower) ||
-    /one[-\s]?shot|ครั้งเดียว|แบบไม่ต้องตอบโต้|non[-\s]?interactive/.test(lower)
-  ) {
+  if (/\bheadless\b/.test(lower) || /one[-\s]?shot|ครั้งเดียว|แบบไม่ต้องตอบโต้|non[-\s]?interactive/.test(lower)) {
     return 'headless';
   }
   return 'auto';
@@ -163,7 +157,7 @@ const PATH_PATTERNS: RegExp[] = [
 function looksLikeFilesystemPath(s: string): boolean {
   if (!s) return false;
   if (/^https?:\/\//i.test(s)) return false;
-  return /^[\/~.]/.test(s) || s.includes('/');
+  return /^[/~.]/.test(s) || s.includes('/');
 }
 
 function extractTargetPaths(text: string): string[] {
@@ -193,14 +187,14 @@ function buildTaskText(rawGoal: string, providerPhrase: string): string {
   // (still fine; the CLI prompt template includes context anyway).
   let text = rawGoal;
   // Strip the provider phrase regardless of position.
-  const providerRegex = new RegExp(
-    `\\s*${providerPhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`,
-    'i',
-  );
+  const providerRegex = new RegExp(`\\s*${providerPhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'i');
   text = text.replace(providerRegex, ' ');
   // Collapse common leading delegation verbs once the provider name is gone.
   text = text
-    .replace(/^\s*(?:สั่งงาน|มอบหมายให้|ใช้\s+|ให้\s+|ช่วย\s+|เรียก\s+|ขอ\s+|ลองใช้\s+|run\s+with\s+|use\s+|ask\s+|tell\s+|have\s+|delegate(?:\s+to)?\s+|with\s+the\s+help\s+of\s+)/i, '')
+    .replace(
+      /^\s*(?:สั่งงาน|มอบหมายให้|ใช้\s+|ให้\s+|ช่วย\s+|เรียก\s+|ขอ\s+|ลองใช้\s+|run\s+with\s+|use\s+|ask\s+|tell\s+|have\s+|delegate(?:\s+to)?\s+|with\s+the\s+help\s+of\s+)/i,
+      '',
+    )
     .replace(/^\s*(?:ทำ|do|to)\s+/i, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -221,9 +215,7 @@ function buildTaskText(rawGoal: string, providerPhrase: string): string {
  * The non-matched return shape stays cheap so this function can run
  * unconditionally on every goal.
  */
-export function classifyExternalCodingCliIntent(
-  goal: string,
-): CodingCliIntentClassification {
+export function classifyExternalCodingCliIntent(goal: string): CodingCliIntentClassification {
   const trimmed = goal.trim();
   if (trimmed.length === 0) {
     return {
@@ -250,8 +242,7 @@ export function classifyExternalCodingCliIntent(
     };
   }
 
-  const hasDelegationVerb =
-    DELEGATION_VERB_THAI.test(trimmed) || DELEGATION_VERB_ENGLISH.test(trimmed);
+  const hasDelegationVerb = DELEGATION_VERB_THAI.test(trimmed) || DELEGATION_VERB_ENGLISH.test(trimmed);
 
   // Conversational inquiry suppression only applies when there is NO
   // delegation verb. "ask claude code to compare X and Y" contains both an
@@ -260,8 +251,7 @@ export function classifyExternalCodingCliIntent(
   // single-intent forms: "what is claude code?", "claude code คืออะไร",
   // "explain claude code".
   if (!hasDelegationVerb) {
-    const inquiry =
-      CONVERSATIONAL_INQUIRY_THAI.test(trimmed) || CONVERSATIONAL_INQUIRY_ENGLISH.test(trimmed);
+    const inquiry = CONVERSATIONAL_INQUIRY_THAI.test(trimmed) || CONVERSATIONAL_INQUIRY_ENGLISH.test(trimmed);
     return {
       matched: false,
       providerId: provider.providerId,

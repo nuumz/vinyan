@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { buildVerdict } from '../../core/index.ts';
 import { fromScalar } from '../../core/subjective-opinion.ts';
-import type { Evidence, HypothesisTuple, OracleVerdict } from '../../core/types.ts';
+import type { Evidence, HypothesisTuple, OracleAbstention, OracleResponse } from '../../core/types.ts';
 
 const BASE_RATE = 0.5;
 const TTL_MS = 600_000;
@@ -72,8 +72,14 @@ function tsBuildInfoPath(workspace: string): string {
 async function runTscCore(workspace: string): Promise<TscResult> {
   const buildInfoFile = tsBuildInfoPath(workspace);
   const args = [
-    '--noEmit', '--pretty', 'false', '--project', workspace,
-    '--incremental', '--tsBuildInfoFile', buildInfoFile,
+    '--noEmit',
+    '--pretty',
+    'false',
+    '--project',
+    workspace,
+    '--incremental',
+    '--tsBuildInfoFile',
+    buildInfoFile,
   ];
 
   const proc = Bun.spawn([resolveTscPath(), ...args], {
@@ -122,7 +128,7 @@ export function clearTscCache(): void {
   pendingTsc.clear();
 }
 
-export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict> {
+export async function verify(hypothesis: HypothesisTuple): Promise<OracleResponse> {
   const startTime = performance.now();
   const workspace = hypothesis.workspace;
   const target = hypothesis.target;
@@ -142,11 +148,32 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
         errorCode: 'TIMEOUT',
         durationMs: Math.round(performance.now() - startTime),
         opinion: fromScalar(0.2, BASE_RATE),
-        temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
+        temporalContext: {
+          validFrom: Date.now(),
+          validUntil: Date.now() + TTL_MS,
+          decayModel: 'exponential' as const,
+          halfLife: 300_000,
+        },
       });
     }
 
     const { diagnostics } = tscResult;
+
+    // A2: tsc exited non-zero without a single parseable diagnostic — the
+    // project is not compilable-as-configured (missing/invalid tsconfig,
+    // non-TS workspace, CLI misuse). "Could not verify" must abstain, never
+    // count as a clean pass.
+    if (tscResult.exitCode !== 0 && diagnostics.length === 0) {
+      return {
+        type: 'abstained',
+        reason: 'out_of_domain',
+        oracleName: 'type',
+        durationMs: Math.round(performance.now() - startTime),
+        prerequisites: [
+          `tsc exited with code ${tscResult.exitCode} and no parseable diagnostics — ensure the workspace has a valid tsconfig.json`,
+        ],
+      } satisfies OracleAbstention;
+    }
 
     // Filter diagnostics to target file if specified
     const targetDiags = target
@@ -177,8 +204,15 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       reason: targetDiags.length > 0 ? `${targetDiags.length} type error(s) found` : undefined,
       errorCode: targetDiags.length > 0 ? 'TYPE_MISMATCH' : undefined,
       durationMs: Math.round(performance.now() - startTime),
-      opinion: fromScalar(1.0, BASE_RATE),
-      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
+      // Opinion is oriented toward the proposition "the change is type-correct":
+      // a failing verdict must carry disbelief, not belief, or SL fusion inverts.
+      opinion: fromScalar(targetDiags.length === 0 ? 1.0 : 0.0, BASE_RATE),
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
     });
   } catch (err) {
     return buildVerdict({
@@ -191,7 +225,12 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleVerdict
       errorCode: 'ORACLE_CRASH',
       durationMs: Math.round(performance.now() - startTime),
       opinion: fromScalar(0, BASE_RATE),
-      temporalContext: { validFrom: Date.now(), validUntil: Date.now() + TTL_MS, decayModel: 'exponential' as const, halfLife: 300_000 },
+      temporalContext: {
+        validFrom: Date.now(),
+        validUntil: Date.now() + TTL_MS,
+        decayModel: 'exponential' as const,
+        halfLife: 300_000,
+      },
     });
   }
 }

@@ -2,8 +2,8 @@
  * registerSlackAdapter — bundled Slack adapter ingestion helper.
  */
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { afterEach, describe, expect, it } from 'bun:test';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { PluginAuditStore } from '../../src/db/plugin-audit-store.ts';
 import { SlackAdapter } from '../../src/gateway/adapters/slack.ts';
@@ -52,7 +52,9 @@ function fakeSlackAdapter(): SlackAdapter {
       onclose = null;
       readyState = 1;
       constructor(_: string) {}
-    } as unknown as new (url: string) => never,
+    } as unknown as new (
+      url: string,
+    ) => never,
   });
   return new SlackAdapter({ appToken: 'xapp-test', botToken: 'xoxb-test', api });
 }

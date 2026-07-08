@@ -24,10 +24,7 @@ export interface ParsedShellCommand {
  * Shell metacharacters that enable injection or chaining.
  * Checked as a character set for O(n) single-pass detection.
  */
-const META_CHARS = new Set([
-  ';', '|', '&', '`', '$', '(', ')', '{', '}',
-  '>', '<', '\n',
-]);
+const META_CHARS = new Set([';', '|', '&', '`', '$', '(', ')', '{', '}', '>', '<', '\n']);
 
 /**
  * Parse a raw shell command string into structured form.

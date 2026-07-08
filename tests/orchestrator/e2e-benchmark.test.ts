@@ -57,10 +57,7 @@ interface BenchmarkResult {
   mutationCount: number;
 }
 
-function runBenchmark(
-  orchestrator: ReturnType<typeof createOrchestrator>,
-  input: TaskInput,
-): Promise<BenchmarkResult> {
+function runBenchmark(orchestrator: ReturnType<typeof createOrchestrator>, input: TaskInput): Promise<BenchmarkResult> {
   const timings: PhaseTiming[] = [];
 
   orchestrator.bus.on('phase:timing', (e) => {
@@ -255,7 +252,7 @@ describe('E2E Task Benchmarks', () => {
       useSubprocess: false,
     });
 
-    let understanding: unknown = null;
+    const understanding: unknown = null;
     orchestrator.bus.on('understanding:layer2_complete', () => {
       // Should NOT fire for L0-L1
     });
@@ -293,7 +290,12 @@ describe('E2E Task Benchmarks', () => {
 
     const tasks = [
       makeInput({ id: 'agg-1', goal: 'Fix divide by zero in src/utils.ts', targetFiles: ['src/utils.ts'] }),
-      makeInput({ id: 'agg-2', goal: 'Explain src/handler.ts', taskType: 'reasoning', targetFiles: ['src/handler.ts'] }),
+      makeInput({
+        id: 'agg-2',
+        goal: 'Explain src/handler.ts',
+        taskType: 'reasoning',
+        targetFiles: ['src/handler.ts'],
+      }),
       makeInput({ id: 'agg-3', goal: 'Add subtract function to src/utils.ts', targetFiles: ['src/utils.ts'] }),
     ];
 

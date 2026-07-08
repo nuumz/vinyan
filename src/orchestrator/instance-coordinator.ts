@@ -20,16 +20,12 @@ import {
 import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
 import type { OracleProfileStore } from '../db/oracle-profile-store.ts';
 import type { WorkerStore } from '../db/worker-store.ts';
-import { clampFull, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
 import type { FederationBudgetPool } from '../economy/federation-budget-pool.ts';
+import { clampFull, type PeerTrustLevel } from '../oracle/tier-clamp.ts';
 import type { EventForwarder } from './event-forwarder.ts';
-import {
-  OraclePeerGates,
-  type OraclePeerAdapterProfile,
-  wrapOracleProfileStore,
-} from './profile/oracle-peer-gates.ts';
+import { type OraclePeerAdapterProfile, OraclePeerGates, wrapOracleProfileStore } from './profile/oracle-peer-gates.ts';
 import { ProfileLifecycle } from './profile/profile-lifecycle.ts';
-import type { TaskFingerprint, TaskInput, TaskResult, EngineProfile, EngineStats } from './types.ts';
+import type { EngineProfile, EngineStats, TaskFingerprint, TaskInput, TaskResult } from './types.ts';
 
 /** Remote oracle profile — tracks accuracy of remote oracle instances. */
 export interface OracleProfile {

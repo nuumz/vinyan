@@ -24,11 +24,7 @@ import { randomUUID } from 'crypto';
 
 import type { VinyanBus } from '../../core/bus.ts';
 import { computeGoalHash } from '../../core/content-hash.ts';
-import type {
-  Commitment,
-  CommitmentResolution,
-  CommitmentStore,
-} from '../../db/commitment-store.ts';
+import type { Commitment, CommitmentResolution, CommitmentStore } from '../../db/commitment-store.ts';
 
 // ── Public API ───────────────────────────────────────────────────────
 
@@ -144,11 +140,7 @@ export class CommitmentLedger {
    * that task close together. Returns the list of commitments that were
    * actually resolved by this call.
    */
-  resolveForTask(
-    taskId: string,
-    kind: CommitmentResolution,
-    evidence: string,
-  ): readonly Commitment[] {
+  resolveForTask(taskId: string, kind: CommitmentResolution, evidence: string): readonly Commitment[] {
     const open = this.store.findOpenByTask(taskId);
     const resolved: Commitment[] = [];
     for (const c of open) {

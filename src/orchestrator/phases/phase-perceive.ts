@@ -9,7 +9,7 @@
 import { resolve as resolvePath } from 'node:path';
 import type { RoutingDecision, SemanticTaskUnderstanding } from '../types.ts';
 import { buildLightweightIntent } from '../understanding/lightweight-intent.ts';
-import type { PhaseContext, PerceiveResult, PhaseContinue } from './types.ts';
+import type { PerceiveResult, PhaseContext, PhaseContinue } from './types.ts';
 import { Phase } from './types.ts';
 
 export async function executePerceivePhase(
@@ -43,10 +43,14 @@ export async function executePerceivePhase(
   if (deps.understandingEngine && routing.level >= 2) {
     const { enrichUnderstandingL2 } = await import('../understanding/task-understanding.ts');
     const l2Start = Date.now();
-    understanding = await enrichUnderstandingL2(understanding, {
-      understandingEngine: deps.understandingEngine,
-      workspace: deps.workspace ?? '.',
-    }, { remainingTokens: input.budget.maxTokens - totalTokensConsumed });
+    understanding = await enrichUnderstandingL2(
+      understanding,
+      {
+        understandingEngine: deps.understandingEngine,
+        workspace: deps.workspace ?? '.',
+      },
+      { remainingTokens: input.budget.maxTokens - totalTokensConsumed },
+    );
     deps.bus?.emit('understanding:layer2_complete', {
       taskId: input.id,
       durationMs: Date.now() - l2Start,

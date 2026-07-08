@@ -13,9 +13,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { HypothesisTuple } from '../../src/core/types.ts';
-import { verify as astVerify } from '../../src/oracle/ast/ast-verifier.ts';
+import { verify as astVerifyResponse } from '../../src/oracle/ast/ast-verifier.ts';
 import { verify as depVerify } from '../../src/oracle/dep/dep-analyzer.ts';
-import { verify as typeVerify, clearTscCache } from '../../src/oracle/type/type-verifier.ts';
+import { verify as typeVerifyResponse, clearTscCache } from '../../src/oracle/type/type-verifier.ts';
+import { asVerdict } from '../../tests/helpers/oracle-verdict.ts';
+
+const astVerify = (h: Parameters<typeof astVerifyResponse>[0]) => asVerdict(astVerifyResponse(h));
+const typeVerify = async (h: Parameters<typeof typeVerifyResponse>[0]) => asVerdict(await typeVerifyResponse(h));
 
 let workspace: string;
 

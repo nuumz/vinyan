@@ -2,12 +2,13 @@
  * Tests for STU Phase C: Understanding Verifier.
  * Verifies claims against filesystem, WorldGraph, and structural evidence.
  */
+
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { WorldGraph } from '../../src/world-graph/world-graph.ts';
-import { verifyUnderstandingClaims } from '../../src/orchestrator/understanding/understanding-verifier.ts';
 import type { SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
+import { verifyUnderstandingClaims } from '../../src/orchestrator/understanding/understanding-verifier.ts';
+import { WorldGraph } from '../../src/world-graph/world-graph.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -53,13 +54,15 @@ function makeUnderstanding(overrides: Partial<SemanticTaskUnderstanding> = {}): 
 describe('entity file existence verification', () => {
   test('existing file → type "known", confidence 0.99, tierReliability 1.0', () => {
     const understanding = makeUnderstanding({
-      resolvedEntities: [{
-        reference: 'auth service',
-        resolvedPaths: ['src/auth/service.ts'],
-        resolution: 'fuzzy-path',
-        confidence: 0.8,
-        confidenceSource: 'evidence-derived',
-      }],
+      resolvedEntities: [
+        {
+          reference: 'auth service',
+          resolvedPaths: ['src/auth/service.ts'],
+          resolution: 'fuzzy-path',
+          confidence: 0.8,
+          confidenceSource: 'evidence-derived',
+        },
+      ],
     });
 
     const claims = verifyUnderstandingClaims(understanding, worldGraph, tempDir);
@@ -74,13 +77,15 @@ describe('entity file existence verification', () => {
 
   test('non-existent file → type "contradictory", confidence 0.01', () => {
     const understanding = makeUnderstanding({
-      resolvedEntities: [{
-        reference: 'missing file',
-        resolvedPaths: ['src/missing/file.ts'],
-        resolution: 'fuzzy-path',
-        confidence: 0.7,
-        confidenceSource: 'evidence-derived',
-      }],
+      resolvedEntities: [
+        {
+          reference: 'missing file',
+          resolvedPaths: ['src/missing/file.ts'],
+          resolution: 'fuzzy-path',
+          confidence: 0.7,
+          confidenceSource: 'evidence-derived',
+        },
+      ],
     });
 
     const claims = verifyUnderstandingClaims(understanding, worldGraph, tempDir);
@@ -178,13 +183,15 @@ describe('symbol verification via WorldGraph', () => {
 describe('scope-entity contradiction', () => {
   test('scope mentions "auth", entities have auth paths → no contradiction', () => {
     const understanding = makeUnderstanding({
-      resolvedEntities: [{
-        reference: 'auth service',
-        resolvedPaths: ['src/auth/service.ts'],
-        resolution: 'exact',
-        confidence: 1.0,
-        confidenceSource: 'evidence-derived',
-      }],
+      resolvedEntities: [
+        {
+          reference: 'auth service',
+          resolvedPaths: ['src/auth/service.ts'],
+          resolution: 'exact',
+          confidence: 1.0,
+          confidenceSource: 'evidence-derived',
+        },
+      ],
       semanticIntent: {
         primaryAction: 'bug-fix',
         secondaryActions: [],
@@ -203,13 +210,15 @@ describe('scope-entity contradiction', () => {
 
   test('scope mentions "payment", no payment entities → contradiction', () => {
     const understanding = makeUnderstanding({
-      resolvedEntities: [{
-        reference: 'auth service',
-        resolvedPaths: ['src/auth/service.ts'],
-        resolution: 'exact',
-        confidence: 1.0,
-        confidenceSource: 'evidence-derived',
-      }],
+      resolvedEntities: [
+        {
+          reference: 'auth service',
+          resolvedPaths: ['src/auth/service.ts'],
+          resolution: 'exact',
+          confidence: 1.0,
+          confidenceSource: 'evidence-derived',
+        },
+      ],
       semanticIntent: {
         primaryAction: 'refactor',
         secondaryActions: [],
@@ -231,13 +240,15 @@ describe('scope-entity contradiction', () => {
 
   test('no semanticIntent → no scope claims', () => {
     const understanding = makeUnderstanding({
-      resolvedEntities: [{
-        reference: 'auth service',
-        resolvedPaths: ['src/auth/service.ts'],
-        resolution: 'exact',
-        confidence: 1.0,
-        confidenceSource: 'evidence-derived',
-      }],
+      resolvedEntities: [
+        {
+          reference: 'auth service',
+          resolvedPaths: ['src/auth/service.ts'],
+          resolution: 'exact',
+          confidence: 1.0,
+          confidenceSource: 'evidence-derived',
+        },
+      ],
       semanticIntent: undefined,
     });
 
@@ -284,13 +295,15 @@ describe('ECP compliance', () => {
 
     const understanding = makeUnderstanding({
       targetSymbol: 'TestSymbol',
-      resolvedEntities: [{
-        reference: 'auth',
-        resolvedPaths: ['src/auth/service.ts'],
-        resolution: 'exact',
-        confidence: 1.0,
-        confidenceSource: 'evidence-derived',
-      }],
+      resolvedEntities: [
+        {
+          reference: 'auth',
+          resolvedPaths: ['src/auth/service.ts'],
+          resolution: 'exact',
+          confidence: 1.0,
+          confidenceSource: 'evidence-derived',
+        },
+      ],
       semanticIntent: {
         primaryAction: 'bug-fix',
         secondaryActions: [],

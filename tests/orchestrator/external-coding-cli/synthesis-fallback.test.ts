@@ -14,13 +14,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
 import { createBus } from '../../../src/core/bus.ts';
+import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
+import { CodingCliVerifier } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-verifier.ts';
 import {
   CodingCliConfigSchema,
   ExternalCodingCliController,
 } from '../../../src/orchestrator/external-coding-cli/index.ts';
-import { CodingCliVerifier } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-verifier.ts';
 import { FakeAdapter } from './fake-adapter.ts';
 
 function tmpWorkspace(): string {
@@ -49,7 +49,8 @@ describe('controller — claim synthesis fallback (A9 graceful degradation)', ()
         type: 'result',
         subtype: 'success',
         is_error: false,
-        result: 'I have analyzed the design spec at the requested path. The open-account flow has 3 phases: validation, KYC, activation. Each is independently testable.',
+        result:
+          'I have analyzed the design spec at the requested path. The open-account flow has 3 phases: validation, KYC, activation. Each is independently testable.',
         session_id: 'sess-x',
       }),
     ];

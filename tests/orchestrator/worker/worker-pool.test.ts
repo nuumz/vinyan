@@ -364,9 +364,7 @@ describe('pruneForRole — EO #2 Information Barriers', () => {
   test('backwards compatible: works with old failedApproaches without verdictConfidence', () => {
     const mem = fullMemory();
     // Simulate old format — no verdictConfidence or failureOracle
-    mem.failedApproaches = [
-      { approach: 'old approach', oracleVerdict: 'some old verdict', timestamp: Date.now() },
-    ];
+    mem.failedApproaches = [{ approach: 'old approach', oracleVerdict: 'some old verdict', timestamp: Date.now() }];
     const { memory } = pruneForRole(fullPerception(), mem, 'generator', 2);
     expect(memory.failedApproaches[0]!.oracleVerdict).toBe('Failed: verification');
     expect(memory.failedApproaches[0]!.verdictConfidence).toBeUndefined();

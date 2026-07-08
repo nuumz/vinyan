@@ -59,10 +59,11 @@ function setupDbAtPostV32MissingBackfill(): Database {
     CREATE INDEX IF NOT EXISTS idx_skill_proposal_revisions_proposal
       ON skill_proposal_revisions(profile, proposal_id, revision DESC);
   `);
-  db.run(
-    'INSERT INTO schema_version (version, description, applied_at) VALUES (?, ?, ?)',
-    [32, 'skill_proposal_revisions (first cut, no backfill)', Date.now()],
-  );
+  db.run('INSERT INTO schema_version (version, description, applied_at) VALUES (?, ?, ?)', [
+    32,
+    'skill_proposal_revisions (first cut, no backfill)',
+    Date.now(),
+  ]);
   return db;
 }
 

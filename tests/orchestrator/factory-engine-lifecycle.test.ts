@@ -16,10 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createBus } from '../../src/core/bus.ts';
 import { WORKER_SCHEMA_SQL } from '../../src/db/worker-schema.ts';
 import { WorkerStore } from '../../src/db/worker-store.ts';
-import {
-  attachEngineLifecycleListener,
-  tryRegisterEngineAsWorker,
-} from '../../src/orchestrator/factory.ts';
+import { attachEngineLifecycleListener, tryRegisterEngineAsWorker } from '../../src/orchestrator/factory.ts';
 import { workerIdForEngine } from '../../src/orchestrator/llm/engine-worker-binding.ts';
 import { ReasoningEngineRegistry } from '../../src/orchestrator/llm/llm-reasoning-engine.ts';
 import type { ReasoningEngine } from '../../src/orchestrator/types.ts';

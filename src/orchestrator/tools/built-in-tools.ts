@@ -9,13 +9,7 @@
 
 import { createHash } from 'crypto';
 import type { ToolResult } from '../types.ts';
-import {
-  attemptCompletion,
-  consultPeer,
-  delegateTask,
-  planUpdate,
-  requestBudgetExtension,
-} from './control-tools.ts';
+import { attemptCompletion, consultPeer, delegateTask, planUpdate, requestBudgetExtension } from './control-tools.ts';
 import { directoryList } from './directory-tools.ts';
 // ── Category imports ────────────────────────────────────────────────
 import { fileEdit, fileRead, fileWrite } from './file-tools.ts';

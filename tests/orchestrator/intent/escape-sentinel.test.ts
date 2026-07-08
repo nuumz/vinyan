@@ -8,9 +8,9 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
+  detectHallucinatedDelegation,
   ESCAPE_SENTINEL_CLOSE,
   ESCAPE_SENTINEL_OPEN,
-  detectHallucinatedDelegation,
   formatEscapeProtocolBlock,
   parseEscapeSentinel,
 } from '../../../src/orchestrator/intent/escape-sentinel.ts';
@@ -48,9 +48,7 @@ describe('parseEscapeSentinel', () => {
   });
 
   it('first sentinel wins when two appear (deterministic)', () => {
-    const out = parseEscapeSentinel(
-      '<<NEEDS_AGENTIC_WORKFLOW: first>><<NEEDS_AGENTIC_WORKFLOW: second>>',
-    );
+    const out = parseEscapeSentinel('<<NEEDS_AGENTIC_WORKFLOW: first>><<NEEDS_AGENTIC_WORKFLOW: second>>');
     expect(out.matched).toBe(true);
     expect(out.reason).toBe('first');
   });
@@ -85,8 +83,7 @@ describe('detectHallucinatedDelegation', () => {
   // delegation happened. This detector catches that pattern so the caller
   // can re-route the task to agentic-workflow.
   it('matches the original incident phrasing (Thai)', () => {
-    const answer =
-      'ขอบคุณครับ ขณะนี้โจทย์ถูกส่งไปยัง Developer และ Mentor แล้วครับ รอผลการแข่งขันสักครู่';
+    const answer = 'ขอบคุณครับ ขณะนี้โจทย์ถูกส่งไปยัง Developer และ Mentor แล้วครับ รอผลการแข่งขันสักครู่';
     const out = detectHallucinatedDelegation(answer);
     expect(out.matched).toBe(true);
     expect(out.locale).toBe('thai');
@@ -107,9 +104,7 @@ describe('detectHallucinatedDelegation', () => {
   });
 
   it('matches English "I just delegated this to the architect"', () => {
-    const out = detectHallucinatedDelegation(
-      'I just delegated this analysis to the architect specialist.',
-    );
+    const out = detectHallucinatedDelegation('I just delegated this analysis to the architect specialist.');
     expect(out.matched).toBe(true);
   });
 

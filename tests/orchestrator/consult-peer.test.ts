@@ -20,21 +20,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-
-import { consultPeer } from '../../src/orchestrator/tools/control-tools.ts';
-import { BUILT_IN_TOOLS } from '../../src/orchestrator/tools/built-in-tools.ts';
+import { join } from 'node:path';
 import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
-import {
-  runAgentLoop,
-  type AgentLoopDeps,
-} from '../../src/orchestrator/agent/agent-loop.ts';
+import { type AgentLoopDeps, runAgentLoop } from '../../src/orchestrator/agent/agent-loop.ts';
+import type { IAgentSession, SessionState } from '../../src/orchestrator/agent/agent-session.ts';
 import { buildSystemPrompt } from '../../src/orchestrator/agent/agent-worker-entry.ts';
-import type {
-  IAgentSession,
-  SessionState,
-} from '../../src/orchestrator/agent/agent-session.ts';
 import type {
   OrchestratorTurn,
   PeerConsultRequest,
@@ -42,6 +33,8 @@ import type {
   TerminateReason,
   WorkerTurn,
 } from '../../src/orchestrator/protocol.ts';
+import { BUILT_IN_TOOLS } from '../../src/orchestrator/tools/built-in-tools.ts';
+import { consultPeer } from '../../src/orchestrator/tools/control-tools.ts';
 import type {
   PerceptualHierarchy,
   RoutingDecision,
@@ -108,10 +101,7 @@ function makeConsultingToolExecutor() {
       context: import('../../src/orchestrator/tools/tool-interface.ts').ToolContext,
     ): Promise<ToolResult> => {
       if (call.tool === 'consult_peer') {
-        const result = await consultPeer.execute(
-          { ...call.parameters, callId: call.id },
-          context,
-        );
+        const result = await consultPeer.execute({ ...call.parameters, callId: call.id }, context);
         return { ...result, callId: call.id };
       }
       return {
@@ -177,10 +167,7 @@ function makeBaseDeps(session: MockAgentSession): AgentLoopDeps {
 }
 
 beforeEach(() => {
-  testWorkspace = join(
-    tmpdir(),
-    `vinyan-consult-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-  );
+  testWorkspace = join(tmpdir(), `vinyan-consult-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
   mkdirSync(testWorkspace, { recursive: true });
 });
 
@@ -345,17 +332,12 @@ describe('consult_peer — end-to-end via runAgentLoop', () => {
     const session = new MockAgentSession(workerTurns);
     const deps: AgentLoopDeps = {
       ...makeBaseDeps(session),
-      peerConsultant: makePeerConsultant('Use exponential backoff with jitter — fixed backoff thundering-herds on server restart.'),
+      peerConsultant: makePeerConsultant(
+        'Use exponential backoff with jitter — fixed backoff thundering-herds on server restart.',
+      ),
     };
 
-    await runAgentLoop(
-      makeTestInput(),
-      makeTestPerception(),
-      makeTestMemory(),
-      undefined,
-      makeTestRouting(),
-      deps,
-    );
+    await runAgentLoop(makeTestInput(), makeTestPerception(), makeTestMemory(), undefined, makeTestRouting(), deps);
 
     const toolResultTurns = session.sent.filter((t) => t.type === 'tool_results') as Array<
       Extract<OrchestratorTurn, { type: 'tool_results' }>
@@ -401,14 +383,7 @@ describe('consult_peer — end-to-end via runAgentLoop', () => {
     // not wire it without deps.peerConsultant).
     const deps: AgentLoopDeps = makeBaseDeps(session);
 
-    await runAgentLoop(
-      makeTestInput(),
-      makeTestPerception(),
-      makeTestMemory(),
-      undefined,
-      makeTestRouting(),
-      deps,
-    );
+    await runAgentLoop(makeTestInput(), makeTestPerception(), makeTestMemory(), undefined, makeTestRouting(), deps);
 
     const toolResultTurns = session.sent.filter((t) => t.type === 'tool_results') as Array<
       Extract<OrchestratorTurn, { type: 'tool_results' }>
@@ -444,14 +419,7 @@ describe('consult_peer — end-to-end via runAgentLoop', () => {
       peerConsultant: async () => null,
     };
 
-    await runAgentLoop(
-      makeTestInput(),
-      makeTestPerception(),
-      makeTestMemory(),
-      undefined,
-      makeTestRouting(),
-      deps,
-    );
+    await runAgentLoop(makeTestInput(), makeTestPerception(), makeTestMemory(), undefined, makeTestRouting(), deps);
 
     const toolResultTurns = session.sent.filter((t) => t.type === 'tool_results') as Array<
       Extract<OrchestratorTurn, { type: 'tool_results' }>
@@ -488,14 +456,7 @@ describe('consult_peer — end-to-end via runAgentLoop', () => {
       },
     };
 
-    await runAgentLoop(
-      makeTestInput(),
-      makeTestPerception(),
-      makeTestMemory(),
-      undefined,
-      makeTestRouting(),
-      deps,
-    );
+    await runAgentLoop(makeTestInput(), makeTestPerception(), makeTestMemory(), undefined, makeTestRouting(), deps);
 
     const toolResultTurns = session.sent.filter((t) => t.type === 'tool_results') as Array<
       Extract<OrchestratorTurn, { type: 'tool_results' }>

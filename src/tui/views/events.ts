@@ -39,7 +39,7 @@ function sortEvents(events: EventLogEntry[], sort?: SortConfig<EventSortField>):
 
 // ── Memoization Cache ────────────────────────────────────────────────
 
-let _sortCache: {
+let SortCache: {
   length: number;
   sortField: string | undefined;
   sortDir: string | undefined;
@@ -51,22 +51,22 @@ function getCachedSortedEvents(events: EventLogEntry[], sort?: SortConfig<EventS
   const dir = sort?.direction;
 
   if (
-    _sortCache &&
-    _sortCache.length === events.length &&
-    _sortCache.sortField === field &&
-    _sortCache.sortDir === dir &&
+    SortCache &&
+    SortCache.length === events.length &&
+    SortCache.sortField === field &&
+    SortCache.sortDir === dir &&
     // Safety: never return empty cache when events exist
-    (_sortCache.result.length > 0 || events.length === 0)
+    (SortCache.result.length > 0 || events.length === 0)
   ) {
-    return _sortCache.result;
+    return SortCache.result;
   }
 
   const result = sortEvents(events, sort);
-  _sortCache = { length: events.length, sortField: field, sortDir: dir, result };
+  SortCache = { length: events.length, sortField: field, sortDir: dir, result };
   return result;
 }
 
-let _filterCache: {
+let FilterCache: {
   sourceLength: number;
   sortField: string;
   sortDir: string;
@@ -81,21 +81,21 @@ function getCachedFilteredEvents(
   sortDir: string,
 ): EventLogEntry[] {
   if (
-    _filterCache &&
-    _filterCache.sourceLength === events.length &&
-    _filterCache.sortField === sortField &&
-    _filterCache.sortDir === sortDir &&
-    _filterCache.filterQuery === filterQuery &&
+    FilterCache &&
+    FilterCache.sourceLength === events.length &&
+    FilterCache.sortField === sortField &&
+    FilterCache.sortDir === sortDir &&
+    FilterCache.filterQuery === filterQuery &&
     // Safety: never return empty cache when source has events
-    (_filterCache.result.length > 0 || events.length === 0 || filterQuery !== '')
+    (FilterCache.result.length > 0 || events.length === 0 || filterQuery !== '')
   ) {
-    return _filterCache.result;
+    return FilterCache.result;
   }
 
   const result = filterQuery
     ? events.filter((e) => e.domain.includes(filterQuery) || e.event.includes(filterQuery))
     : events;
-  _filterCache = { sourceLength: events.length, sortField, sortDir, filterQuery, result };
+  FilterCache = { sourceLength: events.length, sortField, sortDir, filterQuery, result };
   return result;
 }
 

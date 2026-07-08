@@ -67,12 +67,15 @@ export interface OracleObservation {
 }
 
 export class OracleEMACalibrator {
-  private readonly state = new Map<string, {
-    observationCount: number;
-    accuracy: number;
-    agreementCount: number;
-    lastUpdatedAt: number;
-  }>();
+  private readonly state = new Map<
+    string,
+    {
+      observationCount: number;
+      accuracy: number;
+      agreementCount: number;
+      lastUpdatedAt: number;
+    }
+  >();
   private readonly bus?: VinyanBus;
 
   constructor(options?: { bus?: VinyanBus }) {

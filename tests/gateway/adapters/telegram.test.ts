@@ -6,12 +6,12 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { TelegramAdapter, splitForTelegram } from '../../../src/gateway/adapters/telegram.ts';
+import { splitForTelegram, TelegramAdapter } from '../../../src/gateway/adapters/telegram.ts';
 import type { TelegramApi, TelegramUpdate } from '../../../src/gateway/adapters/telegram-api.ts';
 import {
-  isGatewayAdapter,
   type GatewayAdapterContext,
   type GatewayInboundEnvelopeMinimal,
+  isGatewayAdapter,
 } from '../../../src/gateway/types.ts';
 
 interface FakeApi {

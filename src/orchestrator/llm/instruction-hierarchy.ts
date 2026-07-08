@@ -16,11 +16,11 @@
  * M4 (learned conventions) requires human review before entries are committed.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { createHash } from 'crypto';
-import { join, dirname, resolve, isAbsolute } from 'path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
-import { parseLearnedMdEntries, type LearnedEntry } from '../memory/memory-proposals.ts';
+import { dirname, isAbsolute, join, resolve } from 'path';
+import { type LearnedEntry, parseLearnedMdEntries } from '../memory/memory-proposals.ts';
 
 /** Max per-file instruction size (50KB) — prevents context window blowout. */
 const MAX_INSTRUCTION_SIZE = 50_000;

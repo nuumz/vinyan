@@ -16,8 +16,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
-import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 import type { TaskInput } from '../../../src/orchestrator/types.ts';
+import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 
 function makeInput(goal: string): TaskInput {
   return {
@@ -70,9 +70,7 @@ describe('executeWorkflow — human-input pause', () => {
   test('emits human_input_needed with taskId + stepId + question', async () => {
     const bus = createBus();
     const events: Array<{ name: string; payload: unknown }> = [];
-    bus.on('workflow:human_input_needed', (p) =>
-      events.push({ name: 'human_input_needed', payload: p }),
-    );
+    bus.on('workflow:human_input_needed', (p) => events.push({ name: 'human_input_needed', payload: p }));
     const run = executeWorkflow(makeInput('ask topic'), {
       bus,
       llmRegistry: { selectByTier: () => makeProvider(HUMAN_INPUT_PLAN) } as any,

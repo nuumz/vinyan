@@ -12,8 +12,8 @@
  * auto-published; the agent must explicitly pass draft=false to publish.
  */
 
-import { makeResult } from './tool-helpers.ts';
 import { approvePr } from './ship-policy.ts';
+import { makeResult } from './tool-helpers.ts';
 import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 async function whichGh(cwd: string): Promise<boolean> {
@@ -115,7 +115,11 @@ Usage:
         });
       }
       // gh prints the PR URL on stdout.
-      const url = stdout.trim().split('\n').find((line) => line.startsWith('http')) ?? stdout.trim();
+      const url =
+        stdout
+          .trim()
+          .split('\n')
+          .find((line) => line.startsWith('http')) ?? stdout.trim();
       return makeResult(callId, 'git_pr', {
         status: 'success',
         output: {

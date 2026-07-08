@@ -26,9 +26,11 @@
  * etc. so the controller surfaces `unsupported-capability` instead of
  * pretending the CLI can edit code autonomously.
  */
-import * as path from 'node:path';
+
 import * as fs from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
+import { parseFinalResult } from '../external-coding-cli-result-parser.ts';
 import {
   type ApprovalDecision,
   type CodingCliApprovalRequest,
@@ -47,7 +49,6 @@ import {
   type ParseContext,
   ZERO_CAPABILITIES,
 } from '../types.ts';
-import { parseFinalResult } from '../external-coding-cli-result-parser.ts';
 import { probeBinary, whichBinary } from './provider-detection.ts';
 
 export interface GitHubCopilotAdapterOptions {
@@ -84,9 +85,7 @@ export class GitHubCopilotAdapter implements CodingCliProviderAdapter {
 
     if (!binaryPath) {
       // Look for standalone first.
-      binaryPath = (await whichBinary('copilot'))
-        ?? STANDALONE_CANDIDATES.find((p) => safeIsExecutable(p))
-        ?? null;
+      binaryPath = (await whichBinary('copilot')) ?? STANDALONE_CANDIDATES.find((p) => safeIsExecutable(p)) ?? null;
     }
     if (binaryPath) {
       const probe = await probeBinary(binaryPath, ['--help'], { timeoutMs: 5_000 });
@@ -95,7 +94,12 @@ export class GitHubCopilotAdapter implements CodingCliProviderAdapter {
         // We hit a wrapper that wants to download — refuse.
         notes.push('Copilot CLI not installed — `gh copilot` wants to install it. Install manually first.');
         binaryPath = null;
-      } else if (helpText.includes('-p,') || helpText.includes('--prompt') || helpText.includes('"Summarize this week') || helpText.includes('--allow-tool')) {
+      } else if (
+        helpText.includes('-p,') ||
+        helpText.includes('--prompt') ||
+        helpText.includes('"Summarize this week') ||
+        helpText.includes('--allow-tool')
+      ) {
         variant = 'full';
       } else {
         variant = 'limited';
@@ -118,7 +122,9 @@ export class GitHubCopilotAdapter implements CodingCliProviderAdapter {
             notes.push('Using `gh copilot` legacy wrapper — limited to suggest/explain mode unless extended');
           }
         } else if (text.includes('Cannot find GitHub Copilot CLI') || text.includes('Install GitHub Copilot CLI?')) {
-          notes.push('`gh copilot` is available but Copilot CLI itself is not installed — run `gh copilot` once interactively to install');
+          notes.push(
+            '`gh copilot` is available but Copilot CLI itself is not installed — run `gh copilot` once interactively to install',
+          );
         }
       }
     }
@@ -130,38 +136,46 @@ export class GitHubCopilotAdapter implements CodingCliProviderAdapter {
         binaryPath: null,
         version: null,
         variant: 'unknown',
-        notes: notes.length > 0 ? notes : ['github-copilot binary not found — install via https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli'],
+        notes:
+          notes.length > 0
+            ? notes
+            : [
+                'github-copilot binary not found — install via https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli',
+              ],
         capabilities: ZERO_CAPABILITIES,
       };
       this.detection = result;
       return result;
     }
 
-    const versionProbe = await probeBinary(binaryPath, this.useGhFallback ? ['copilot', '--version'] : ['--version'], { timeoutMs: 5_000 });
+    const versionProbe = await probeBinary(binaryPath, this.useGhFallback ? ['copilot', '--version'] : ['--version'], {
+      timeoutMs: 5_000,
+    });
     const version = versionProbe.stdout.trim() || null;
 
-    const capabilities: CodingCliCapabilities = variant === 'full'
-      ? {
-          headless: true,
-          // Copilot's CLI does not expose a documented stream protocol —
-          // we only drive it headlessly. Marking interactive: false avoids
-          // the controller routing it to a stdin-pipe loop that would hang
-          // on its readline UX.
-          interactive: false,
-          streamProtocol: false,
-          // Copilot's resume support is not standardized — mark false until
-          // we can verify against the installed binary.
-          resume: false,
-          nativeHooks: false,
-          jsonOutput: false,
-          approvalPrompts: true,
-          toolEvents: false,
-          fileEditEvents: false,
-          transcriptAccess: false,
-          statusCommand: false,
-          cancelSupport: true,
-        }
-      : { ...ZERO_CAPABILITIES };
+    const capabilities: CodingCliCapabilities =
+      variant === 'full'
+        ? {
+            headless: true,
+            // Copilot's CLI does not expose a documented stream protocol —
+            // we only drive it headlessly. Marking interactive: false avoids
+            // the controller routing it to a stdin-pipe loop that would hang
+            // on its readline UX.
+            interactive: false,
+            streamProtocol: false,
+            // Copilot's resume support is not standardized — mark false until
+            // we can verify against the installed binary.
+            resume: false,
+            nativeHooks: false,
+            jsonOutput: false,
+            approvalPrompts: true,
+            toolEvents: false,
+            fileEditEvents: false,
+            transcriptAccess: false,
+            statusCommand: false,
+            cancelSupport: true,
+          }
+        : { ...ZERO_CAPABILITIES };
 
     const result: CodingCliDetectionResult = {
       providerId: this.id,
@@ -324,8 +338,8 @@ export class GitHubCopilotAdapter implements CodingCliProviderAdapter {
     };
   }
 
-  async cleanup(_sessionId: string): Promise<void> {
-    void _sessionId;
+  async cleanup(sessionId: string): Promise<void> {
+    void sessionId;
   }
 
   // ── Internal ──────────────────────────────────────────────────────────
@@ -339,9 +353,15 @@ export class GitHubCopilotAdapter implements CodingCliProviderAdapter {
   private buildEnv(): Record<string, string> {
     const env: Record<string, string> = {};
     const allow = this.options.allowEnv ?? [
-      'PATH', 'HOME', 'TERM', 'LANG', 'LC_ALL',
-      'FORCE_COLOR', 'NO_COLOR',
-      'GH_TOKEN', 'GITHUB_TOKEN',
+      'PATH',
+      'HOME',
+      'TERM',
+      'LANG',
+      'LC_ALL',
+      'FORCE_COLOR',
+      'NO_COLOR',
+      'GH_TOKEN',
+      'GITHUB_TOKEN',
     ];
     for (const key of allow) {
       const value = process.env[key];

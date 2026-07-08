@@ -58,10 +58,7 @@ const TIER_RANK: Record<ConfidenceTier, number> = {
  * tag-based registry index, hard-coded mapping in tests) — discovery is
  * a separate concern. Empty array → no remote fetch attempted.
  */
-export type RemoteCandidateDiscoveryFn = (
-  persona: AgentSpec,
-  gap: CapabilityRequirement,
-) => Promise<readonly string[]>;
+export type RemoteCandidateDiscoveryFn = (persona: AgentSpec, gap: CapabilityRequirement) => Promise<readonly string[]>;
 
 export interface LocalHubAcquirerOptions {
   /** Artifact store backing the workspace's `.vinyan/skills/` directory. */

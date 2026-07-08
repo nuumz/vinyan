@@ -162,9 +162,7 @@ export class ProfileLifecycle<T extends AgentProfileBase> {
    * the best demoted one so the system can keep serving. Returns the id of
    * the reactivated profile, or null if nothing could be recovered.
    */
-  emergencyReactivation(
-    pickBest: (candidates: T[]) => T | null = (c) => c[0] ?? null,
-  ): string | null {
+  emergencyReactivation(pickBest: (candidates: T[]) => T | null = (c) => c[0] ?? null): string | null {
     if (this.store.findActive().length > 0) return null;
     const demoted = this.store.findByStatus('demoted');
     if (demoted.length === 0) return null;

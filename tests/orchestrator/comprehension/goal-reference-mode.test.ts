@@ -118,11 +118,7 @@ describe('classifyGoalReferenceMode — unknown (mixed signals)', () => {
   // without a strong meta-verb anchor — the user might be reporting an
   // issue, asking for help, or just describing context. Pre-rules still
   // fire but at reduced confidence so the LLM advisor weighs in.
-  test.each([
-    'parser is broken',
-    'routing เพี้ยน',
-    'classifier behavior',
-  ])('classifies "%s" as unknown', (goal) => {
+  test.each(['parser is broken', 'routing เพี้ยน', 'classifier behavior'])('classifies "%s" as unknown', (goal) => {
     expect(classifyGoalReferenceMode(goal)).toBe('unknown');
   });
 
@@ -162,9 +158,7 @@ describe('rule-comprehender — emits goalReferenceMode on the envelope', () => 
   test('meta goal → state.goalReferenceMode === "meta" + evidence entry', async () => {
     const eng = newRuleComprehender();
     const out = await eng.comprehend(
-      makeInput(
-        'ช่วยแก้ logic สำหรับ analyze user prompt เช่น "แบ่ง Agent 3ตัว แข่งกันถามตอบ"',
-      ),
+      makeInput('ช่วยแก้ logic สำหรับ analyze user prompt เช่น "แบ่ง Agent 3ตัว แข่งกันถามตอบ"'),
     );
 
     ComprehendedTaskMessageSchema.parse(out);

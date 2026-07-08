@@ -2,9 +2,9 @@
  * Tests for agent-soul prompt section — verifies deep soul injection.
  */
 import { describe, expect, test } from 'bun:test';
-import { createDefaultRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
-import type { SectionContext } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 import { createEmptyContext } from '../../../src/orchestrator/agent-context/types.ts';
+import type { SectionContext } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
+import { createDefaultRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 
 function makeMinimalContext(overrides?: Partial<SectionContext>): SectionContext {
   return {
@@ -84,14 +84,24 @@ describe('Agent Soul Prompt Section', () => {
   test('agent-memory and agent-skills still render alongside soul', () => {
     const ac = createEmptyContext('worker-1');
     ac.memory.lessonsSummary = 'Learned many things.';
-    ac.memory.episodes = [{
-      taskId: 't1', taskSignature: 'test', outcome: 'success',
-      lesson: 'good', filesInvolved: [], approachUsed: 'standard', timestamp: 1,
-    }];
+    ac.memory.episodes = [
+      {
+        taskId: 't1',
+        taskSignature: 'test',
+        outcome: 'success',
+        lesson: 'good',
+        filesInvolved: [],
+        approachUsed: 'standard',
+        timestamp: 1,
+      },
+    ];
     ac.skills.proficiencies = {
       'code:test': {
-        taskSignature: 'code:test', level: 'expert',
-        successRate: 0.9, totalAttempts: 10, lastAttempt: 1,
+        taskSignature: 'code:test',
+        level: 'expert',
+        successRate: 0.9,
+        totalAttempts: 10,
+        lastAttempt: 1,
       },
     };
 

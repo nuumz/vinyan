@@ -2,17 +2,17 @@
  * Tests for STU Layer 2: UnderstandingEngine, parsing, canonicalization, constraint verification.
  */
 import { describe, expect, test } from 'bun:test';
+import type { LLMProvider, LLMRequest, LLMResponse, SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
+import { enrichUnderstandingL2 } from '../../src/orchestrator/understanding/task-understanding.ts';
 import {
-  LAYER2_MIN_BUDGET_TOKENS,
-  UnderstandingEngine,
   buildUnderstandingPrompt,
   canonicalizePrimaryAction,
+  LAYER2_MIN_BUDGET_TOKENS,
   levenshtein,
   parseSemanticIntent,
+  UnderstandingEngine,
   verifyImplicitConstraints,
 } from '../../src/orchestrator/understanding/understanding-engine.ts';
-import { enrichUnderstandingL2 } from '../../src/orchestrator/understanding/task-understanding.ts';
-import type { LLMProvider, LLMRequest, LLMResponse, SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -210,11 +210,11 @@ describe('parseSemanticIntent', () => {
     const json = JSON.stringify({
       primaryAction: 'bug-fix',
       scope: 'test',
-      goalSummary: 42,            // number instead of string
-      steps: 'not an array',      // string instead of array
+      goalSummary: 42, // number instead of string
+      steps: 'not an array', // string instead of array
       successCriteria: [1, 2, 3], // numbers in array → filtered out
-      affectedComponents: null,    // null
-      rootCause: { obj: true },   // object instead of string
+      affectedComponents: null, // null
+      rootCause: { obj: true }, // object instead of string
     });
     const result = parseSemanticIntent(json);
     expect(result).not.toBeNull();
@@ -343,13 +343,15 @@ describe('buildUnderstandingPrompt', () => {
 
   test('includes resolved entities in context', () => {
     const understanding = makeUnderstanding({
-      resolvedEntities: [{
-        reference: 'auth service',
-        resolvedPaths: ['src/auth/service.ts'],
-        resolution: 'fuzzy-path',
-        confidence: 0.8,
-        confidenceSource: 'evidence-derived',
-      }],
+      resolvedEntities: [
+        {
+          reference: 'auth service',
+          resolvedPaths: ['src/auth/service.ts'],
+          resolution: 'fuzzy-path',
+          confidence: 0.8,
+          confidenceSource: 'evidence-derived',
+        },
+      ],
     });
     const { userPrompt } = buildUnderstandingPrompt(understanding);
     expect(userPrompt).toContain('auth service');
@@ -422,7 +424,16 @@ describe('enrichUnderstandingL2', () => {
     const provider: LLMProvider = {
       id: 'test',
       tier: 'fast',
-      generate: async () => { callCount++; return { content: VALID_INTENT_JSON, toolCalls: [], tokensUsed: { input: 0, output: 0 }, model: 'test', stopReason: 'end_turn' }; },
+      generate: async () => {
+        callCount++;
+        return {
+          content: VALID_INTENT_JSON,
+          toolCalls: [],
+          tokensUsed: { input: 0, output: 0 },
+          model: 'test',
+          stopReason: 'end_turn',
+        };
+      },
     };
     const engine = new UnderstandingEngine(provider);
     const intent = parseSemanticIntent(VALID_INTENT_JSON)!;
@@ -474,7 +485,13 @@ describe('enrichUnderstandingL2', () => {
       tier: 'fast',
       generate: async () => {
         await new Promise((resolve) => setTimeout(resolve, 5000));
-        return { content: VALID_INTENT_JSON, toolCalls: [], tokensUsed: { input: 0, output: 0 }, model: 'test', stopReason: 'end_turn' };
+        return {
+          content: VALID_INTENT_JSON,
+          toolCalls: [],
+          tokensUsed: { input: 0, output: 0 },
+          model: 'test',
+          stopReason: 'end_turn',
+        };
       },
     };
     const engine = new UnderstandingEngine(provider);

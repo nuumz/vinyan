@@ -272,10 +272,14 @@ export interface ComprehensionEngine {
  */
 export function tierRank(tier: ComprehensionTier): number {
   switch (tier) {
-    case 'deterministic': return 3;
-    case 'heuristic': return 2;
-    case 'probabilistic': return 1;
-    case 'unknown': return 0;
+    case 'deterministic':
+      return 3;
+    case 'heuristic':
+      return 2;
+    case 'probabilistic':
+      return 1;
+    case 'unknown':
+      return 0;
   }
 }
 

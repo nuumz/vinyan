@@ -24,12 +24,21 @@ export function extractDomainKnowledge(traces: TraceForDomain[]): DomainEntry[] 
   if (traces.length < 3) return []; // Need minimum data
 
   // Group by file directory (module level)
-  const moduleStats = new Map<string, { successes: number; total: number; files: Set<string>; oracles: Map<string, number>; lastTimestamp: number }>();
+  const moduleStats = new Map<
+    string,
+    { successes: number; total: number; files: Set<string>; oracles: Map<string, number>; lastTimestamp: number }
+  >();
 
   for (const trace of traces) {
     for (const file of trace.affectedFiles) {
       const module = extractModule(file);
-      const stats = moduleStats.get(module) ?? { successes: 0, total: 0, files: new Set<string>(), oracles: new Map<string, number>(), lastTimestamp: 0 };
+      const stats = moduleStats.get(module) ?? {
+        successes: 0,
+        total: 0,
+        files: new Set<string>(),
+        oracles: new Map<string, number>(),
+        lastTimestamp: 0,
+      };
 
       stats.total++;
       if (trace.outcome === 'success') stats.successes++;
@@ -59,9 +68,10 @@ export function extractDomainKnowledge(traces: TraceForDomain[]): DomainEntry[] 
       .slice(0, 3)
       .map(([name]) => name);
 
-    const knowledge = topOracles.length > 0
-      ? `${stats.successes}/${stats.total} success rate, mastered oracles: ${topOracles.join(', ')}`
-      : `${stats.successes}/${stats.total} success rate`;
+    const knowledge =
+      topOracles.length > 0
+        ? `${stats.successes}/${stats.total} success rate, mastered oracles: ${topOracles.join(', ')}`
+        : `${stats.successes}/${stats.total} success rate`;
 
     entries.push({
       area: module,

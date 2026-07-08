@@ -60,11 +60,13 @@ export function createScriptedMockProvider(
 
 export function createMockProvider(options: MockProviderOptions = {}): LLMProvider {
   const buildResponse = (): LLMResponse => {
-    const content = options.responseContent ?? JSON.stringify({
-      proposedMutations: [],
-      proposedToolCalls: options.responseToolCalls ?? [],
-      uncertainties: [],
-    });
+    const content =
+      options.responseContent ??
+      JSON.stringify({
+        proposedMutations: [],
+        proposedToolCalls: options.responseToolCalls ?? [],
+        uncertainties: [],
+      });
     return {
       content,
       thinking: options.thinking,
@@ -109,7 +111,9 @@ export function createMockProvider(options: MockProviderOptions = {}): LLMProvid
  * Wraps createMockProvider via LLMReasoningEngine adapter so tests can exercise
  * the full RE dispatch path without calling external APIs.
  */
-export function createMockReasoningEngine(options: MockProviderOptions & { capabilities?: string[] } = {}): ReasoningEngine {
+export function createMockReasoningEngine(
+  options: MockProviderOptions & { capabilities?: string[] } = {},
+): ReasoningEngine {
   const provider = createMockProvider(options);
   return new LLMReasoningEngine(provider, options.capabilities);
 }

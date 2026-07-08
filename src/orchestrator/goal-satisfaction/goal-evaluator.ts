@@ -112,9 +112,7 @@ export class GoalTrajectoryTracker {
     const delta = previous ? score - previous.score : 0;
     const previousMomentum = previous?.momentum ?? 0;
     // First iteration: no delta signal → momentum stays 0
-    const momentum = previous
-      ? TRAJECTORY_EMA_ALPHA * delta + (1 - TRAJECTORY_EMA_ALPHA) * previousMomentum
-      : 0;
+    const momentum = previous ? TRAJECTORY_EMA_ALPHA * delta + (1 - TRAJECTORY_EMA_ALPHA) * previousMomentum : 0;
 
     const point: TrajectoryPoint = { iteration, score, delta, momentum };
     this.points.push(point);
@@ -220,9 +218,7 @@ export class DefaultGoalEvaluator implements GoalEvaluator {
     // requires generation and verification to remain different components.
     const workerSelfGrade = ctx.result.workerSelfAssessment?.grade;
     const predictionError =
-      workerSelfGrade && accountabilityGrade
-        ? computePredictionError(workerSelfGrade, accountabilityGrade)
-        : undefined;
+      workerSelfGrade && accountabilityGrade ? computePredictionError(workerSelfGrade, accountabilityGrade) : undefined;
 
     return {
       score,
@@ -256,9 +252,7 @@ export class DefaultGoalEvaluator implements GoalEvaluator {
     const { score, blockers, passedChecks, failedChecks } = args;
 
     const hasUnresolvableBlocker = blockers.some((b) => b.resolvable === false);
-    const hasOracleContradiction = blockers.some(
-      (b) => b.category === 'oracle-contradiction',
-    );
+    const hasOracleContradiction = blockers.some((b) => b.category === 'oracle-contradiction');
     if (hasUnresolvableBlocker || hasOracleContradiction || score < 0.5) {
       return 'C';
     }
@@ -286,19 +280,22 @@ export class DefaultGoalEvaluator implements GoalEvaluator {
 
     // Build one HypothesisTuple per mutation, or a synthetic one for non-mutation tasks.
     const mutations = ctx.result.mutations;
-    const tuples: HypothesisTuple[] = mutations.length > 0
-      ? mutations.map((m) => ({
-          target: m.file,
-          pattern: 'goal-alignment',
-          context: { content: this.extractMutationContent(m, ctx) },
-          workspace: '.',
-        }))
-      : [{
-          target: ctx.input.targetFiles?.[0] ?? ctx.input.id,
-          pattern: 'goal-alignment',
-          context: ctx.result.answer ? { content: ctx.result.answer } : {},
-          workspace: '.',
-        }];
+    const tuples: HypothesisTuple[] =
+      mutations.length > 0
+        ? mutations.map((m) => ({
+            target: m.file,
+            pattern: 'goal-alignment',
+            context: { content: this.extractMutationContent(m, ctx) },
+            workspace: '.',
+          }))
+        : [
+            {
+              target: ctx.input.targetFiles?.[0] ?? ctx.input.id,
+              pattern: 'goal-alignment',
+              context: ctx.result.answer ? { content: ctx.result.answer } : {},
+              workspace: '.',
+            },
+          ];
 
     // Aggregate: a check passes overall only if it passes for every tuple.
     const perCheckPass: Record<string, boolean> = {};
@@ -317,7 +314,10 @@ export class DefaultGoalEvaluator implements GoalEvaluator {
       }
       if (!verdict.verified && verdict.reason) {
         // Parse reasons back out — multiple checks may have failed
-        const reasons = verdict.reason.split(';').map((r) => r.trim()).filter(Boolean);
+        const reasons = verdict.reason
+          .split(';')
+          .map((r) => r.trim())
+          .filter(Boolean);
         for (const reason of reasons) {
           const checkName = this.mapReasonToCheck(reason);
           perCheckPass[checkName] = false;
@@ -348,10 +348,7 @@ export class DefaultGoalEvaluator implements GoalEvaluator {
     return { passedChecks, failedChecks, blockers };
   }
 
-  private extractMutationContent(
-    mutation: TaskResult['mutations'][number],
-    ctx: GoalEvaluationContext,
-  ): string {
+  private extractMutationContent(mutation: TaskResult['mutations'][number], ctx: GoalEvaluationContext): string {
     // Prefer worker-proposed content when available; diff is a fallback signal.
     if (ctx.result.answer) return ctx.result.answer;
     return mutation.diff;
@@ -471,8 +468,7 @@ export function computePredictionError(
   deterministicGrade: AccountabilityGrade,
 ): PredictionError {
   const distance = Math.abs(GRADE_RANK[selfGrade] - GRADE_RANK[deterministicGrade]);
-  const magnitude: PredictionErrorMagnitude =
-    distance === 0 ? 'aligned' : distance === 1 ? 'minor' : 'severe';
+  const magnitude: PredictionErrorMagnitude = distance === 0 ? 'aligned' : distance === 1 ? 'minor' : 'severe';
   const direction: PredictionError['direction'] =
     distance === 0
       ? 'aligned'

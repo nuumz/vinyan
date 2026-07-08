@@ -20,12 +20,7 @@ describe('createTaskQueue', () => {
         }, 10);
       });
 
-    await Promise.all([
-      queue.enqueue(task),
-      queue.enqueue(task),
-      queue.enqueue(task),
-      queue.enqueue(task),
-    ]);
+    await Promise.all([queue.enqueue(task), queue.enqueue(task), queue.enqueue(task), queue.enqueue(task)]);
 
     expect(maxActive).toBeLessThanOrEqual(2);
   });
@@ -57,7 +52,9 @@ describe('createTaskQueue', () => {
   test('activeCount and pendingCount track state', async () => {
     const queue = createTaskQueue({ maxConcurrent: 1 });
     let resolveFirst: () => void;
-    const firstBlocking = new Promise<void>((r) => { resolveFirst = r; });
+    const firstBlocking = new Promise<void>((r) => {
+      resolveFirst = r;
+    });
 
     const p1 = queue.enqueue(() => firstBlocking);
     // First task is active, second should be pending

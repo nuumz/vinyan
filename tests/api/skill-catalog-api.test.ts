@@ -21,8 +21,8 @@ import { createBus } from '../../src/core/bus.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
 import { SkillStore } from '../../src/db/skill-store.ts';
-import { createSimpleSkillRegistry } from '../../src/skills/simple/registry.ts';
 import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
+import { createSimpleSkillRegistry } from '../../src/skills/simple/registry.ts';
 
 const TEST_ROOT = join(tmpdir(), `vinyan-skill-catalog-test-${Date.now()}-${process.pid}`);
 const TOKEN_PATH = join(TEST_ROOT, 'api-token');
@@ -289,9 +289,7 @@ describe('POST/PUT/DELETE /api/v1/skills (CRUD)', () => {
       }),
     );
     expect(res.status).toBe(200);
-    const detailRes = await server.handleRequest(
-      req('/api/v1/skills/simple:project:lint-check'),
-    );
+    const detailRes = await server.handleRequest(req('/api/v1/skills/simple:project:lint-check'));
     const detail = (await detailRes.json()) as {
       description: string;
       body?: string;
@@ -331,20 +329,14 @@ describe('POST/PUT/DELETE /api/v1/skills (CRUD)', () => {
   });
 
   test('DELETE removes the skill and is idempotent', async () => {
-    const first = await server.handleRequest(
-      req('/api/v1/skills/simple:project:lint-check', { method: 'DELETE' }),
-    );
+    const first = await server.handleRequest(req('/api/v1/skills/simple:project:lint-check', { method: 'DELETE' }));
     expect(first.status).toBe(204);
-    const second = await server.handleRequest(
-      req('/api/v1/skills/simple:project:lint-check', { method: 'DELETE' }),
-    );
+    const second = await server.handleRequest(req('/api/v1/skills/simple:project:lint-check', { method: 'DELETE' }));
     expect(second.status).toBe(204);
   });
 
   test('DELETE on a cached id is rejected with 405', async () => {
-    const res = await server.handleRequest(
-      req('/api/v1/skills/cached:review-typescript-file', { method: 'DELETE' }),
-    );
+    const res = await server.handleRequest(req('/api/v1/skills/cached:review-typescript-file', { method: 'DELETE' }));
     expect(res.status).toBe(405);
   });
 });

@@ -27,9 +27,7 @@ function input(goal = 'fix auth'): TaskInput {
   };
 }
 
-function understanding(
-  over: Partial<SemanticTaskUnderstanding> = {},
-): SemanticTaskUnderstanding {
+function understanding(over: Partial<SemanticTaskUnderstanding> = {}): SemanticTaskUnderstanding {
   return {
     rawGoal: 'x',
     taskDomain: 'code-mutation',
@@ -45,9 +43,7 @@ function det(
   strategy: IntentResolution['strategy'],
   over: Partial<IntentResolution> & { ambiguous?: boolean; resolvedTool?: boolean } = {},
 ): IntentResolution & { deterministicCandidate: IntentDeterministicCandidate } {
-  const directToolCall = over.resolvedTool
-    ? { tool: 'shell_exec', parameters: { command: 'ls' } }
-    : undefined;
+  const directToolCall = over.resolvedTool ? { tool: 'shell_exec', parameters: { command: 'ls' } } : undefined;
   const { ambiguous, resolvedTool, ...rest } = over;
   return {
     strategy,
@@ -129,14 +125,7 @@ describe('mergeDeterministicAndLLM', () => {
         events.push({ event, payload });
       },
     };
-    mergeDeterministicAndLLM(
-      input(),
-      understanding(),
-      det('full-pipeline'),
-      llm('direct-tool', 0.3),
-      bus,
-      't1',
-    );
+    mergeDeterministicAndLLM(input(), understanding(), det('full-pipeline'), llm('direct-tool', 0.3), bus, 't1');
     expect(events.some((e) => e.event === 'intent:uncertain')).toBe(true);
   });
 
@@ -173,14 +162,7 @@ describe('mergeDeterministicAndLLM', () => {
   it('emits intent:contradiction event with rule winner on contradiction', () => {
     const events: any[] = [];
     const bus: any = { emit: (event: string, payload: unknown) => events.push({ event, payload }) };
-    mergeDeterministicAndLLM(
-      input(),
-      understanding(),
-      det('conversational'),
-      llm('direct-tool', 0.9),
-      bus,
-      't1',
-    );
+    mergeDeterministicAndLLM(input(), understanding(), det('conversational'), llm('direct-tool', 0.9), bus, 't1');
     const contradict = events.find((e) => e.event === 'intent:contradiction');
     expect(contradict).toBeDefined();
     expect(contradict.payload.winner).toBe('conversational');

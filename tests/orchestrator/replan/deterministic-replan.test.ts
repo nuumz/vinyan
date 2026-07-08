@@ -1,14 +1,29 @@
 import { describe, expect, test } from 'bun:test';
-import { DefaultReplanEngine, computePlanSignature, type ReplanContext, type ReplanEngineDeps } from '../../../src/orchestrator/replan/replan-engine.ts';
-import { buildFailurePatternLibrary } from '../../../src/orchestrator/replan/failure-pattern-library.ts';
 import type { ClassifiedFailure } from '../../../src/orchestrator/failure-classifier.ts';
+import { buildFailurePatternLibrary } from '../../../src/orchestrator/replan/failure-pattern-library.ts';
+import {
+  computePlanSignature,
+  DefaultReplanEngine,
+  type ReplanContext,
+  type ReplanEngineDeps,
+} from '../../../src/orchestrator/replan/replan-engine.ts';
 import type { TaskDAG, TaskInput, TaskResult, WorkingMemoryState } from '../../../src/orchestrator/types.ts';
 
 function makeDeps(overrides?: Partial<ReplanEngineDeps>): ReplanEngineDeps {
   return {
     decomposer: {
       decompose: async () => ({ nodes: [] }),
-      replan: async () => ({ nodes: [{ id: 'llm-plan', description: 'LLM generated', targetFiles: ['x.ts'], dependencies: [], assignedOracles: ['type'] }] }),
+      replan: async () => ({
+        nodes: [
+          {
+            id: 'llm-plan',
+            description: 'LLM generated',
+            targetFiles: ['x.ts'],
+            dependencies: [],
+            assignedOracles: ['type'],
+          },
+        ],
+      }),
     },
     perception: {
       assemble: async () => ({
@@ -33,14 +48,32 @@ function makeContext(overrides?: Partial<ReplanContext>): ReplanContext {
     } as unknown as TaskInput,
     previousPlan: {
       nodes: [
-        { id: 'n1', description: 'edit source', targetFiles: ['src/foo.ts', 'src/bar.ts'], dependencies: [], assignedOracles: ['type', 'lint'] },
+        {
+          id: 'n1',
+          description: 'edit source',
+          targetFiles: ['src/foo.ts', 'src/bar.ts'],
+          dependencies: [],
+          assignedOracles: ['type', 'lint'],
+        },
       ],
     },
     previousResult: {
       id: 'task-1',
       status: 'completed',
       mutations: [{ file: 'src/foo.ts', diff: '', oracleVerdicts: {} }],
-      trace: { id: 'trace-1', taskId: 'task-1', timestamp: 0, routingLevel: 1, approach: 'direct edit', oracleVerdicts: {}, modelUsed: 'test', tokensConsumed: 0, durationMs: 0, outcome: 'failure', affectedFiles: [] },
+      trace: {
+        id: 'trace-1',
+        taskId: 'task-1',
+        timestamp: 0,
+        routingLevel: 1,
+        approach: 'direct edit',
+        oracleVerdicts: {},
+        modelUsed: 'test',
+        tokensConsumed: 0,
+        durationMs: 0,
+        outcome: 'failure',
+        affectedFiles: [],
+      },
     } as TaskResult,
     failedApproaches: [
       {
@@ -48,11 +81,23 @@ function makeContext(overrides?: Partial<ReplanContext>): ReplanContext {
         oracleVerdict: 'type check failed',
         timestamp: Date.now(),
         classifiedFailures: [
-          { category: 'type_error', file: 'src/foo.ts', line: 42, message: "TS2339: Property 'bar' does not exist", severity: 'error' },
+          {
+            category: 'type_error',
+            file: 'src/foo.ts',
+            line: 42,
+            message: "TS2339: Property 'bar' does not exist",
+            severity: 'error',
+          },
         ] as ClassifiedFailure[],
       },
     ] as WorkingMemoryState['failedApproaches'],
-    goalSatisfaction: { score: 0.3, basis: 'deterministic', blockers: [], passedChecks: [], failedChecks: ['type-check'] },
+    goalSatisfaction: {
+      score: 0.3,
+      basis: 'deterministic',
+      blockers: [],
+      passedChecks: [],
+      failedChecks: ['type-check'],
+    },
     iteration: 1,
     priorPlanSignatures: [],
     tokensSpentOnReplanning: 0,
@@ -64,7 +109,10 @@ function makeContext(overrides?: Partial<ReplanContext>): ReplanContext {
 describe('Deterministic DAG Transform in ReplanEngine', () => {
   test('type_error + previousPlan → deterministic transform returned, zero tokens', async () => {
     const engine = new DefaultReplanEngine(makeDeps(), {
-      enabled: true, maxReplans: 3, tokenSpendCapFraction: 0.2, trigramSimilarityMax: 0.85,
+      enabled: true,
+      maxReplans: 3,
+      tokenSpendCapFraction: 0.2,
+      trigramSimilarityMax: 0.85,
     });
 
     const outcome = await engine.generateAlternative(makeContext());
@@ -80,12 +128,18 @@ describe('Deterministic DAG Transform in ReplanEngine', () => {
     // Pre-compute the deterministic signature and add it as prior
     const library = buildFailurePatternLibrary();
     const strategy = library.get('type_error')!;
-    const transformed = strategy.dagTransform(ctx.previousPlan!, ctx.failedApproaches[0]!.classifiedFailures as ClassifiedFailure[])!;
+    const transformed = strategy.dagTransform(
+      ctx.previousPlan!,
+      ctx.failedApproaches[0]!.classifiedFailures as ClassifiedFailure[],
+    )!;
     const sig = computePlanSignature(transformed);
 
     const ctxWithPrior = makeContext({ priorPlanSignatures: [sig] });
     const engine = new DefaultReplanEngine(makeDeps(), {
-      enabled: true, maxReplans: 3, tokenSpendCapFraction: 0.2, trigramSimilarityMax: 0.85,
+      enabled: true,
+      maxReplans: 3,
+      tokenSpendCapFraction: 0.2,
+      trigramSimilarityMax: 0.85,
     });
 
     const outcome = await engine.generateAlternative(ctxWithPrior);
@@ -97,7 +151,10 @@ describe('Deterministic DAG Transform in ReplanEngine', () => {
 
   test('no previousPlan → falls through to LLM', async () => {
     const engine = new DefaultReplanEngine(makeDeps(), {
-      enabled: true, maxReplans: 3, tokenSpendCapFraction: 0.2, trigramSimilarityMax: 0.85,
+      enabled: true,
+      maxReplans: 3,
+      tokenSpendCapFraction: 0.2,
+      trigramSimilarityMax: 0.85,
     });
 
     const outcome = await engine.generateAlternative(makeContext({ previousPlan: undefined }));
@@ -107,7 +164,10 @@ describe('Deterministic DAG Transform in ReplanEngine', () => {
 
   test('no classified failures → falls through to LLM', async () => {
     const engine = new DefaultReplanEngine(makeDeps(), {
-      enabled: true, maxReplans: 3, tokenSpendCapFraction: 0.2, trigramSimilarityMax: 0.85,
+      enabled: true,
+      maxReplans: 3,
+      tokenSpendCapFraction: 0.2,
+      trigramSimilarityMax: 0.85,
     });
 
     const ctx = makeContext({
@@ -120,16 +180,21 @@ describe('Deterministic DAG Transform in ReplanEngine', () => {
 
   test('category not in library → falls through to LLM', async () => {
     const engine = new DefaultReplanEngine(makeDeps(), {
-      enabled: true, maxReplans: 3, tokenSpendCapFraction: 0.2, trigramSimilarityMax: 0.85,
+      enabled: true,
+      maxReplans: 3,
+      tokenSpendCapFraction: 0.2,
+      trigramSimilarityMax: 0.85,
     });
 
     const ctx = makeContext({
-      failedApproaches: [{
-        approach: 'edit',
-        oracleVerdict: 'unknown',
-        timestamp: Date.now(),
-        classifiedFailures: [{ category: 'unknown', message: 'mystery', severity: 'error' }] as ClassifiedFailure[],
-      }],
+      failedApproaches: [
+        {
+          approach: 'edit',
+          oracleVerdict: 'unknown',
+          timestamp: Date.now(),
+          classifiedFailures: [{ category: 'unknown', message: 'mystery', severity: 'error' }] as ClassifiedFailure[],
+        },
+      ],
     });
     const outcome = await engine.generateAlternative(ctx);
     expect(outcome).not.toBeNull();
@@ -137,10 +202,12 @@ describe('Deterministic DAG Transform in ReplanEngine', () => {
   });
 
   test('no failurePatternLibrary in deps → falls through to LLM', async () => {
-    const engine = new DefaultReplanEngine(
-      makeDeps({ failurePatternLibrary: undefined }),
-      { enabled: true, maxReplans: 3, tokenSpendCapFraction: 0.2, trigramSimilarityMax: 0.85 },
-    );
+    const engine = new DefaultReplanEngine(makeDeps({ failurePatternLibrary: undefined }), {
+      enabled: true,
+      maxReplans: 3,
+      tokenSpendCapFraction: 0.2,
+      trigramSimilarityMax: 0.85,
+    });
 
     const outcome = await engine.generateAlternative(makeContext());
     expect(outcome).not.toBeNull();
@@ -149,7 +216,10 @@ describe('Deterministic DAG Transform in ReplanEngine', () => {
 
   test('max-replans gate still fires before deterministic transform', async () => {
     const engine = new DefaultReplanEngine(makeDeps(), {
-      enabled: true, maxReplans: 1, tokenSpendCapFraction: 0.2, trigramSimilarityMax: 0.85,
+      enabled: true,
+      maxReplans: 1,
+      tokenSpendCapFraction: 0.2,
+      trigramSimilarityMax: 0.85,
     });
 
     // iteration=1 >= maxReplans=1 → rejected
@@ -173,7 +243,11 @@ describe('Deterministic DAG Transform in ReplanEngine', () => {
             expect(failure.classifiedFailures).toBeDefined();
             expect(failure.classifiedFailures!.length).toBe(1);
             expect(failure.classifiedFailures![0]!.category).toBe('type_error');
-            return { nodes: [{ id: 'llm-plan', description: 'LLM', targetFiles: ['x.ts'], dependencies: [], assignedOracles: [] }] };
+            return {
+              nodes: [
+                { id: 'llm-plan', description: 'LLM', targetFiles: ['x.ts'], dependencies: [], assignedOracles: [] },
+              ],
+            };
           },
         },
       }),

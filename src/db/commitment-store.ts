@@ -77,9 +77,7 @@ export class CommitmentStore {
     this.sFindOpenByEngine = db.prepare(
       'SELECT * FROM commitments WHERE engine_id = ? AND resolved_at IS NULL ORDER BY accepted_at',
     );
-    this.sFindByTask = db.prepare(
-      'SELECT * FROM commitments WHERE task_id = ? ORDER BY accepted_at',
-    );
+    this.sFindByTask = db.prepare('SELECT * FROM commitments WHERE task_id = ? ORDER BY accepted_at');
     this.sFindExpired = db.prepare(
       'SELECT * FROM commitments WHERE resolved_at IS NULL AND deadline_at < ? ORDER BY deadline_at',
     );
@@ -103,12 +101,9 @@ export class CommitmentStore {
 
   /** Returns true if the row was updated (false = already resolved / not found). */
   resolve(params: ResolveCommitmentParams): boolean {
-    const res = this.sResolve.run(
-      params.resolvedAt,
-      params.kind,
-      params.evidence,
-      params.commitmentId,
-    ) as { changes: number };
+    const res = this.sResolve.run(params.resolvedAt, params.kind, params.evidence, params.commitmentId) as {
+      changes: number;
+    };
     return res.changes > 0;
   }
 

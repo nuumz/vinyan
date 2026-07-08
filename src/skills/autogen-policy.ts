@@ -45,8 +45,8 @@
  * adaptive parameter ledger so the rollback itself is auditable.
  */
 
-import type { ParameterLedger } from '../orchestrator/adaptive-params/parameter-ledger.ts';
 import type { SkillProposalStore } from '../db/skill-proposal-store.ts';
+import type { ParameterLedger } from '../orchestrator/adaptive-params/parameter-ledger.ts';
 
 export const MIN_THRESHOLD = 2;
 export const MAX_THRESHOLD = 8;

@@ -167,11 +167,7 @@ export class PluginRegistry {
    * Cardinality rules still apply at activation time. This call only places
    * the slot in `loaded` state with a pre-built `LoadedPlugin` handle.
    */
-  ingestInternal(
-    manifest: PluginManifest,
-    handle: unknown,
-    opts?: { tier?: ConfidenceTier },
-  ): PluginSlot {
+  ingestInternal(manifest: PluginManifest, handle: unknown, opts?: { tier?: ConfidenceTier }): PluginSlot {
     // Validate shape even for internal callers — a bad manifest here is a
     // host-code bug, not a trust-boundary failure, but we'd rather throw
     // immediately than let a malformed slot corrupt the registry state.
@@ -181,10 +177,7 @@ export class PluginRegistry {
     if (this.slots.has(pluginId)) {
       const prior = this.slots.get(pluginId);
       if (prior && prior.state === 'active') {
-        throw new PluginActivationError(
-          pluginId,
-          'ingestInternal cannot overwrite an active slot; deactivate first',
-        );
+        throw new PluginActivationError(pluginId, 'ingestInternal cannot overwrite an active slot; deactivate first');
       }
     }
 

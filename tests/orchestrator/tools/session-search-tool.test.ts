@@ -59,10 +59,7 @@ describe('createSessionSearchTool — execute happy path', () => {
   test('returns structured hits + renderedText', async () => {
     await seed(db, 'tool envelope keyword apple');
     const tool = createSessionSearchTool({ db, clock: () => NOW });
-    const res = await tool.execute(
-      { callId: 'c1', query: 'apple', profile: 'default' },
-      makeContext(),
-    );
+    const res = await tool.execute({ callId: 'c1', query: 'apple', profile: 'default' }, makeContext());
     expect(res.status).toBe('success');
     const out = res.output as {
       query: string;
@@ -81,10 +78,7 @@ describe('createSessionSearchTool — execute happy path', () => {
       await seed(db, `top keyword hit-${i}`, { temporalContext: { createdAt: NOW + i } });
     }
     const tool = createSessionSearchTool({ db, clock: () => NOW + 100 });
-    const res = await tool.execute(
-      { callId: 'c1', query: 'top', profile: 'default', limit: 10 },
-      makeContext(),
-    );
+    const res = await tool.execute({ callId: 'c1', query: 'top', profile: 'default', limit: 10 }, makeContext());
     const out = res.output as { renderedText: string; hits: unknown[] };
     expect(out.hits.length).toBe(5);
     // Rendered text should mention three items (prefixed 1. 2. 3.).
@@ -106,10 +100,7 @@ describe('createSessionSearchTool — execute error envelope', () => {
 
   test('invalid minTier returns status=error', async () => {
     const tool = createSessionSearchTool({ db: freshDb() });
-    const res = await tool.execute(
-      { callId: 'c1', query: 'x', profile: 'default', minTier: 'bogus' },
-      makeContext(),
-    );
+    const res = await tool.execute({ callId: 'c1', query: 'x', profile: 'default', minTier: 'bogus' }, makeContext());
     expect(res.status).toBe('error');
     expect(res.error).toMatch(/minTier/);
   });
@@ -118,10 +109,7 @@ describe('createSessionSearchTool — execute error envelope', () => {
     const db = freshDb();
     await seed(db, 'wildcard keyword');
     const tool = createSessionSearchTool({ db });
-    const res = await tool.execute(
-      { callId: 'c1', query: 'wildcard', profile: '*' },
-      makeContext(),
-    );
+    const res = await tool.execute({ callId: 'c1', query: 'wildcard', profile: '*' }, makeContext());
     // Cross-profile is a "soft" no-op (to mirror provider) — returns success
     // with zero hits and a warning payload.
     expect(res.status).toBe('success');

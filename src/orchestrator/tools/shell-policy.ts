@@ -42,28 +42,40 @@ const COMMAND_RULES = new Map<string, CommandRule>([
   ['ruff', { readOnly: true }],
 
   // Bun — only safe subcommands
-  ['bun', {
-    readOnly: false,
-    allowedSubcommands: new Set(['test', 'run']),
-    allowedRunScripts: new Set(['test', 'lint', 'check', 'build', 'typecheck', 'format']),
-  }],
+  [
+    'bun',
+    {
+      readOnly: false,
+      allowedSubcommands: new Set(['test', 'run']),
+      allowedRunScripts: new Set(['test', 'lint', 'check', 'build', 'typecheck', 'format']),
+    },
+  ],
 
   // Node/Python — version check only
-  ['node', {
-    readOnly: true,
-    allowedSubcommands: new Set(['--version']),
-  }],
-  ['python', {
-    readOnly: true,
-    allowedSubcommands: new Set(['--version']),
-  }],
+  [
+    'node',
+    {
+      readOnly: true,
+      allowedSubcommands: new Set(['--version']),
+    },
+  ],
+  [
+    'python',
+    {
+      readOnly: true,
+      allowedSubcommands: new Set(['--version']),
+    },
+  ],
 
   // Git — allowed with dangerous subcommand/flag restrictions
-  ['git', {
-    readOnly: false,
-    dangerousSubcommands: new Set(['push', 'reset', 'clean', 'remote']),
-    dangerousFlags: new Set(['--force', '-f', '--hard', '--mirror']),
-  }],
+  [
+    'git',
+    {
+      readOnly: false,
+      dangerousSubcommands: new Set(['push', 'reset', 'clean', 'remote']),
+      dangerousFlags: new Set(['--force', '-f', '--hard', '--mirror']),
+    },
+  ],
 
   // Read-only Unix tools
   ['cat', { readOnly: true }],
@@ -79,9 +91,9 @@ const COMMAND_RULES = new Map<string, CommandRule>([
   ['which', { readOnly: true }],
 
   // OS interaction tools (safe, no file mutation)
-  ['open', { readOnly: true }],       // macOS: app/file/URL launcher
-  ['xdg-open', { readOnly: true }],   // Linux: app/file/URL launcher
-  ['start', { readOnly: true }],      // Windows: app/file/URL launcher
+  ['open', { readOnly: true }], // macOS: app/file/URL launcher
+  ['xdg-open', { readOnly: true }], // Linux: app/file/URL launcher
+  ['start', { readOnly: true }], // Windows: app/file/URL launcher
   ['pbcopy', { readOnly: false }],
   ['pbpaste', { readOnly: true }],
   ['say', { readOnly: true }],
@@ -109,7 +121,12 @@ export function evaluateCommand(parsed: ParsedShellCommand): CommandPolicy {
 
   const rule = COMMAND_RULES.get(parsed.executable);
   if (!rule) {
-    return { allowed: false, readOnly: false, reason: `Shell command '${parsed.executable}' is not in allowlist`, canApprove: true };
+    return {
+      allowed: false,
+      readOnly: false,
+      reason: `Shell command '${parsed.executable}' is not in allowlist`,
+      canApprove: true,
+    };
   }
 
   // Subcommand restrictions (bun, node, python)
@@ -148,7 +165,7 @@ export function evaluateCommand(parsed: ParsedShellCommand): CommandPolicy {
       }
       // Others only blocked with dangerous flags (reset --hard, clean -f)
       if (rule.dangerousFlags) {
-        const hasDangerousFlag = parsed.args.some(arg => rule.dangerousFlags!.has(arg));
+        const hasDangerousFlag = parsed.args.some((arg) => rule.dangerousFlags!.has(arg));
         if (hasDangerousFlag) {
           return {
             allowed: false,

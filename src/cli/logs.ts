@@ -76,7 +76,15 @@ export async function runLogsCommand(argv: string[]): Promise<void> {
     }
 
     console.log(`\n  Recent Traces (${filtered.length})\n`);
-    console.log('  ' + 'Task ID'.padEnd(24) + 'Outcome'.padEnd(12) + 'Route'.padEnd(8) + 'Tokens'.padEnd(10) + 'Duration'.padEnd(12) + 'Model');
+    console.log(
+      '  ' +
+        'Task ID'.padEnd(24) +
+        'Outcome'.padEnd(12) +
+        'Route'.padEnd(8) +
+        'Tokens'.padEnd(10) +
+        'Duration'.padEnd(12) +
+        'Model',
+    );
     console.log('  ' + '─'.repeat(90));
 
     for (const t of filtered) {

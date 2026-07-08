@@ -3,8 +3,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { RemediationEngine } from '../../src/orchestrator/remediation-engine.ts';
-import type { LLMProvider, LLMRequest, LLMResponse } from '../../src/orchestrator/types.ts';
 import type { ToolFailureAnalysis } from '../../src/orchestrator/tool-failure-classifier.ts';
+import type { LLMProvider, LLMRequest, LLMResponse } from '../../src/orchestrator/types.ts';
 
 function makeProvider(response: string): LLMProvider {
   return {
@@ -35,20 +35,17 @@ function makeAnalysis(overrides?: Partial<ToolFailureAnalysis>): ToolFailureAnal
 
 describe('RemediationEngine', () => {
   test('parses retry_corrected suggestion from LLM', async () => {
-    const provider = makeProvider(JSON.stringify({
-      action: 'retry_corrected',
-      correctedCommand: 'open -a "Microsoft Outlook"',
-      reasoning: 'macOS app is named "Microsoft Outlook"',
-      confidence: 0.9,
-    }));
+    const provider = makeProvider(
+      JSON.stringify({
+        action: 'retry_corrected',
+        correctedCommand: 'open -a "Microsoft Outlook"',
+        reasoning: 'macOS app is named "Microsoft Outlook"',
+        confidence: 0.9,
+      }),
+    );
     const engine = new RemediationEngine(provider);
 
-    const result = await engine.suggest(
-      'เปิดแอพ outlook',
-      'open -a outlook',
-      makeAnalysis(),
-      'darwin',
-    );
+    const result = await engine.suggest('เปิดแอพ outlook', 'open -a outlook', makeAnalysis(), 'darwin');
 
     expect(result.action).toBe('retry_corrected');
     expect(result.correctedCommand).toBe('open -a "Microsoft Outlook"');
@@ -56,19 +53,16 @@ describe('RemediationEngine', () => {
   });
 
   test('parses escalate suggestion from LLM', async () => {
-    const provider = makeProvider(JSON.stringify({
-      action: 'escalate',
-      reasoning: 'Cannot determine correct app name',
-      confidence: 0.3,
-    }));
+    const provider = makeProvider(
+      JSON.stringify({
+        action: 'escalate',
+        reasoning: 'Cannot determine correct app name',
+        confidence: 0.3,
+      }),
+    );
     const engine = new RemediationEngine(provider);
 
-    const result = await engine.suggest(
-      'open some-app',
-      'open -a some-app',
-      makeAnalysis(),
-      'darwin',
-    );
+    const result = await engine.suggest('open some-app', 'open -a some-app', makeAnalysis(), 'darwin');
 
     expect(result.action).toBe('escalate');
   });

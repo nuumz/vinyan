@@ -5,8 +5,9 @@
  * Edge types: extends-class, implements-interface, calls-method, uses-type,
  * test-covers, re-exports.
  */
-import { dirname, join, relative, resolve } from 'path';
+
 import { readdirSync, readFileSync, statSync } from 'fs';
+import { dirname, join, relative, resolve } from 'path';
 import type { CausalEdge, CausalEdgeType } from '../../orchestrator/forward-predictor-types.ts';
 
 export interface CausalEdgeExtractor {
@@ -128,13 +129,19 @@ function parseImports(content: string): ImportInfo[] {
 
   // Type imports
   for (const m of content.matchAll(TYPE_IMPORT_RE)) {
-    const symbols = m[1]!.split(',').map((s) => s.trim()).filter(Boolean);
+    const symbols = m[1]!
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     results.push({ symbols, specifier: m[2]!, isType: true });
   }
 
   // Value imports
   for (const m of content.matchAll(VALUE_IMPORT_RE)) {
-    const symbols = m[1]!.split(',').map((s) => s.trim()).filter(Boolean);
+    const symbols = m[1]!
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     results.push({ symbols, specifier: m[2]!, isType: false });
   }
 
@@ -206,7 +213,10 @@ function extractEdgesFromContent(
   // --- implements-interface edges ---
   for (const m of content.matchAll(IMPLEMENTS_RE)) {
     const className = m[1]!;
-    const interfaces = m[2]!.split(',').map((s) => s.trim()).filter(Boolean);
+    const interfaces = m[2]!
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     for (const iface of interfaces) {
       const info = symbolToFile.get(iface);
       if (info) {
@@ -262,7 +272,10 @@ function extractEdgesFromContent(
   for (const m of content.matchAll(REEXPORT_NAMED_RE)) {
     const resolved = resolveSpecifier(m[2]!, filePath, workspace, aliases);
     if (!resolved) continue;
-    const symbols = m[1]!.split(',').map((s) => s.trim()).filter(Boolean);
+    const symbols = m[1]!
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     for (const sym of symbols) {
       const localName = sym.includes(' as ') ? sym.split(' as ')[0]!.trim() : sym.trim();
       edges.push({
@@ -313,10 +326,7 @@ export class CausalEdgeExtractorImpl implements CausalEdgeExtractor {
         // Infer test-covers edge
         const testEdge = inferTestCoversEdge(abs, workspace);
         if (testEdge) edges.push(testEdge);
-      } catch {
-        // Graceful degradation — skip unreadable files
-        continue;
-      }
+      } catch {}
     }
 
     return edges;

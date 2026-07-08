@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import type { NormalizedLLMProviderError } from '../../../src/orchestrator/llm/provider-errors.ts';
 import {
   decidePolicyAction,
   POLICY_BUDGET_FLOOR_MS,
   POLICY_WAIT_THRESHOLD_MS,
 } from '../../../src/orchestrator/llm/provider-selection-policy.ts';
-import type { NormalizedLLMProviderError } from '../../../src/orchestrator/llm/provider-errors.ts';
 
 function quota(retryAfterMs?: number): NormalizedLLMProviderError {
   return {
@@ -65,12 +65,12 @@ describe('decidePolicyAction', () => {
       isFallbackRecommended: true,
       isGlobalCooldownRecommended: true,
     };
-    expect(
-      decidePolicyAction(auth, { remainingBudgetMs: 60_000, hasFallback: true, attemptIndex: 0 }).action,
-    ).toBe('fallback');
-    expect(
-      decidePolicyAction(auth, { remainingBudgetMs: 60_000, hasFallback: false, attemptIndex: 0 }).action,
-    ).toBe('fail');
+    expect(decidePolicyAction(auth, { remainingBudgetMs: 60_000, hasFallback: true, attemptIndex: 0 }).action).toBe(
+      'fallback',
+    );
+    expect(decidePolicyAction(auth, { remainingBudgetMs: 60_000, hasFallback: false, attemptIndex: 0 }).action).toBe(
+      'fail',
+    );
   });
 
   test('retry-after just under threshold + budget too tight → fail', () => {

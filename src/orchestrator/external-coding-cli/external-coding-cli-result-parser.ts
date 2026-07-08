@@ -11,9 +11,9 @@
  *   - Provider id mismatch is rejected — the CLI must self-declare honestly.
  */
 import {
-  CodingCliResultSchema,
   type CodingCliProviderId,
   type CodingCliResult,
+  CodingCliResultSchema,
   RESULT_CLOSE_TAG,
   RESULT_OPEN_TAG,
 } from './types.ts';
@@ -43,10 +43,7 @@ export function findResultBlocks(text: string): string[] {
   return blocks;
 }
 
-export function parseFinalResult(
-  text: string,
-  options: ParseFinalResultOptions = {},
-): CodingCliResult | null {
+export function parseFinalResult(text: string, options: ParseFinalResultOptions = {}): CodingCliResult | null {
   const blocks = findResultBlocks(text);
   if (blocks.length === 0) return null;
 

@@ -7,9 +7,9 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
+  mapSlackChannelKind,
   SlackApi,
   SlackApiError,
-  mapSlackChannelKind,
   type SlackWebSocketCtor,
   type SlackWebSocketLike,
 } from '../../../src/gateway/adapters/slack-api.ts';
@@ -20,9 +20,10 @@ interface FetchCall {
   init: RequestInit;
 }
 
-function makeFetch(
-  responder: (call: FetchCall) => { status?: number; json?: unknown; throws?: Error },
-): { fetchImpl: typeof fetch; calls: FetchCall[] } {
+function makeFetch(responder: (call: FetchCall) => { status?: number; json?: unknown; throws?: Error }): {
+  fetchImpl: typeof fetch;
+  calls: FetchCall[];
+} {
   const calls: FetchCall[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;

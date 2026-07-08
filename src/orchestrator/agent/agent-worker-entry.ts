@@ -129,9 +129,7 @@ export function decideCompletionTurn(params: AttemptCompletionParams): Completio
     ];
     return {
       type: 'uncertain',
-      reason:
-        summary ??
-        'Self-assessment graded C — accountability contract requires status=uncertain for grade C',
+      reason: summary ?? 'Self-assessment graded C — accountability contract requires status=uncertain for grade C',
       uncertainties: downgraded,
       needsUserInput: false,
       downgradedFromGradeC: true,
@@ -945,9 +943,7 @@ function renderTurnBlocksForAgent(blocks: readonly ContentBlock[]): string {
         parts.push(`[tool_use:${block.name} id=${block.id}] ${JSON.stringify(block.input)}`);
         break;
       case 'tool_result':
-        parts.push(
-          `[tool_result id=${block.tool_use_id}${block.is_error ? ' error' : ''}] ${block.content}`,
-        );
+        parts.push(`[tool_result id=${block.tool_use_id}${block.is_error ? ' error' : ''}] ${block.content}`);
         break;
     }
   }
@@ -1201,8 +1197,7 @@ export function buildInitUserMessage(
           try {
             const parsed = JSON.parse(raw) as { title?: unknown; description?: unknown };
             const title = typeof parsed.title === 'string' ? parsed.title.trim() : '';
-            const description =
-              typeof parsed.description === 'string' ? parsed.description.trim() : '';
+            const description = typeof parsed.description === 'string' ? parsed.description.trim() : '';
             if (title.length > 0 || description.length > 0) {
               sessionContext = {
                 ...(title.length > 0 ? { title: title.slice(0, 200) } : {}),
@@ -1305,9 +1300,7 @@ export function buildInitUserMessage(
           const conf = e.confidence.toFixed(2);
           const cap = e.capability ? ` capability="${escapeXmlAttr(e.capability)}"` : '';
           const ref = e.reference ? ` reference="${escapeXmlAttr(e.reference)}"` : '';
-          parts.push(
-            `  <entry source="${escapeXmlAttr(e.source)}" confidence="${conf}"${cap}${ref}>`,
-          );
+          parts.push(`  <entry source="${escapeXmlAttr(e.source)}" confidence="${conf}"${cap}${ref}>`);
           parts.push(`    <query>${escapeXmlText(e.query)}</query>`);
           parts.push(`    <content>${escapeXmlText(e.content)}</content>`);
           parts.push('  </entry>');

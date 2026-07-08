@@ -71,11 +71,7 @@ export function derivePageId(type: WikiPageType, title: string): string {
  * callers that haven't been migrated still type-check; new code must
  * stop passing it.
  */
-export function deriveSourceId(
-  kind: string,
-  contentHash: string,
-  _legacyCreatedAt?: number,
-): string {
+export function deriveSourceId(kind: string, contentHash: string, _legacyCreatedAt?: number): string {
   return createHash('sha256').update(`${kind}|${contentHash}`).digest('hex');
 }
 

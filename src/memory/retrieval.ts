@@ -19,13 +19,9 @@
 import type { Database } from 'bun:sqlite';
 import type { SessionStore } from '../db/session-store.ts';
 import type { Turn } from '../orchestrator/types.ts';
-import {
-  cosineSimilarity,
-  embeddingToBuffer,
-  type EmbeddingProvider,
-} from './embedding-provider.ts';
+import { cosineSimilarity, type EmbeddingProvider, embeddingToBuffer } from './embedding-provider.ts';
+import { type LadderSummary, summarizeTurns } from './summary-ladder.ts';
 import { extractPins, type SymbolicPin } from './symbolic-pins.ts';
-import { summarizeTurns, type LadderSummary } from './summary-ladder.ts';
 
 export interface ContextBundle {
   recent: Turn[];
@@ -99,11 +95,7 @@ export class ContextRetriever {
 
   private probeVec(): boolean {
     try {
-      const row = this.db
-        .query(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='turn_embeddings'",
-        )
-        .get();
+      const row = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='turn_embeddings'").get();
       return !!row;
     } catch {
       return false;
@@ -126,10 +118,7 @@ export class ContextRetriever {
         return;
       }
       const buf = embeddingToBuffer(vector);
-      this.db.run(
-        'INSERT OR REPLACE INTO turn_embeddings (turn_id, embedding) VALUES (?, ?)',
-        [turn.id, buf],
-      );
+      this.db.run('INSERT OR REPLACE INTO turn_embeddings (turn_id, embedding) VALUES (?, ?)', [turn.id, buf]);
       this.db.run(
         `INSERT OR REPLACE INTO turn_embedding_meta (turn_id, model_id, dimension, indexed_at)
          VALUES (?, ?, ?, ?)`,
@@ -146,43 +135,21 @@ export class ContextRetriever {
     const recent = this.sessionStore.getRecentTurns(sessionId, this.opts.recencyWindow);
     const recentIds = new Set(recent.map((t) => t.id));
 
-    const { semantic, skipReason } = await this.semanticLayer(
-      sessionId,
-      userMessage,
-      recentIds,
-    );
+    const { semantic, skipReason } = await this.semanticLayer(sessionId, userMessage, recentIds);
 
     const extractedPins = extractPins(userMessage);
-    const pins = this.resolvePins(
-      sessionId,
-      extractedPins,
-      recentIds,
-      new Set(semantic.map((t) => t.id)),
-    );
+    const pins = this.resolvePins(sessionId, extractedPins, recentIds, new Set(semantic.map((t) => t.id)));
 
-    const heldIds = new Set<string>([
-      ...recentIds,
-      ...semantic.map((t) => t.id),
-      ...pins.map((t) => t.id),
-    ]);
+    const heldIds = new Set<string>([...recentIds, ...semantic.map((t) => t.id), ...pins.map((t) => t.id)]);
     const summary = this.buildSummary(sessionId, heldIds, totalTurns);
 
-    const { held: enforcedSemantic, dropped } = this.enforceBudget(
-      recent,
-      semantic,
-      pins,
-      summary,
-    );
+    const { held: enforcedSemantic, dropped } = this.enforceBudget(recent, semantic, pins, summary);
 
     const tokenEstimate =
-      [...recent, ...enforcedSemantic, ...pins].reduce(
-        (n, t) => n + estimateTurnTokens(t),
-        0,
-      ) + (summary ? Math.ceil(summary.text.length / 3.5) : 0);
+      [...recent, ...enforcedSemantic, ...pins].reduce((n, t) => n + estimateTurnTokens(t), 0) +
+      (summary ? Math.ceil(summary.text.length / 3.5) : 0);
 
-    const finalSummary = dropped.length > 0
-      ? mergeSummaryWithDropped(summary, dropped)
-      : summary;
+    const finalSummary = dropped.length > 0 ? mergeSummaryWithDropped(summary, dropped) : summary;
 
     return {
       recent,
@@ -295,11 +262,7 @@ export class ContextRetriever {
     return resolved;
   }
 
-  private buildSummary(
-    sessionId: string,
-    heldIds: Set<string>,
-    totalTurns: number,
-  ): LadderSummary | null {
+  private buildSummary(sessionId: string, heldIds: Set<string>, totalTurns: number): LadderSummary | null {
     if (totalTurns <= heldIds.size) return null;
     const all = this.sessionStore.getTurns(sessionId);
     const untouched = all.filter((t) => !heldIds.has(t.id));
@@ -320,10 +283,7 @@ export class ContextRetriever {
       pins.reduce((n, t) => n + estimateTurnTokens(t), 0) -
       (summary ? Math.ceil(summary.text.length / 3.5) : 0);
 
-    while (
-      held.length > 0 &&
-      held.reduce((n, t) => n + estimateTurnTokens(t), 0) > budget
-    ) {
+    while (held.length > 0 && held.reduce((n, t) => n + estimateTurnTokens(t), 0) > budget) {
       const turn = held.pop();
       if (turn) dropped.push(turn);
     }
@@ -331,24 +291,16 @@ export class ContextRetriever {
   }
 }
 
-function mergeSummaryWithDropped(
-  summary: LadderSummary | null,
-  dropped: readonly Turn[],
-): LadderSummary | null {
+function mergeSummaryWithDropped(summary: LadderSummary | null, dropped: readonly Turn[]): LadderSummary | null {
   const extra = summarizeTurns(dropped);
   if (!summary) return extra;
   if (!extra) return summary;
   return {
     text: `${summary.text}\n[DROPPED (budget): ${extra.summarizedTurns} turns] ${extra.text}`,
     summarizedTurns: summary.summarizedTurns + extra.summarizedTurns,
-    filesDiscussed: Array.from(
-      new Set([...summary.filesDiscussed, ...extra.filesDiscussed]),
-    ).slice(0, 10),
+    filesDiscussed: Array.from(new Set([...summary.filesDiscussed, ...extra.filesDiscussed])).slice(0, 10),
     openClarifications: [...summary.openClarifications, ...extra.openClarifications],
-    resolvedClarifications: [
-      ...summary.resolvedClarifications,
-      ...extra.resolvedClarifications,
-    ],
+    resolvedClarifications: [...summary.resolvedClarifications, ...extra.resolvedClarifications],
     // Phase 1 port: concatenate KEY-DECISION lines; order is
     // summary-first then dropped-batch since summary was built from the
     // older span. No re-ranking across the boundary.

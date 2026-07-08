@@ -38,13 +38,17 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
     bus.on('intent:resolved', ({ strategy, confidence, reasoning, type, source }) => {
       const typeTag = type && type !== 'known' ? ` ${yellow(`[${type}]`)}` : '';
       const srcTag = source ? ` ${dim(`<${source}>`)}` : '';
-      write(`${dim('[vinyan]')} Intent: ${bold(strategy)}${typeTag}${srcTag} (confidence: ${confidence.toFixed(2)}) — ${reasoning}`);
+      write(
+        `${dim('[vinyan]')} Intent: ${bold(strategy)}${typeTag}${srcTag} (confidence: ${confidence.toFixed(2)}) — ${reasoning}`,
+      );
     }),
   );
 
   detachers.push(
     bus.on('intent:contradiction', ({ ruleStrategy, llmStrategy, winner }) => {
-      write(`${dim('[vinyan]')} ${yellow('Intent conflict')}: rule=${ruleStrategy} vs llm=${llmStrategy}, A5 winner=${bold(winner)}`);
+      write(
+        `${dim('[vinyan]')} ${yellow('Intent conflict')}: rule=${ruleStrategy} vs llm=${llmStrategy}, A5 winner=${bold(winner)}`,
+      );
     }),
   );
 
@@ -124,7 +128,9 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
   // Agent session lifecycle — show what the agent is thinking/doing
   detachers.push(
     bus.on('agent:session_start', ({ taskId, routingLevel, budget }) => {
-      write(`${dim('[vinyan]')} Agent session started ${dim(`(L${routingLevel}, ${budget.maxTurns} turns, ${budget.maxTokens} tokens)`)}`);
+      write(
+        `${dim('[vinyan]')} Agent session started ${dim(`(L${routingLevel}, ${budget.maxTurns} turns, ${budget.maxTokens} tokens)`)}`,
+      );
     }),
   );
 
@@ -146,15 +152,20 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
   detachers.push(
     bus.on('agent:turn_complete', ({ tokensConsumed, turnsRemaining }) => {
       if (verbose) {
-        write(`${dim('[vinyan]')}   Turn complete — ${dim(`${tokensConsumed} tokens used, ${turnsRemaining} turns left`)}`);
+        write(
+          `${dim('[vinyan]')}   Turn complete — ${dim(`${tokensConsumed} tokens used, ${turnsRemaining} turns left`)}`,
+        );
       }
     }),
   );
 
   detachers.push(
     bus.on('agent:session_end', ({ outcome, tokensConsumed, turnsUsed, durationMs }) => {
-      const outcomeStr = outcome === 'completed' ? green(outcome) : outcome === 'uncertain' ? yellow(outcome) : red(outcome);
-      write(`${dim('[vinyan]')} Agent session ${outcomeStr} — ${turnsUsed} turns, ${tokensConsumed} tokens, ${dim(`${Math.round(durationMs / 1000)}s`)}`);
+      const outcomeStr =
+        outcome === 'completed' ? green(outcome) : outcome === 'uncertain' ? yellow(outcome) : red(outcome);
+      write(
+        `${dim('[vinyan]')} Agent session ${outcomeStr} — ${turnsUsed} turns, ${tokensConsumed} tokens, ${dim(`${Math.round(durationMs / 1000)}s`)}`,
+      );
     }),
   );
 
@@ -186,13 +197,17 @@ export function attachCLIProgressListener(bus: VinyanBus, options?: CLIProgressO
   detachers.push(
     bus.on('tool:failure_classified', ({ type, recoverable, error }) => {
       const shortError = error.length > 100 ? `${error.slice(0, 100)}...` : error;
-      write(`${dim('[vinyan]')} Tool failed: ${bold(type)}${recoverable ? ' (attempting fix)' : ''} — ${dim(shortError)}`);
+      write(
+        `${dim('[vinyan]')} Tool failed: ${bold(type)}${recoverable ? ' (attempting fix)' : ''} — ${dim(shortError)}`,
+      );
     }),
   );
 
   detachers.push(
     bus.on('tool:remediation_attempted', ({ correctedCommand, confidence }) => {
-      write(`${dim('[vinyan]')} ${yellow('Retrying')}: ${bold(correctedCommand)} (confidence: ${confidence.toFixed(2)})`);
+      write(
+        `${dim('[vinyan]')} ${yellow('Retrying')}: ${bold(correctedCommand)} (confidence: ${confidence.toFixed(2)})`,
+      );
     }),
   );
 

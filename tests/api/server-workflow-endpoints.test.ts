@@ -23,9 +23,7 @@ import { SessionStore } from '../../src/db/session-store.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { LLMProvider, LLMResponse, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
-function mockResponse(
-  partial: Pick<LLMResponse, 'content' | 'tokensUsed'> & Partial<LLMResponse>,
-): LLMResponse {
+function mockResponse(partial: Pick<LLMResponse, 'content' | 'tokensUsed'> & Partial<LLMResponse>): LLMResponse {
   return {
     toolCalls: [],
     model: 'mock/test',
@@ -48,10 +46,7 @@ let capturedEvents: Array<{ name: string; payload: unknown }>;
 let suggestProviderImpl: LLMProvider['generate'] = async () =>
   mockResponse({ content: '', tokensUsed: { input: 0, output: 0 } });
 
-function req(
-  path: string,
-  opts: { method?: string; headers?: Record<string, string>; body?: string } = {},
-): Request {
+function req(path: string, opts: { method?: string; headers?: Record<string, string>; body?: string } = {}): Request {
   return new Request(`http://localhost${path}`, {
     method: opts.method ?? 'GET',
     headers: opts.headers,
@@ -110,7 +105,9 @@ beforeEach(() => {
   // Subscribe to the three events under test — fresh bus listeners per test.
   testBus.on('workflow:plan_approved', (p) => capturedEvents.push({ name: 'workflow:plan_approved', payload: p }));
   testBus.on('workflow:plan_rejected', (p) => capturedEvents.push({ name: 'workflow:plan_rejected', payload: p }));
-  testBus.on('agent:clarification_response', (p) => capturedEvents.push({ name: 'agent:clarification_response', payload: p }));
+  testBus.on('agent:clarification_response', (p) =>
+    capturedEvents.push({ name: 'agent:clarification_response', payload: p }),
+  );
 });
 
 afterAll(() => {
@@ -118,9 +115,7 @@ afterAll(() => {
 });
 
 async function postJson(path: string, body: unknown): Promise<Response> {
-  return server.handleRequest(
-    req(path, { method: 'POST', headers: authHeaders, body: JSON.stringify(body) }),
-  );
+  return server.handleRequest(req(path, { method: 'POST', headers: authHeaders, body: JSON.stringify(body) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -214,11 +209,7 @@ describe('POST /api/v1/sessions/:id/workflow/human-input/suggest', () => {
     expect(body.taskId).toBe('task-hi');
     expect(body.stepId).toBe('step1');
     expect(body.sessionId).toBe('sess-1');
-    expect(body.suggestions).toEqual([
-      'Climate change',
-      'Universal basic income',
-      'AGI alignment',
-    ]);
+    expect(body.suggestions).toEqual(['Climate change', 'Universal basic income', 'AGI alignment']);
   });
 
   test('salvages suggestions from a fenced JSON block surrounded by prose', async () => {
@@ -341,9 +332,7 @@ describe('POST /api/v1/sessions/:id/workflow/partial-decision', () => {
     const body = (await res.json()) as { decision: string; status: string };
     expect(body.decision).toBe('continue');
     expect(body.status).toBe('recorded');
-    const emitted = capturedEvents.find(
-      (e) => e.name === 'workflow:partial_failure_decision_provided',
-    );
+    const emitted = capturedEvents.find((e) => e.name === 'workflow:partial_failure_decision_provided');
     expect(emitted).toBeDefined();
     expect(emitted!.payload).toEqual({
       taskId: 'task-pf',
@@ -359,13 +348,9 @@ describe('POST /api/v1/sessions/:id/workflow/partial-decision', () => {
       rationale: 'user wants to redo step2 first',
     });
     expect(res.status).toBe(200);
-    const emitted = capturedEvents
-      .filter((e) => e.name === 'workflow:partial_failure_decision_provided')
-      .pop();
+    const emitted = capturedEvents.filter((e) => e.name === 'workflow:partial_failure_decision_provided').pop();
     expect(emitted).toBeDefined();
-    expect((emitted!.payload as { rationale: string }).rationale).toBe(
-      'user wants to redo step2 first',
-    );
+    expect((emitted!.payload as { rationale: string }).rationale).toBe('user wants to redo step2 first');
   });
 
   test('returns 400 for invalid decision values', async () => {

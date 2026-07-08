@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { TaskProcessProjection } from '../../src/api/projections/task-process-projection.ts';
 import { VinyanAPIServer } from '../../src/api/server.ts';
 import { SessionManager } from '../../src/api/session-manager.ts';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
@@ -30,7 +31,6 @@ import {
 } from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
 import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
-import type { TaskProcessProjection } from '../../src/api/projections/task-process-projection.ts';
 
 const TEST_DIR = join(tmpdir(), `vinyan-process-state-${Date.now()}`);
 const TOKEN_PATH = join(TEST_DIR, 'api-token');
@@ -250,7 +250,9 @@ describe('GET /api/v1/tasks — needsActionType reflects coding-cli approval', (
 
     const res = await server.handleRequest(get('/api/v1/tasks'));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { tasks: Array<{ taskId: string; needsActionType: string; needsAction: boolean }> };
+    const body = (await res.json()) as {
+      tasks: Array<{ taskId: string; needsActionType: string; needsAction: boolean }>;
+    };
     const row = body.tasks.find((t) => t.taskId === 'task-list-cli');
     expect(row).toBeDefined();
     expect(row!.needsActionType).toBe('coding-cli-approval');

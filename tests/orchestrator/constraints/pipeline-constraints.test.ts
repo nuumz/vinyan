@@ -9,9 +9,9 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
+  isPipelineConstraint,
   PIPELINE_CONSTRAINT_PREFIXES,
   PIPELINE_CONSTRAINT_TOKENS,
-  isPipelineConstraint,
   partitionConstraints,
   userConstraintsOnly,
 } from '../../../src/orchestrator/constraints/pipeline-constraints.ts';
@@ -29,11 +29,7 @@ describe('partitionConstraints', () => {
       'no new dependencies',
       'respect line length 120',
     ]);
-    expect(out.user).toEqual([
-      'must use the existing logger',
-      'no new dependencies',
-      'respect line length 120',
-    ]);
+    expect(out.user).toEqual(['must use the existing logger', 'no new dependencies', 'respect line length 120']);
     expect(out.pipeline).toEqual([]);
   });
 
@@ -77,11 +73,7 @@ describe('partitionConstraints', () => {
       'CLARIFIED:q=>a',
     ]);
     expect(out.user).toEqual(['user rule A', 'user rule B', 'user rule C']);
-    expect(out.pipeline).toEqual([
-      'MIN_ROUTING_LEVEL:1',
-      'COMPREHENSION_SUMMARY:{}',
-      'CLARIFIED:q=>a',
-    ]);
+    expect(out.pipeline).toEqual(['MIN_ROUTING_LEVEL:1', 'COMPREHENSION_SUMMARY:{}', 'CLARIFIED:q=>a']);
   });
 
   test('case-sensitive: lowercase prefixes stay in user', () => {
@@ -112,12 +104,7 @@ describe('isPipelineConstraint', () => {
 
 describe('userConstraintsOnly', () => {
   test('returns a fresh array containing only user entries', () => {
-    const out = userConstraintsOnly([
-      'a',
-      'CLARIFIED:q=>yes',
-      'b',
-      'THINKING:enabled',
-    ]);
+    const out = userConstraintsOnly(['a', 'CLARIFIED:q=>yes', 'b', 'THINKING:enabled']);
     expect(out).toEqual(['a', 'b']);
   });
 });

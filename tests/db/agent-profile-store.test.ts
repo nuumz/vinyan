@@ -120,11 +120,12 @@ describe('AgentProfileStore', () => {
       traceStore: {
         count: () => 42,
         countDistinctTaskTypes: () => 5,
-        findRecent: (limit: number) => [
-          { outcome: 'success' as const, timestamp: 1000 },
-          { outcome: 'success' as const, timestamp: 2000 },
-          { outcome: 'failure' as const, timestamp: 1500 },
-        ].slice(0, limit),
+        findRecent: (limit: number) =>
+          [
+            { outcome: 'success' as const, timestamp: 1000 },
+            { outcome: 'success' as const, timestamp: 2000 },
+            { outcome: 'failure' as const, timestamp: 1500 },
+          ].slice(0, limit),
       },
       skillStore: { countActive: () => 3 },
       workerStore: { countActive: () => 2 },

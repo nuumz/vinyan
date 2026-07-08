@@ -75,13 +75,15 @@ export class CausalPredictorImpl implements CausalPredictor {
           filePath: edge.toFile,
           depth: 1,
           pathWeight: edgeWeight,
-          chain: [{
-            fromFile: edge.fromFile,
-            toFile: edge.toFile,
-            edgeType: edge.edgeType,
-            fromSymbol: edge.fromSymbol,
-            toSymbol: edge.toSymbol,
-          }],
+          chain: [
+            {
+              fromFile: edge.fromFile,
+              toFile: edge.toFile,
+              edgeType: edge.edgeType,
+              fromSymbol: edge.fromSymbol,
+              toSymbol: edge.toSymbol,
+            },
+          ],
         });
       }
     }
@@ -92,7 +94,10 @@ export class CausalPredictorImpl implements CausalPredictor {
 
       // Keep the highest pathWeight per file
       const existing = riskMap.get(entry.filePath);
-      if (!existing || entry.pathWeight > existing.breakProbability / (failRates.get(entry.filePath) ?? DEFAULT_FAIL_RATE)) {
+      if (
+        !existing ||
+        entry.pathWeight > existing.breakProbability / (failRates.get(entry.filePath) ?? DEFAULT_FAIL_RATE)
+      ) {
         const failRate = failRates.get(entry.filePath) ?? DEFAULT_FAIL_RATE;
         riskMap.set(entry.filePath, {
           breakProbability: entry.pathWeight * failRate,
@@ -113,13 +118,16 @@ export class CausalPredictorImpl implements CausalPredictor {
           filePath: edge.toFile,
           depth: entry.depth + 1,
           pathWeight: entry.pathWeight * edgeWeight,
-          chain: [...entry.chain, {
-            fromFile: edge.fromFile,
-            toFile: edge.toFile,
-            edgeType: edge.edgeType,
-            fromSymbol: edge.fromSymbol,
-            toSymbol: edge.toSymbol,
-          }],
+          chain: [
+            ...entry.chain,
+            {
+              fromFile: edge.fromFile,
+              toFile: edge.toFile,
+              edgeType: edge.edgeType,
+              fromSymbol: edge.fromSymbol,
+              toSymbol: edge.toSymbol,
+            },
+          ],
         });
       }
     }
@@ -139,10 +147,7 @@ export class CausalPredictorImpl implements CausalPredictor {
     const topRisks = riskEntries.slice(0, MAX_RISK_FILES);
 
     // Aggregate risk: P(≥1 break) = 1 - ∏(1 - P(file_i breaks))
-    const aggregateRisk = 1 - topRisks.reduce(
-      (product, r) => product * (1 - r.breakProbability),
-      1,
-    );
+    const aggregateRisk = 1 - topRisks.reduce((product, r) => product * (1 - r.breakProbability), 1);
 
     const adjustedPPass = tier2PPass * (1 - aggregateRisk);
 

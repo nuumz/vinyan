@@ -24,7 +24,7 @@ export const REGRESSION_BASELINE_MIN = 30;
 /** Min total observations before a regression check is meaningful. */
 export const REGRESSION_MIN_OBSERVATIONS = REGRESSION_RECENT_WINDOW + REGRESSION_BASELINE_MIN;
 /** Drop in success rate (recent − baseline) that fires the alert. */
-export const REGRESSION_DROP_THRESHOLD = 0.10;
+export const REGRESSION_DROP_THRESHOLD = 0.1;
 /**
  * Cool-down between alerts for the same task type to avoid spamming the
  * bus when a regression persists. Phase 7 dashboards re-derive state

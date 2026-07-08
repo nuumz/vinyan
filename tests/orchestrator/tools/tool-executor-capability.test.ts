@@ -8,9 +8,9 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { issueCapabilityToken } from '../../../src/core/capability-token.ts';
-import type { ToolCall } from '../../../src/orchestrator/types.ts';
 import { ToolExecutor } from '../../../src/orchestrator/tools/tool-executor.ts';
 import type { ToolContext } from '../../../src/orchestrator/tools/tool-interface.ts';
+import type { ToolCall } from '../../../src/orchestrator/types.ts';
 
 function baseContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -71,9 +71,7 @@ describe('R4 ToolExecutor — capability token enforcement', () => {
       issuedBy: 'router',
       now: Date.now() - 10_000, // already expired
     });
-    const calls: ToolCall[] = [
-      { id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } },
-    ];
+    const calls: ToolCall[] = [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } }];
     const results = await exec.executeProposedTools(calls, baseContext({ capabilityToken: token }));
     expect(results[0]?.status).toBe('denied');
     expect(results[0]?.error).toContain('token_expired');
@@ -84,13 +82,8 @@ describe('R4 ToolExecutor — capability token enforcement', () => {
   // buildSubTaskInput must not be silently granted full access.
   test('delegated context (parentTaskId set) without a token denies all tools', async () => {
     const exec = new ToolExecutor();
-    const calls: ToolCall[] = [
-      { id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } },
-    ];
-    const results = await exec.executeProposedTools(
-      calls,
-      baseContext({ parentTaskId: 'parent-123' }),
-    );
+    const calls: ToolCall[] = [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } }];
+    const results = await exec.executeProposedTools(calls, baseContext({ parentTaskId: 'parent-123' }));
     expect(results.length).toBe(1);
     expect(results[0]?.status).toBe('denied');
     expect(results[0]?.error).toContain('capability_token');
@@ -100,9 +93,7 @@ describe('R4 ToolExecutor — capability token enforcement', () => {
 
   test('top-level context (no parentTaskId, no token) is unchanged pass-through', async () => {
     const exec = new ToolExecutor();
-    const calls: ToolCall[] = [
-      { id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } },
-    ];
+    const calls: ToolCall[] = [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/foo.ts' } }];
     const results = await exec.executeProposedTools(calls, baseContext());
     expect(results.length).toBe(1);
     // file_read may succeed or fail for unrelated reasons (file missing

@@ -34,10 +34,7 @@ afterEach(() => {
 function plant(rootDir: string, name: string, description: string): void {
   const dir = join(rootDir, name);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(dir, 'SKILL.md'),
-    `---\nname: ${name}\ndescription: ${description}\n---\nbody for ${name}\n`,
-  );
+  writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\nbody for ${name}\n`);
 }
 
 describe('createSimpleSkillRegistry — cold start', () => {

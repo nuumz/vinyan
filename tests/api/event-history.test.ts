@@ -17,7 +17,12 @@ import { createBus, type VinyanBus } from '../../src/core/bus.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
 import { TaskEventStore } from '../../src/db/task-event-store.ts';
-import { TRACE_SCHEMA_SQL, migratePipelineConfidenceColumns, migrateThinkingColumns, migrateTranscriptColumns } from '../../src/db/trace-schema.ts';
+import {
+  migratePipelineConfidenceColumns,
+  migrateThinkingColumns,
+  migrateTranscriptColumns,
+  TRACE_SCHEMA_SQL,
+} from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
 import type { ExecutionTrace, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
@@ -121,11 +126,7 @@ describe('GET /api/v1/tasks/:id/event-history', () => {
     };
 
     expect(body.taskId).toBe('task-A');
-    expect(body.events.map((e) => e.eventType)).toEqual([
-      'phase:timing',
-      'agent:thinking',
-      'oracle:verdict',
-    ]);
+    expect(body.events.map((e) => e.eventType)).toEqual(['phase:timing', 'agent:thinking', 'oracle:verdict']);
     expect(body.lastSeq).toBe(3);
   });
 

@@ -122,10 +122,7 @@ export function decideAutonomousPromotion(inputs: PromotionRuleInputs): Promotio
   if (currentTier === 'probabilistic') {
     const hasEnoughSamples = probationSamples >= AUTONOMOUS_MIN_PROBATION_SAMPLES;
     const backtestOk = backtest != null && backtest.aboveExpectation;
-    const noRegression =
-      postPromotionError == null ||
-      baselineError == null ||
-      postPromotionError <= baselineError;
+    const noRegression = postPromotionError == null || baselineError == null || postPromotionError <= baselineError;
 
     if (hasEnoughSamples && backtestOk && noRegression) {
       return {

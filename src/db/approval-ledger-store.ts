@@ -21,16 +21,11 @@
  *   A8 — every row carries actor + reason + timestamp; replay is
  *        possible from disk alone.
  */
-import { createHash, randomBytes } from 'node:crypto';
-import type { Database, Statement } from 'bun:sqlite';
 
-export type ApprovalStatus =
-  | 'pending'
-  | 'approved'
-  | 'rejected'
-  | 'timed_out'
-  | 'shutdown_rejected'
-  | 'superseded';
+import type { Database, Statement } from 'bun:sqlite';
+import { createHash, randomBytes } from 'node:crypto';
+
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'timed_out' | 'shutdown_rejected' | 'superseded';
 
 export type ApprovalSource = 'human' | 'timeout' | 'shutdown' | 'system';
 
@@ -152,9 +147,7 @@ export class ApprovalLedgerStore {
         LIMIT 1`,
     );
     this.findByIdStmt = db.prepare(`SELECT * FROM approval_ledger WHERE id = ?`);
-    this.findByTaskStmt = db.prepare(
-      `SELECT * FROM approval_ledger WHERE task_id = ? ORDER BY requested_at DESC`,
-    );
+    this.findByTaskStmt = db.prepare(`SELECT * FROM approval_ledger WHERE task_id = ? ORDER BY requested_at DESC`);
     this.listPendingStmt = db.prepare(
       `SELECT * FROM approval_ledger WHERE status = 'pending' ORDER BY requested_at ASC LIMIT ?`,
     );
@@ -168,9 +161,7 @@ export class ApprovalLedgerStore {
               updated_at = ?
         WHERE id = ? AND status = 'pending'`,
     );
-    this.listShutdownTargetsStmt = db.prepare(
-      `SELECT id FROM approval_ledger WHERE status = 'pending'`,
-    );
+    this.listShutdownTargetsStmt = db.prepare(`SELECT id FROM approval_ledger WHERE status = 'pending'`);
   }
 
   /**

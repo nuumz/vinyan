@@ -1,6 +1,6 @@
-import { describe, test, expect, beforeEach } from 'bun:test';
-import { FileStatsCache } from '../../src/orchestrator/prediction/file-stats-cache';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import type { FileOutcomeStat } from '../../src/orchestrator/forward-predictor-types';
+import { FileStatsCache } from '../../src/orchestrator/prediction/file-stats-cache';
 
 function makeStat(
   filePath: string,
@@ -61,7 +61,7 @@ describe('FileStatsCache', () => {
       cache.loadAll([makeStat('a.ts', 1, 0, 0, 0.8), makeStat('b.ts', 2, 0, 0, 0.9), makeStat('c.ts', 3, 0, 0, 1.0)]);
       const result = cache.getFileOutcomeStats(['a.ts', 'c.ts']);
       expect(result).toHaveLength(2);
-      expect(result.map(s => s.filePath)).toEqual(['a.ts', 'c.ts']);
+      expect(result.map((s) => s.filePath)).toEqual(['a.ts', 'c.ts']);
     });
   });
 

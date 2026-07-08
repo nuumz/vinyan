@@ -109,9 +109,7 @@ export class SlackApi {
     this.botToken = opts.botToken;
     this.baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
     this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.wsImpl =
-      opts.wsImpl ??
-      ((globalThis as unknown as Record<string, unknown>).WebSocket as SlackWebSocketCtor);
+    this.wsImpl = opts.wsImpl ?? ((globalThis as unknown as Record<string, unknown>).WebSocket as SlackWebSocketCtor);
   }
 
   /** Request a Socket Mode WebSocket URL. */
@@ -124,18 +122,10 @@ export class SlackApi {
   }
 
   /** Send a text message to a channel (or DM). */
-  async postMessage(
-    channel: string,
-    text: string,
-    opts?: { threadTs?: string },
-  ): Promise<SlackPostMessageResult> {
+  async postMessage(channel: string, text: string, opts?: { threadTs?: string }): Promise<SlackPostMessageResult> {
     const body: Record<string, unknown> = { channel, text };
     if (opts?.threadTs) body.thread_ts = opts.threadTs;
-    const parsed = await this.call<{ channel: string; ts: string }>(
-      'chat.postMessage',
-      this.botToken,
-      body,
-    );
+    const parsed = await this.call<{ channel: string; ts: string }>('chat.postMessage', this.botToken, body);
     if (typeof parsed.ts !== 'string' || typeof parsed.channel !== 'string') {
       throw new SlackApiError('chat.postMessage returned no ts/channel', 'parse');
     }
@@ -144,11 +134,7 @@ export class SlackApi {
 
   // ── internal ──────────────────────────────────────────────────────
 
-  private async call<T>(
-    method: string,
-    bearerToken: string,
-    body: Record<string, unknown>,
-  ): Promise<T & { ok: true }> {
+  private async call<T>(method: string, bearerToken: string, body: Record<string, unknown>): Promise<T & { ok: true }> {
     const url = `${this.baseUrl}/${method}`;
     let resp: Response;
     try {
@@ -178,12 +164,7 @@ export class SlackApi {
     }
 
     if (!parsed.ok) {
-      throw new SlackApiError(
-        parsed.error ?? 'slack api returned ok=false',
-        'api',
-        resp.status,
-        parsed.error,
-      );
+      throw new SlackApiError(parsed.error ?? 'slack api returned ok=false', 'api', resp.status, parsed.error);
     }
 
     return parsed as unknown as T & { ok: true };
@@ -195,9 +176,7 @@ export class SlackApi {
  * schema. Slack `im` = DM, `mpim`/`group` = group, `channel` = channel. Falls
  * back to `channel` when unknown (safer than guessing `dm`).
  */
-export function mapSlackChannelKind(
-  channelType: string | undefined,
-): 'dm' | 'group' | 'channel' {
+export function mapSlackChannelKind(channelType: string | undefined): 'dm' | 'group' | 'channel' {
   switch (channelType) {
     case 'im':
       return 'dm';

@@ -14,7 +14,13 @@ import {
   type ReplanEngineConfig,
   trigramSimilarity,
 } from '../../../src/orchestrator/replan/replan-engine.ts';
-import type { PerceptualHierarchy, TaskDAG, TaskInput, TaskResult, WorkingMemoryState } from '../../../src/orchestrator/types.ts';
+import type {
+  PerceptualHierarchy,
+  TaskDAG,
+  TaskInput,
+  TaskResult,
+  WorkingMemoryState,
+} from '../../../src/orchestrator/types.ts';
 
 const CFG: ReplanEngineConfig = {
   enabled: true,
@@ -123,7 +129,10 @@ function makeContext(overrides: Partial<ReplanContext> = {}): ReplanContext {
 describe('DefaultReplanEngine', () => {
   test('iteration >= maxReplans → null (max-replans gate)', async () => {
     const engine = new DefaultReplanEngine(
-      { decomposer: makeDecomposer(async () => fakeDag([{ id: 'n1', description: 'x', targetFiles: ['a.ts'] }])), perception: makePerceptionFake() },
+      {
+        decomposer: makeDecomposer(async () => fakeDag([{ id: 'n1', description: 'x', targetFiles: ['a.ts'] }])),
+        perception: makePerceptionFake(),
+      },
       CFG,
     );
     const result = await engine.generateAlternative(makeContext({ iteration: 2 }));
@@ -132,7 +141,10 @@ describe('DefaultReplanEngine', () => {
 
   test('token spend cap exceeded → null (budget-cap gate)', async () => {
     const engine = new DefaultReplanEngine(
-      { decomposer: makeDecomposer(async () => fakeDag([{ id: 'n1', description: 'x', targetFiles: ['a.ts'] }])), perception: makePerceptionFake() },
+      {
+        decomposer: makeDecomposer(async () => fakeDag([{ id: 'n1', description: 'x', targetFiles: ['a.ts'] }])),
+        perception: makePerceptionFake(),
+      },
       CFG,
     );
     // 25% > 20%
@@ -195,7 +207,9 @@ describe('DefaultReplanEngine', () => {
   });
 
   test('high trigram similarity vs prior failed approach → null', async () => {
-    const novelDag = fakeDag([{ id: 'n1', description: 'refactor the module structure', targetFiles: ['src/novel.ts'] }]);
+    const novelDag = fakeDag([
+      { id: 'n1', description: 'refactor the module structure', targetFiles: ['src/novel.ts'] },
+    ]);
     const engine = new DefaultReplanEngine(
       { decomposer: makeDecomposer(async () => novelDag), perception: makePerceptionFake() },
       CFG,
@@ -237,7 +251,9 @@ describe('DefaultReplanEngine', () => {
   test('successful replan returns non-zero tokensUsed estimate (gap fix)', async () => {
     const engine = new DefaultReplanEngine(
       {
-        decomposer: makeDecomposer(async () => fakeDag([{ id: 'n1', description: 'novel approach', targetFiles: ['a.ts'] }])),
+        decomposer: makeDecomposer(async () =>
+          fakeDag([{ id: 'n1', description: 'novel approach', targetFiles: ['a.ts'] }]),
+        ),
         perception: makePerceptionFake(),
       },
       CFG,

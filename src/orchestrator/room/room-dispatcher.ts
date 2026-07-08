@@ -29,18 +29,18 @@
 import type { AgentContract } from '../../core/agent-contract.ts';
 import type { VinyanBus } from '../../core/bus.ts';
 import type { RoomStore } from '../../db/room-store.ts';
+import type { AgentLoopDeps, WorkerLoopResult } from '../agent/agent-loop.ts';
+import type { ProposedMutation } from '../agent/session-overlay.ts';
+import type { TeamManager } from '../ecosystem/team.ts';
 import type {
-  Turn,
   PerceptualHierarchy,
   RoutingDecision,
   SemanticTaskUnderstanding,
   TaskDAG,
   TaskInput,
+  Turn,
   WorkingMemoryState,
 } from '../types.ts';
-import type { AgentLoopDeps, WorkerLoopResult } from '../agent/agent-loop.ts';
-import type { ProposedMutation } from '../agent/session-overlay.ts';
-import type { TeamManager } from '../ecosystem/team.ts';
 import { RoomBlackboard } from './room-blackboard.ts';
 import { RoomLedger } from './room-ledger.ts';
 import { type GoalVerifier, type ParticipantResult, RoomSupervisor } from './room-supervisor.ts';

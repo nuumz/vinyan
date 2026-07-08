@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { CommonSenseRegistry, computeRuleId } from '../../../src/oracle/commonsense/registry.ts';
 import { INNATE_RULES, loadInnateSeed } from '../../../src/oracle/commonsense/seeds/innate.ts';
 import type { CommonSenseRuleInput } from '../../../src/oracle/commonsense/types.ts';

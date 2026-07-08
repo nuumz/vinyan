@@ -10,8 +10,8 @@
  */
 
 import { userConstraintsOnly } from '../constraints/pipeline-constraints.ts';
-import { formatUserContextForPrompt } from '../user-context/user-interest-miner.ts';
 import type { IntentResolution, TaskInput } from '../types.ts';
+import { formatUserContextForPrompt } from '../user-context/user-interest-miner.ts';
 import { computeStructuralFeatures, renderStructuralFeatures } from './features.ts';
 import { formatAgentCatalog, formatConversationContext } from './formatters.ts';
 import type { IntentResolverDeps } from './types.ts';
@@ -34,9 +34,7 @@ export function buildComprehensionBlock(
   if (!data) return '';
   const s = data.state;
   const lines: string[] = [];
-  lines.push(
-    `\nConversation comprehension (oracle-verified, tier=${comprehension.params.tier}):`,
-  );
+  lines.push(`\nConversation comprehension (oracle-verified, tier=${comprehension.params.tier}):`);
   lines.push(`- isNewTopic: ${s.isNewTopic}`);
   lines.push(`- isClarificationAnswer: ${s.isClarificationAnswer}`);
   lines.push(`- isFollowUp: ${s.isFollowUp}`);
@@ -50,10 +48,7 @@ export function buildComprehensionBlock(
     for (const q of s.pendingQuestions.slice(0, 5)) lines.push(`    - ${q}`);
   }
   if (data.resolvedGoal && data.resolvedGoal !== data.literalGoal) {
-    const resolved =
-      data.resolvedGoal.length > 160
-        ? `${data.resolvedGoal.slice(0, 157)}...`
-        : data.resolvedGoal;
+    const resolved = data.resolvedGoal.length > 160 ? `${data.resolvedGoal.slice(0, 157)}...` : data.resolvedGoal;
     lines.push(`- resolvedGoal (prefer over literal): "${resolved}"`);
   }
   if (s.isClarificationAnswer) {
@@ -84,18 +79,13 @@ export function buildClassifierUserPrompt(
   const userContextBlock = deps.userInterestMiner
     ? formatUserContextForPrompt(deps.userInterestMiner.mine({ sessionId: deps.sessionId }))
     : '';
-  const overrideActive = Boolean(
-    input.agentId && deps.agents?.some((a) => a.id === input.agentId),
-  );
+  const overrideActive = Boolean(input.agentId && deps.agents?.some((a) => a.id === input.agentId));
   const agentsBlock = formatAgentCatalog(deps.agents, overrideActive, input.agentId);
-  const structuralBlock = `\n${renderStructuralFeatures(
-    computeStructuralFeatures(input.goal, deps.turns),
-  )}`;
+  const structuralBlock = `\n${renderStructuralFeatures(computeStructuralFeatures(input.goal, deps.turns))}`;
   const deterministicBlock = deterministic
     ? `\nRule-based candidate (tier 0.8 — treat as grounding; override only with strong evidence): strategy=${deterministic.strategy}, confidence=${(deterministic.confidence ?? 0).toFixed(2)}${
         'deterministicCandidate' in deterministic &&
-        (deterministic as { deterministicCandidate?: { ambiguous?: boolean } })
-          .deterministicCandidate?.ambiguous
+        (deterministic as { deterministicCandidate?: { ambiguous?: boolean } }).deterministicCandidate?.ambiguous
           ? ', AMBIGUOUS'
           : ''
       }. If the rule is already correct, confirm it — do not fabricate complexity.`

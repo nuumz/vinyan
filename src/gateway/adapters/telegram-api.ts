@@ -100,11 +100,7 @@ export class TelegramApi {
   }
 
   /** Send a text message. Returns the platform message id. */
-  async sendMessage(
-    chatId: string,
-    text: string,
-    opts?: SendMessageOptions,
-  ): Promise<{ messageId: number }> {
+  async sendMessage(chatId: string, text: string, opts?: SendMessageOptions): Promise<{ messageId: number }> {
     const body: Record<string, unknown> = {
       chat_id: chatId,
       text,

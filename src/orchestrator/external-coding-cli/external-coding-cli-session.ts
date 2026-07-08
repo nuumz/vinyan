@@ -8,11 +8,7 @@
 import type { VinyanBus } from '../../core/bus.ts';
 import type { CodingCliApprovalBridge } from './external-coding-cli-approval-bridge.ts';
 import type { HookBridge } from './external-coding-cli-hook-bridge.ts';
-import {
-  type CodingCliRunner,
-  type InteractiveSessionHandle,
-  type RunnerEvents,
-} from './external-coding-cli-runner.ts';
+import type { CodingCliRunner, InteractiveSessionHandle, RunnerEvents } from './external-coding-cli-runner.ts';
 import { CodingCliStateMachine } from './external-coding-cli-state-machine.ts';
 import type {
   CodingCliApprovalRequest,
@@ -132,9 +128,14 @@ export class CodingCliSession {
     });
     this.transition('ready', 'process spawned');
     this.transition('running', 'first prompt');
-    let outcome:
-      | { exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; result: CodingCliResult | null; durationMs: number }
-      | null = null;
+    let outcome: {
+      exitCode: number | null;
+      signal: NodeJS.Signals | null;
+      stdout: string;
+      stderr: string;
+      result: CodingCliResult | null;
+      durationMs: number;
+    } | null = null;
     try {
       outcome = await this.deps.runner.runHeadless(this.task, this.runnerEvents());
     } catch (err) {
@@ -193,10 +194,7 @@ export class CodingCliSession {
     return ok;
   }
 
-  async respondToApproval(
-    request: CodingCliApprovalRequest,
-    decision: 'approved' | 'rejected',
-  ): Promise<boolean> {
+  async respondToApproval(request: CodingCliApprovalRequest, decision: 'approved' | 'rejected'): Promise<boolean> {
     if (!this.interactiveHandle) return false;
     return this.interactiveHandle.respondToApproval(request, decision);
   }
@@ -230,8 +228,7 @@ export class CodingCliSession {
       this.deps.bus.emit('coding-cli:failed', {
         ...this.eventBase(),
         reason: reason ?? state,
-        errorClass:
-          state === 'crashed' ? 'cli_crash' : state === 'timed-out' ? 'timeout' : 'unknown',
+        errorClass: state === 'crashed' ? 'cli_crash' : state === 'timed-out' ? 'timeout' : 'unknown',
       });
     }
   }

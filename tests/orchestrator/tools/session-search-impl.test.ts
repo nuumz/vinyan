@@ -51,10 +51,7 @@ describe('searchSessions — basic paths', () => {
   });
 
   it('returns empty result on an empty DB', async () => {
-    const result = await searchSessions(
-      { query: 'anything', profile: 'default' },
-      { db, clock: () => NOW },
-    );
+    const result = await searchSessions({ query: 'anything', profile: 'default' }, { db, clock: () => NOW });
     expect(result.hits.length).toBe(0);
     expect(result.totalCandidates).toBe(0);
     expect(result.truncated).toBe(false);
@@ -62,10 +59,7 @@ describe('searchSessions — basic paths', () => {
 
   it('finds a single matching record', async () => {
     await writeWithProvider(db, baseInput({ content: 'Bun is a fast JS runtime' }));
-    const result = await searchSessions(
-      { query: 'Bun', profile: 'default' },
-      { db, clock: () => NOW },
-    );
+    const result = await searchSessions({ query: 'Bun', profile: 'default' }, { db, clock: () => NOW });
     expect(result.hits.length).toBe(1);
     expect(result.hits[0]?.content).toContain('Bun');
     expect(result.hits[0]?.evidenceTier).toBe('heuristic');
@@ -78,10 +72,7 @@ describe('searchSessions — profile scoping (§3)', () => {
     await writeWithProvider(db, baseInput({ profile: 'alpha', content: 'alpha fruit cake' }));
     await writeWithProvider(db, baseInput({ profile: 'beta', content: 'beta fruit cake' }));
 
-    const result = await searchSessions(
-      { query: 'fruit', profile: 'beta' },
-      { db, clock: () => NOW },
-    );
+    const result = await searchSessions({ query: 'fruit', profile: 'beta' }, { db, clock: () => NOW });
     expect(result.hits.length).toBe(1);
     expect(result.hits[0]?.content).toContain('beta');
   });
@@ -89,20 +80,14 @@ describe('searchSessions — profile scoping (§3)', () => {
   it('rejects cross-profile wildcard "*" with a warning', async () => {
     const db = freshDb();
     await writeWithProvider(db, baseInput({ content: 'hello' }));
-    const result = await searchSessions(
-      { query: 'hello', profile: '*' },
-      { db, clock: () => NOW },
-    );
+    const result = await searchSessions({ query: 'hello', profile: '*' }, { db, clock: () => NOW });
     expect(result.totalCandidates).toBe(0);
     expect(result.warning).toBe('cross_profile_not_allowed');
   });
 
   it('rejects cross-profile wildcard "ALL"', async () => {
     const db = freshDb();
-    const result = await searchSessions(
-      { query: 'hello', profile: 'ALL' },
-      { db, clock: () => NOW },
-    );
+    const result = await searchSessions({ query: 'hello', profile: 'ALL' }, { db, clock: () => NOW });
     expect(result.warning).toBe('cross_profile_not_allowed');
   });
 });
@@ -198,10 +183,7 @@ describe('searchSessions — limit bounds', () => {
       );
     }
     // limit=0 should clamp to 1.
-    const r0 = await searchSessions(
-      { query: 'bounded', profile: 'default', limit: 0 },
-      { db, clock: () => NOW + 100 },
-    );
+    const r0 = await searchSessions({ query: 'bounded', profile: 'default', limit: 0 }, { db, clock: () => NOW + 100 });
     expect(r0.hits.length).toBe(1);
     expect(r0.truncated).toBe(true);
     expect(r0.totalCandidates).toBe(3);
@@ -227,7 +209,7 @@ describe('searchSessions — sessionScope', () => {
     expect(result.warning).toBe('session_scope_requires_sessionId');
   });
 
-  it("current scope filters to the provided sessionId", async () => {
+  it('current scope filters to the provided sessionId', async () => {
     const db = freshDb();
     await writeWithProvider(db, baseInput({ content: 'scoped hit a', sessionId: 'sess_1' }));
     await writeWithProvider(
@@ -272,10 +254,7 @@ describe('searchSessions — ranking (A5)', () => {
       }),
     );
 
-    const result = await searchSessions(
-      { query: 'ranker', profile: 'default' },
-      { db, clock: () => NOW },
-    );
+    const result = await searchSessions({ query: 'ranker', profile: 'default' }, { db, clock: () => NOW });
     expect(result.hits.length).toBe(2);
     expect(result.hits[0]?.evidenceTier).toBe('deterministic');
     expect(result.hits[1]?.evidenceTier).toBe('probabilistic');
@@ -289,10 +268,7 @@ describe('searchSessions — error resilience', () => {
     // A truly broken FTS5 expression survives the phrase-wrap (since we
     // literal-quote it), so in practice this test also verifies the quoting
     // protects against operator injection. The function should still succeed.
-    const result = await searchSessions(
-      { query: 'AND OR NEAR:', profile: 'default' },
-      { db, clock: () => NOW },
-    );
+    const result = await searchSessions({ query: 'AND OR NEAR:', profile: 'default' }, { db, clock: () => NOW });
     // Either zero hits (no literal match) OR surfaces as fts5_query_error —
     // both branches are acceptable "does not throw" behaviors.
     expect(Array.isArray(result.hits)).toBe(true);
@@ -301,10 +277,7 @@ describe('searchSessions — error resilience', () => {
 
   it('empty query returns empty with warning', async () => {
     const db = freshDb();
-    const result = await searchSessions(
-      { query: '   ', profile: 'default' },
-      { db, clock: () => NOW },
-    );
+    const result = await searchSessions({ query: '   ', profile: 'default' }, { db, clock: () => NOW });
     expect(result.totalCandidates).toBe(0);
     expect(result.warning).toBe('empty_query');
   });

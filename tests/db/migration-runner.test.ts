@@ -47,9 +47,9 @@ describe('MigrationRunner', () => {
     expect(result.pending).toEqual([1]);
 
     // Verify core tables exist
-    const tables = db
-      .query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-      .all() as { name: string }[];
+    const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as {
+      name: string;
+    }[];
     const tableNames = tables.map((t) => t.name);
 
     expect(tableNames).toContain('execution_traces');
@@ -82,9 +82,7 @@ describe('MigrationRunner', () => {
     expect(tableNames).not.toContain('team_blackboard');
 
     // Agent identity — narrative columns are NOT in DB (soul.md is truth).
-    const agentCtxCols = db
-      .query("PRAGMA table_info('agent_contexts')")
-      .all() as Array<{ name: string }>;
+    const agentCtxCols = db.query("PRAGMA table_info('agent_contexts')").all() as Array<{ name: string }>;
     const ctxColNames = new Set(agentCtxCols.map((c) => c.name));
     expect(ctxColNames.has('persona')).toBe(false);
     expect(ctxColNames.has('soul_md')).toBe(false);
@@ -94,9 +92,7 @@ describe('MigrationRunner', () => {
     expect(ctxColNames.has('episodes')).toBe(true);
 
     // Verify schema_version tracks the single applied migration
-    const versions = db
-      .query('SELECT version FROM schema_version ORDER BY version')
-      .all() as { version: number }[];
+    const versions = db.query('SELECT version FROM schema_version ORDER BY version').all() as { version: number }[];
     expect(versions.map((v) => v.version)).toEqual([1]);
   });
 
@@ -189,9 +185,7 @@ describe('MigrationRunner', () => {
     expect(runner.getCurrentVersion(db)).toBe(highestVersion);
 
     // The table from the failed migration should NOT exist (rolled back)
-    const tables = db
-      .query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'test_fail_table'")
-      .all();
+    const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'test_fail_table'").all();
     expect(tables.length).toBe(0);
   });
 
@@ -248,9 +242,10 @@ describe('MigrationRunner', () => {
        VALUES (?, 'sleep-cycle', '{}', 'promote-capability', '{"agentId":"ts-coder"}', 'retired', ?, 0, 0, NULL, 'local')`,
       ['cap-rule', Date.now()],
     );
-    const rows = db
-      .query('SELECT id, action FROM evolutionary_rules ORDER BY id')
-      .all() as Array<{ id: string; action: string }>;
+    const rows = db.query('SELECT id, action FROM evolutionary_rules ORDER BY id').all() as Array<{
+      id: string;
+      action: string;
+    }>;
     expect(rows).toEqual([
       { id: 'cap-rule', action: 'promote-capability' },
       { id: 'existing-rule', action: 'escalate' },
@@ -275,9 +270,7 @@ describe('MigrationRunner', () => {
     expect(result.pending).toEqual([1]);
 
     // Verify NO tables were created (except schema_version from getCurrentVersion)
-    const tables = db
-      .query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'execution_traces'")
-      .all();
+    const tables = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'execution_traces'").all();
     expect(tables.length).toBe(0);
   });
 });

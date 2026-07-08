@@ -14,10 +14,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadAutoMemory } from '../../../src/memory/auto-memory-loader.ts';
+import { verifyComprehension } from '../../../src/oracle/comprehension/index.ts';
 import { buildInitUserMessage } from '../../../src/orchestrator/agent/agent-worker-entry.ts';
 import { newRuleComprehender } from '../../../src/orchestrator/comprehension/rule-comprehender.ts';
-import { verifyComprehension } from '../../../src/oracle/comprehension/index.ts';
-import type { Turn, PerceptualHierarchy, TaskInput } from '../../../src/orchestrator/types.ts';
+import type { PerceptualHierarchy, TaskInput, Turn } from '../../../src/orchestrator/types.ts';
 
 let workDir: string;
 let memoryDir: string;
@@ -102,8 +102,7 @@ describe('AutoMemory E2E → worker prompt', () => {
 - [Testing feedback](feedback_testing.md) — Integration tests beat mocks
 `,
       'user_role.md': 'Backend engineer with deep TypeScript expertise.',
-      'feedback_testing.md':
-        'Integration tests beat mocks. Deployed systems are our source of truth.',
+      'feedback_testing.md': 'Integration tests beat mocks. Deployed systems are our source of truth.',
     });
 
     const autoMem = loadAutoMemory({ workspace: workDir, overridePath: entrypoint });
@@ -144,12 +143,15 @@ describe('AutoMemory E2E → worker prompt', () => {
     const constraints = projectComprehensionIntoConstraints(envelope, autoMem!);
     expect(constraints.some((c) => c.startsWith('MEMORY_CONTEXT:'))).toBe(true);
 
-    const message = buildInitUserMessage(
-      input.goal,
-      emptyPerception,
-      undefined,
-      { rawGoal: input.goal, actionVerb: 'improve', actionCategory: 'analysis', frameworkContext: [], constraints, acceptanceCriteria: [], expectsMutation: false },
-    );
+    const message = buildInitUserMessage(input.goal, emptyPerception, undefined, {
+      rawGoal: input.goal,
+      actionVerb: 'improve',
+      actionCategory: 'analysis',
+      frameworkContext: [],
+      constraints,
+      acceptanceCriteria: [],
+      expectsMutation: false,
+    });
 
     expect(message).toContain('## Relevant User Memory');
     expect(message).toContain('feedback_testing.md');
@@ -192,12 +194,15 @@ describe('AutoMemory E2E → worker prompt', () => {
     const constraints = projectComprehensionIntoConstraints(envelope, autoMem!);
     expect(constraints.some((c) => c.startsWith('MEMORY_CONTEXT:'))).toBe(false);
 
-    const message = buildInitUserMessage(
-      input.goal,
-      emptyPerception,
-      undefined,
-      { rawGoal: input.goal, actionVerb: 'refactor', actionCategory: 'mutation', frameworkContext: [], constraints, acceptanceCriteria: [], expectsMutation: true },
-    );
+    const message = buildInitUserMessage(input.goal, emptyPerception, undefined, {
+      rawGoal: input.goal,
+      actionVerb: 'refactor',
+      actionCategory: 'mutation',
+      frameworkContext: [],
+      constraints,
+      acceptanceCriteria: [],
+      expectsMutation: true,
+    });
     expect(message).not.toContain('## Relevant User Memory');
   });
 

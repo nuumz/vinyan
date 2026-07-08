@@ -160,10 +160,7 @@ export function matchSkillsForTask(
  * Returns the skill that matches the bare name, or null. Explicit invocation
  * always wins over similarity-based matching.
  */
-export function detectExplicitInvocation(
-  query: string,
-  skills: readonly SimpleSkill[],
-): SimpleSkill | null {
+export function detectExplicitInvocation(query: string, skills: readonly SimpleSkill[]): SimpleSkill | null {
   const match = query.match(/^\s*\/([\w\-./]+)/);
   if (!match) return null;
   const wanted = match[1]!;

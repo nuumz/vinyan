@@ -283,11 +283,7 @@ export async function retryWithBackoff<T>(fn: (signal: AbortSignal) => Promise<T
  *
  * Internal helper — exported for tests.
  */
-export async function sleepWithHeartbeat(
-  totalMs: number,
-  intervalMs: number,
-  onTick: () => void,
-): Promise<void> {
+export async function sleepWithHeartbeat(totalMs: number, intervalMs: number, onTick: () => void): Promise<void> {
   if (totalMs <= intervalMs) {
     await new Promise((r) => setTimeout(r, totalMs));
     return;

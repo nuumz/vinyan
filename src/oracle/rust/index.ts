@@ -7,7 +7,7 @@
  * - unsafe-audit → `cargo check` (unsafe detection is part of standard compilation)
  */
 
-import { buildVerdict } from '../../core/index.ts';
+import { buildVerdict, type OracleVerdict } from '../../core/index.ts';
 import { fromScalar } from '../../core/subjective-opinion.ts';
 import { HypothesisTupleSchema } from '../protocol.ts';
 import { parseCargoCheckOutput } from './cargo-output-mapper.ts';
@@ -24,13 +24,7 @@ const startTime = performance.now();
 const pattern = hypothesis.pattern;
 const cwd = hypothesis.workspace;
 
-const SUPPORTED_PATTERNS = new Set([
-  'type-check',
-  'borrow-check',
-  'lifetime-valid',
-  'trait-satisfies',
-  'unsafe-audit',
-]);
+const SUPPORTED_PATTERNS = new Set(['type-check', 'borrow-check', 'lifetime-valid', 'trait-satisfies', 'unsafe-audit']);
 
 if (!SUPPORTED_PATTERNS.has(pattern)) {
   const verdict = buildVerdict({
@@ -83,7 +77,7 @@ if (!SUPPORTED_PATTERNS.has(pattern)) {
   const result = await Promise.race([processPromise, timeoutPromise]);
   const durationMs = Math.round(performance.now() - startTime);
 
-  let verdict;
+  let verdict: OracleVerdict;
   if (result === 'timeout') {
     proc.kill();
     verdict = buildVerdict({

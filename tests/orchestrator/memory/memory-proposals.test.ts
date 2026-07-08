@@ -9,7 +9,7 @@
  *   - memoryPropose tool: success path + oracle rejection path
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -23,9 +23,9 @@ import {
   listPendingProposals,
   MAX_PROPOSAL_SIZE,
   type MemoryProposal,
+  PENDING_DIR_REL,
   parseLearnedMdEntries,
   parseProposalFile,
-  PENDING_DIR_REL,
   REJECTED_DIR_REL,
   rejectProposal,
   resolveProposalBySlug,

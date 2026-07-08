@@ -20,9 +20,29 @@ import type { SemanticTaskUnderstanding, VerifiedClaim } from '../types.ts';
 const SCOPE_TOKEN_PATTERN = /\b([a-z][\w-]*(?:\/[a-z][\w-]*)*)\b/g;
 const MIN_SCOPE_TOKEN_LENGTH = 3;
 const IGNORED_SCOPE_TOKENS = new Set([
-  'the', 'and', 'for', 'from', 'with', 'that', 'this', 'service', 'module',
-  'component', 'function', 'class', 'file', 'code', 'logic', 'system',
-  'handling', 'management', 'layer', 'timeout', 'error', 'bug', 'fix',
+  'the',
+  'and',
+  'for',
+  'from',
+  'with',
+  'that',
+  'this',
+  'service',
+  'module',
+  'component',
+  'function',
+  'class',
+  'file',
+  'code',
+  'logic',
+  'system',
+  'handling',
+  'management',
+  'layer',
+  'timeout',
+  'error',
+  'bug',
+  'fix',
 ]);
 
 /**

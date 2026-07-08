@@ -30,7 +30,9 @@ export async function runCleanCommand(argv: string[]): Promise<void> {
     if (purgeDays > 0) {
       const cutoff = Date.now() - purgeDays * 24 * 60 * 60 * 1000;
       const tracesDeleted = rawDb.query('DELETE FROM traces WHERE timestamp < ?').run(cutoff);
-      const sessionsDeleted = rawDb.query("DELETE FROM sessions WHERE created_at < ? AND status = 'suspended'").run(cutoff);
+      const sessionsDeleted = rawDb
+        .query("DELETE FROM sessions WHERE created_at < ? AND status = 'suspended'")
+        .run(cutoff);
       console.log(`Purged data older than ${purgeDays} days:`);
       console.log(`  Traces:   ${(tracesDeleted as { changes: number }).changes} deleted`);
       console.log(`  Sessions: ${(sessionsDeleted as { changes: number }).changes} deleted`);

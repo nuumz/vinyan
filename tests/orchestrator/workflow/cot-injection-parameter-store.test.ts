@@ -19,20 +19,15 @@
  */
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
+import { createBus } from '../../../src/core/bus.ts';
 import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { MigrationRunner } from '../../../src/db/migrations/migration-runner.ts';
-import { createBus } from '../../../src/core/bus.ts';
-import {
-  ParameterLedger,
-  ParameterStore,
-} from '../../../src/orchestrator/adaptive-params/index.ts';
-import { runCollaborationBlock } from '../../../src/orchestrator/workflow/collaboration-block.ts';
-import {
-  buildCollaborationPlan,
-} from '../../../src/orchestrator/workflow/workflow-planner.ts';
-import type { CollaborationDirective } from '../../../src/orchestrator/intent/collaboration-parser.ts';
+import { ParameterLedger, ParameterStore } from '../../../src/orchestrator/adaptive-params/index.ts';
 import type { AgentRegistry } from '../../../src/orchestrator/agents/registry.ts';
+import type { CollaborationDirective } from '../../../src/orchestrator/intent/collaboration-parser.ts';
 import type { AgentSpec, TaskInput, TaskResult } from '../../../src/orchestrator/types.ts';
+import { runCollaborationBlock } from '../../../src/orchestrator/workflow/collaboration-block.ts';
+import { buildCollaborationPlan } from '../../../src/orchestrator/workflow/workflow-planner.ts';
 
 function agentSpec(id: string, role: AgentSpec['role']): AgentSpec {
   return { id, name: id, description: id, role } as AgentSpec;
@@ -162,7 +157,12 @@ describe('CoT continuity — ParameterStore production wiring', () => {
 
   test('mutating cot.reuse_max_staleness_ms via store.set() writes a parameter_adaptations row', () => {
     const { store, ledger, db } = freshStore();
-    const result = store.set('cot.reuse_max_staleness_ms', 60_000, 'shorter freshness window for tighter A10', 'test-suite');
+    const result = store.set(
+      'cot.reuse_max_staleness_ms',
+      60_000,
+      'shorter freshness window for tighter A10',
+      'test-suite',
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok');
     expect(result.newValue).toBe(60_000);
@@ -238,16 +238,11 @@ describe('CoT continuity — ParameterStore production wiring', () => {
     // Emit a thought with ts = now (fresh by definition).
     const now = Date.now();
     const fn = scriptedExecuteTaskWithStaleThought(bus, now);
-    await runCollaborationBlock(
-      plan,
-      plan.collaborationBlock!,
-      makeInput({ id: 'task-cot-paramstore-restored' }),
-      {
-        executeTask: fn,
-        bus,
-        getCotStalenessMs: () => store.getDurationMs('cot.reuse_max_staleness_ms'),
-      },
-    );
+    await runCollaborationBlock(plan, plan.collaborationBlock!, makeInput({ id: 'task-cot-paramstore-restored' }), {
+      executeTask: fn,
+      bus,
+      getCotStalenessMs: () => store.getDurationMs('cot.reuse_max_staleness_ms'),
+    });
     // Inject succeeded — verdict shape `cot-inject:N`.
     expect(verdicts.some((v) => v.startsWith('cot-inject:'))).toBe(true);
     db.close();

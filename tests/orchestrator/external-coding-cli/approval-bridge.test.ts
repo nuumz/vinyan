@@ -1,11 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { CodingCliApprovalBridge } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-approval-bridge.ts';
-import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
 import { createBus } from '../../../src/core/bus.ts';
-import type {
-  ApprovalPolicy,
-  CodingCliApprovalRequest,
-} from '../../../src/orchestrator/external-coding-cli/types.ts';
+import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
+import { CodingCliApprovalBridge } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-approval-bridge.ts';
+import type { ApprovalPolicy, CodingCliApprovalRequest } from '../../../src/orchestrator/external-coding-cli/types.ts';
 
 const STRICT_POLICY: ApprovalPolicy = {
   autoApproveReadOnly: false,

@@ -1,10 +1,11 @@
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 /**
  * Economy Wiring Tests — verify that economy components are invoked
  * on the live execution path, not just instantiated.
  */
 import { Database } from 'bun:sqlite';
-import { describe, expect, test } from 'bun:test';import { BudgetEnforcer } from '../../src/economy/budget-enforcer.ts';
+import { describe, expect, test } from 'bun:test';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
+import { BudgetEnforcer } from '../../src/economy/budget-enforcer.ts';
 import { costAwareScore } from '../../src/economy/cost-aware-scorer.ts';
 import { CostLedger, type CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
 import { CostPredictor } from '../../src/economy/cost-predictor.ts';

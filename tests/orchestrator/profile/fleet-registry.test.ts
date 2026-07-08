@@ -3,10 +3,10 @@
  * weight mapping (active=1, probation=0.3, demoted=0, retired=0).
  */
 
-import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { MigrationRunner, ALL_MIGRATIONS } from '../../../src/db/migrations/index.ts';
+import { describe, expect, test } from 'bun:test';
 import { LocalOracleProfileStore } from '../../../src/db/local-oracle-profile-store.ts';
+import { ALL_MIGRATIONS, MigrationRunner } from '../../../src/db/migrations/index.ts';
 import { FleetRegistry, weightForStatus } from '../../../src/orchestrator/profile/fleet-registry.ts';
 
 function freshDb(): Database {

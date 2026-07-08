@@ -1,8 +1,8 @@
+import { normalizeECPMessage, validateECPVerdict } from '../a2a/ecp-validation.ts';
 import { HttpTransport } from '../a2a/http-transport.ts';
 import { StdioTransport } from '../a2a/stdio-transport.ts';
 import type { ECPTransport } from '../a2a/transport.ts';
 import { WebSocketTransport } from '../a2a/websocket-transport.ts';
-import { normalizeECPMessage, validateECPVerdict } from '../a2a/ecp-validation.ts';
 import { buildVerdict } from '../core/index.ts';
 import type { HypothesisTuple, OracleVerdict } from '../core/types.ts';
 import { getOracleEntry, getOraclePath, type OracleRegistryEntry } from './registry.ts';
@@ -123,9 +123,9 @@ export async function runOracle(
 /** Tier → reliability mapping. Deterministic oracles are most reliable. */
 const TIER_RELIABILITY: Record<string, number> = {
   deterministic: 0.95,
-  heuristic: 0.70,
-  probabilistic: 0.50,
-  speculative: 0.30,
+  heuristic: 0.7,
+  probabilistic: 0.5,
+  speculative: 0.3,
 };
 
 /**

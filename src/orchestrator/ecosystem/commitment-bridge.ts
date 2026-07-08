@@ -80,12 +80,7 @@ export class CommitmentBridge {
       const open = this.ledger.openByTask(trace.taskId);
       if (open.length === 0) return;
 
-      const kind =
-        trace.outcome === 'success'
-          ? 'delivered'
-          : trace.outcome === 'escalated'
-            ? 'transferred'
-            : 'failed';
+      const kind = trace.outcome === 'success' ? 'delivered' : trace.outcome === 'escalated' ? 'transferred' : 'failed';
       this.ledger.resolveForTask(trace.taskId, kind, this.summarize(trace));
     });
   }

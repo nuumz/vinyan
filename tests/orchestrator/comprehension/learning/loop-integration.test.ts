@@ -8,10 +8,10 @@ import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { ComprehensionStore } from '../../../../src/db/comprehension-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../../../src/db/migrations/index.ts';
+import { verifyComprehension } from '../../../../src/oracle/comprehension/index.ts';
 import { ComprehensionCalibrator } from '../../../../src/orchestrator/comprehension/learning/calibrator.ts';
 import { detectCorrection } from '../../../../src/orchestrator/comprehension/learning/correction-detector.ts';
 import { newRuleComprehender } from '../../../../src/orchestrator/comprehension/rule-comprehender.ts';
-import { verifyComprehension } from '../../../../src/oracle/comprehension/index.ts';
 import type { ComprehensionInput } from '../../../../src/orchestrator/comprehension/types.ts';
 import type { TaskInput } from '../../../../src/orchestrator/types.ts';
 
@@ -67,7 +67,9 @@ async function runTurn(args: ComprehensionInput) {
 }
 
 describe('A7 learning loop — 3-turn sequence', () => {
-  test('confirm → corrected → confirm', () => { /* placeholder; real test below */ });
+  test('confirm → corrected → confirm', () => {
+    /* placeholder; real test below */
+  });
 
   test('closes the loop: outcome outcomes + calibrator reads calibrated accuracy', async () => {
     // ── Turn 1 ── user asks something fresh, engine comprehends.
@@ -96,8 +98,24 @@ describe('A7 learning loop — 3-turn sequence', () => {
     await runTurn({
       input: t2,
       history: [
-        { id: `${t1.id}-1`, sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'Write a short poem' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-        { id: `${t1.id}-2`, sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'Here is a poem...' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+        {
+          id: `${t1.id}-1`,
+          sessionId: 's',
+          seq: 0,
+          role: 'user',
+          blocks: [{ type: 'text', text: 'Write a short poem' }],
+          tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+          createdAt: 1,
+        },
+        {
+          id: `${t1.id}-2`,
+          sessionId: 's',
+          seq: 0,
+          role: 'assistant',
+          blocks: [{ type: 'text', text: 'Here is a poem...' }],
+          tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+          createdAt: 2,
+        },
       ],
       pendingQuestions: [],
       rootGoal: null,
@@ -138,9 +156,7 @@ describe('A7 learning loop — 3-turn sequence', () => {
 
     // Three records have outcomes; one (the most recent record from
     // runTurn(t3)) is still pending (no turn-4 comprehension was run).
-    const outcomes = store
-      .mostRecentForSession('s-loop', 10)
-      .map((r) => r.outcome);
+    const outcomes = store.mostRecentForSession('s-loop', 10).map((r) => r.outcome);
     expect(outcomes.filter((o) => o !== null)).toHaveLength(3);
 
     // Calibrator sees 2 confirmed + 1 corrected → 2/3 raw accuracy.

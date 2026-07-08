@@ -1,11 +1,10 @@
 /**
  * Phase 6.5 Hardening Tests — stale overlay cleanup, semaphore, bus events.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, existsSync, writeFileSync, utimesSync } from 'fs';
-import { join } from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { rmSync } from 'fs';
+import { join } from 'path';
 import { cleanupStaleOverlays } from '../../src/orchestrator/factory.ts';
 import { Semaphore } from '../../src/orchestrator/worker/worker-pool.ts';
 
@@ -20,7 +19,9 @@ describe('cleanupStaleOverlays', () => {
   });
 
   afterEach(() => {
-    try { rmSync(tmpWorkspace, { recursive: true, force: true }); } catch {}
+    try {
+      rmSync(tmpWorkspace, { recursive: true, force: true });
+    } catch {}
   });
 
   it('removes old directories beyond maxAge', () => {
@@ -82,10 +83,12 @@ describe('Semaphore', () => {
 
     // 4th should block
     let fourthResolved = false;
-    const fourthPromise = sem.acquire().then(() => { fourthResolved = true; });
+    const fourthPromise = sem.acquire().then(() => {
+      fourthResolved = true;
+    });
 
     // Give microtask a chance to resolve
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 10));
     expect(fourthResolved).toBe(false);
 
     // Release one — 4th should unblock
@@ -106,9 +109,15 @@ describe('Semaphore', () => {
 
     const order: number[] = [];
 
-    const p1 = sem.acquire().then(() => { order.push(1); });
-    const p2 = sem.acquire().then(() => { order.push(2); });
-    const p3 = sem.acquire().then(() => { order.push(3); });
+    const p1 = sem.acquire().then(() => {
+      order.push(1);
+    });
+    const p2 = sem.acquire().then(() => {
+      order.push(2);
+    });
+    const p3 = sem.acquire().then(() => {
+      order.push(3);
+    });
 
     // Release 3 times to let all through
     sem.release(); // unblocks p1
@@ -183,11 +192,6 @@ describe('agent:* bus events', () => {
       durationMs: 5000,
     });
 
-    expect(events).toEqual([
-      'start:t1',
-      'turn:t1:turn-1',
-      'tool:file_read:false',
-      'end:t1:completed',
-    ]);
+    expect(events).toEqual(['start:t1', 'turn:t1:turn-1', 'tool:file_read:false', 'end:t1:completed']);
   });
 });

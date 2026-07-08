@@ -87,9 +87,7 @@ describe('inferAction', () => {
 
 describe('inferMicrotheory — composition', () => {
   test('full 3-axis composition', () => {
-    const m = inferMicrotheory(
-      makePattern({ taskTypeSignature: 'delete::ts::large-blast' }),
-    );
+    const m = inferMicrotheory(makePattern({ taskTypeSignature: 'delete::ts::large-blast' }));
     expect(m).toEqual({
       language: 'typescript-strict',
       domain: 'universal', // M4 v1 always returns universal

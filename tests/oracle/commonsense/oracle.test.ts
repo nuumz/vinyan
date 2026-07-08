@@ -1,18 +1,18 @@
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import type { HypothesisTuple, OracleVerdict } from '../../../src/core/types.ts';
 import { isAbstention } from '../../../src/core/types.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import {
-  clearRegistryCache,
   CommonSenseRegistry,
+  clearRegistryCache,
   loadInnateSeed,
   verify,
 } from '../../../src/oracle/commonsense/index.ts';
 import type { CommonSenseRuleInput } from '../../../src/oracle/commonsense/types.ts';
-import type { HypothesisTuple, OracleVerdict } from '../../../src/core/types.ts';
 
 interface TestEnv {
   workspace: string;
@@ -163,7 +163,12 @@ describe('CommonSense Oracle — verify()', () => {
     env.registry.insertRule(
       makeRule({
         microtheory: { language: 'universal', domain: 'git-workflow', action: 'mutation-destructive' },
-        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'git push --force', case_sensitive: true },
+        pattern: {
+          kind: 'literal-substring',
+          target_field: 'command',
+          needle: 'git push --force',
+          case_sensitive: true,
+        },
         abnormality_predicate: {
           kind: 'literal-substring',
           target_field: 'command',
@@ -198,7 +203,12 @@ describe('CommonSense Oracle — verify()', () => {
     env.registry.insertRule(
       makeRule({
         microtheory: { language: 'universal', domain: 'git-workflow', action: 'mutation-destructive' },
-        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'git push --force', case_sensitive: true },
+        pattern: {
+          kind: 'literal-substring',
+          target_field: 'command',
+          needle: 'git push --force',
+          case_sensitive: true,
+        },
         abnormality_predicate: {
           kind: 'literal-substring',
           target_field: 'command',
@@ -284,7 +294,12 @@ describe('CommonSense Oracle — verify()', () => {
     env.registry.insertRule(
       makeRule({
         microtheory: { language: 'universal', domain: 'git-workflow', action: 'tool-invocation' },
-        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'git reset --hard', case_sensitive: true },
+        pattern: {
+          kind: 'literal-substring',
+          target_field: 'command',
+          needle: 'git reset --hard',
+          case_sensitive: true,
+        },
         default_outcome: 'needs-confirmation',
         priority: 85,
         confidence: 0.65,
@@ -385,7 +400,12 @@ describe('CommonSense Oracle — priorAssumption (ECP extension)', () => {
     env.registry.insertRule(
       makeRule({
         microtheory: { language: 'universal', domain: 'git-workflow', action: 'mutation-destructive' },
-        pattern: { kind: 'literal-substring', target_field: 'command', needle: 'git push --force', case_sensitive: true },
+        pattern: {
+          kind: 'literal-substring',
+          target_field: 'command',
+          needle: 'git push --force',
+          case_sensitive: true,
+        },
         abnormality_predicate: {
           kind: 'literal-substring',
           target_field: 'command',

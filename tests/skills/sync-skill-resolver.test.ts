@@ -100,10 +100,7 @@ describe('buildSyncSkillResolver — flat ids', () => {
 
 describe('buildSyncSkillResolver — namespaced ids', () => {
   test('reads <rootDir>/<ns>/<leaf>/SKILL.md as ns/leaf', () => {
-    writeSkill(
-      join(rootDir, 'refactor', 'extract-method-ts'),
-      'refactor/extract-method-ts',
-    );
+    writeSkill(join(rootDir, 'refactor', 'extract-method-ts'), 'refactor/extract-method-ts');
 
     const result = buildSyncSkillResolver(rootDir);
     expect(result.loadedCount).toBe(1);
@@ -125,11 +122,7 @@ describe('buildSyncSkillResolver — namespaced ids', () => {
 describe('buildSyncSkillResolver — A9 degradation', () => {
   test('malformed SKILL.md → recorded in failedIds, others load', () => {
     writeSkill(join(rootDir, 'local', 'good-1'), 'good-1');
-    writeSkill(
-      join(rootDir, 'local', 'broken'),
-      'broken',
-      '---\nid: broken\n# missing required fields\n---\n',
-    );
+    writeSkill(join(rootDir, 'local', 'broken'), 'broken', '---\nid: broken\n# missing required fields\n---\n');
     writeSkill(join(rootDir, 'local', 'good-2'), 'good-2');
 
     const result = buildSyncSkillResolver(rootDir);

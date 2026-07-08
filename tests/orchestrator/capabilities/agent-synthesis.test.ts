@@ -15,15 +15,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadAgentRegistry } from '../../../src/orchestrator/agents/registry.ts';
-import {
-  planFromGap,
-  synthesizeAgent,
-} from '../../../src/orchestrator/capabilities/agent-synthesis.ts';
-import type {
-  CapabilityFit,
-  CapabilityGapAnalysis,
-  CapabilityRequirement,
-} from '../../../src/orchestrator/types.ts';
+import { planFromGap, synthesizeAgent } from '../../../src/orchestrator/capabilities/agent-synthesis.ts';
+import type { CapabilityFit, CapabilityGapAnalysis, CapabilityRequirement } from '../../../src/orchestrator/types.ts';
 
 function req(id: string, weight = 1, role?: string): CapabilityRequirement {
   return { id, weight, role, source: 'llm-extract' };

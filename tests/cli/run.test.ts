@@ -32,19 +32,19 @@ afterEach(() => {
 
 describe('CLI run command', () => {
   test('outputs JSON TaskResult to stdout', async () => {
-    const proc = Bun.spawn(['bun', 'run', 'src/cli/index.ts', 'run', 'Fix bug', '--workspace', tempDir, '--timeout', '3000'], {
-      cwd: join(import.meta.dir, '../..'),
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
+    const proc = Bun.spawn(
+      ['bun', 'run', 'src/cli/index.ts', 'run', 'Fix bug', '--workspace', tempDir, '--timeout', '3000'],
+      {
+        cwd: join(import.meta.dir, '../..'),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    );
 
     // Hard-kill if process hangs (no LLM → orchestrator may not exit on its own)
     const killTimer = setTimeout(() => proc.kill(), 10_000);
 
-    const [stdout, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      proc.exited,
-    ]);
+    const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
     clearTimeout(killTimer);
 
     // Should output valid JSON (even if task escalates without real LLM)
@@ -80,7 +80,19 @@ describe('CLI run command', () => {
 
   test('--file flag is parsed correctly', async () => {
     const proc = Bun.spawn(
-      ['bun', 'run', 'src/cli/index.ts', 'run', 'Fix it', '--file', 'src/foo.ts', '--workspace', tempDir, '--timeout', '3000'],
+      [
+        'bun',
+        'run',
+        'src/cli/index.ts',
+        'run',
+        'Fix it',
+        '--file',
+        'src/foo.ts',
+        '--workspace',
+        tempDir,
+        '--timeout',
+        '3000',
+      ],
       {
         cwd: join(import.meta.dir, '../..'),
         stdout: 'pipe',
@@ -90,10 +102,7 @@ describe('CLI run command', () => {
 
     const killTimer = setTimeout(() => proc.kill(), 10_000);
 
-    const [stdout] = await Promise.all([
-      new Response(proc.stdout).text(),
-      proc.exited,
-    ]);
+    const [stdout] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
     clearTimeout(killTimer);
 
     // Try to parse — if valid JSON, task was created with the file

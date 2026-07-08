@@ -6,8 +6,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
-  clampConfidenceToTier,
   CONFIDENCE_TIERS,
+  clampConfidenceToTier,
   isStrongerThan,
   rankOf,
   TIER_CONFIDENCE_CEILING,

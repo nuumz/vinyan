@@ -6,8 +6,8 @@
  * → flip to uncertain with blocker messages.
  */
 import { describe, expect, test } from 'bun:test';
-import { runWave4GoalCheck } from '../../../src/orchestrator/agent/agent-loop.ts';
 import type { AgentLoopDeps } from '../../../src/orchestrator/agent/agent-loop.ts';
+import { runWave4GoalCheck } from '../../../src/orchestrator/agent/agent-loop.ts';
 import type { GoalEvaluator, GoalSatisfaction } from '../../../src/orchestrator/goal-satisfaction/goal-evaluator.ts';
 import type { TaskInput, TaskUnderstanding } from '../../../src/orchestrator/types.ts';
 
@@ -34,7 +34,11 @@ function makeUnderstanding(): TaskUnderstanding {
   } as TaskUnderstanding;
 }
 
-function makeEvaluator(score: number, failedChecks: string[] = [], blockers: GoalSatisfaction['blockers'] = []): GoalEvaluator {
+function makeEvaluator(
+  score: number,
+  failedChecks: string[] = [],
+  blockers: GoalSatisfaction['blockers'] = [],
+): GoalEvaluator {
   return {
     async evaluate() {
       return {
@@ -121,9 +125,11 @@ describe('runWave4GoalCheck', () => {
 
   test('low score → returns reject decision (observability only, no control flow change)', async () => {
     const deps = makeDeps({
-      goalEvaluator: makeEvaluator(0.3, ['acceptance:tests'], [
-        { category: 'acceptance-criteria', detail: 'no test file created', resolvable: true },
-      ]),
+      goalEvaluator: makeEvaluator(
+        0.3,
+        ['acceptance:tests'],
+        [{ category: 'acceptance-criteria', detail: 'no test file created', resolvable: true }],
+      ),
       goalTerminationConfig: {
         enabled: true,
         maxContinuations: 2,

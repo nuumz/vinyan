@@ -7,9 +7,9 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
-  wrapReminder,
   hasReminderBlock,
   REMINDER_PROTOCOL_DESCRIPTION,
+  wrapReminder,
 } from '../../../src/orchestrator/llm/vinyan-reminder.ts';
 
 // ── wrapReminder ─────────────────────────────────────────────────────

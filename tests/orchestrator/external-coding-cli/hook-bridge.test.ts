@@ -2,7 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { HookBridge, HookSink, synthWrapperEvent } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-hook-bridge.ts';
+import {
+  HookBridge,
+  HookSink,
+  synthWrapperEvent,
+} from '../../../src/orchestrator/external-coding-cli/external-coding-cli-hook-bridge.ts';
 
 function tmpFile(): string {
   return path.join(os.tmpdir(), `vinyan-hook-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);

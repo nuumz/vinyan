@@ -19,12 +19,13 @@
  *   - `docs/spec/w1-contracts.md` §1/§3 — ConfidenceTier + profile column.
  *   - `docs/architecture/decisions.md` §22 — ranker formula.
  */
-import { createHash } from 'node:crypto';
+
 import type { Database, Statement } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
 import {
-  clampConfidenceToTier,
   CONFIDENCE_TIERS,
   type ConfidenceTier,
+  clampConfidenceToTier,
   rankOf,
   TIER_CONFIDENCE_CEILING,
 } from '../../core/confidence-tier.ts';

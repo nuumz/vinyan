@@ -25,13 +25,15 @@ afterEach(() => {
 });
 
 /** Minimal valid envelope for round-trip tests. */
-function envelope(overrides: Partial<{
-  inputHash: string;
-  tier: 'deterministic' | 'heuristic' | 'probabilistic' | 'unknown';
-  type: 'comprehension' | 'unknown';
-  confidence: number;
-  rootGoal: string | null;
-}> = {}): ComprehendedTaskMessage {
+function envelope(
+  overrides: Partial<{
+    inputHash: string;
+    tier: 'deterministic' | 'heuristic' | 'probabilistic' | 'unknown';
+    type: 'comprehension' | 'unknown';
+    confidence: number;
+    rootGoal: string | null;
+  }> = {},
+): ComprehendedTaskMessage {
   return {
     jsonrpc: '2.0',
     method: 'comprehension.result',
@@ -39,9 +41,7 @@ function envelope(overrides: Partial<{
       type: overrides.type ?? 'comprehension',
       confidence: overrides.confidence ?? 1,
       tier: overrides.tier ?? 'deterministic',
-      evidence_chain: [
-        { source: 'rule:session-history', claim: 'test evidence', confidence: 1 },
-      ],
+      evidence_chain: [{ source: 'rule:session-history', claim: 'test evidence', confidence: 1 }],
       falsifiable_by: ['user-next-turn'],
       temporal_context: { as_of: Date.now() },
       inputHash: overrides.inputHash ?? 'abc123',
@@ -388,12 +388,8 @@ describe('ComprehensionStore', () => {
     expect(changed).toBe(true);
 
     // Rule row has the outcome; LLM row still NULL (not swept here).
-    const ruleRows = store.mostRecentForSession('s', 10).filter(
-      (r) => r.engine_id === 'rule-comprehender',
-    );
-    const llmRows = store.mostRecentForSession('s', 10).filter(
-      (r) => r.engine_id === 'llm-comprehender',
-    );
+    const ruleRows = store.mostRecentForSession('s', 10).filter((r) => r.engine_id === 'rule-comprehender');
+    const llmRows = store.mostRecentForSession('s', 10).filter((r) => r.engine_id === 'llm-comprehender');
     expect(ruleRows[0]!.outcome).toBe('corrected');
     expect(llmRows[0]!.outcome).toBeNull();
 

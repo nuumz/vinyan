@@ -13,18 +13,14 @@ import { SkillArtifactStore } from '../../../src/skills/artifact-store.ts';
 import {
   AutonomousSkillCreator,
   buildStubDraftGenerator,
-  DEFAULT_WINDOW_POLICY,
   type CachedSkillLike,
+  DEFAULT_WINDOW_POLICY,
   type DraftGenerator,
   type DraftRequest,
   type PredictionErrorSample,
   type SkillStoreLike,
 } from '../../../src/skills/autonomous/index.ts';
-import type {
-  ImporterCriticFn,
-  ImporterGateFn,
-  ImporterGateVerdict,
-} from '../../../src/skills/hub/index.ts';
+import type { ImporterCriticFn, ImporterGateFn, ImporterGateVerdict } from '../../../src/skills/hub/index.ts';
 
 // ── Fakes ─────────────────────────────────────────────────────────────
 

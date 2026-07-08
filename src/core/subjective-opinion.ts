@@ -36,10 +36,13 @@ export const SubjectiveOpinionSchema: z.ZodType<SubjectiveOpinion> = z
     uncertainty: z.number().min(0).max(1),
     baseRate: z.number().min(0).max(1),
   })
-  .refine((o: { belief: number; disbelief: number; uncertainty: number; baseRate: number }) =>
-    Math.abs(o.belief + o.disbelief + o.uncertainty - 1) < 0.001, {
-    message: 'belief + disbelief + uncertainty must equal 1.0 (±0.001 wire tolerance)',
-  });
+  .refine(
+    (o: { belief: number; disbelief: number; uncertainty: number; baseRate: number }) =>
+      Math.abs(o.belief + o.disbelief + o.uncertainty - 1) < 0.001,
+    {
+      message: 'belief + disbelief + uncertainty must equal 1.0 (±0.001 wire tolerance)',
+    },
+  );
 
 /**
  * Maps a scalar confidence [0,1] to an SL opinion.
@@ -158,8 +161,8 @@ function assertValid(o: SubjectiveOpinion, label: string): void {
  * Reduces uncertainty when both sources carry evidence.
  */
 export function cumulativeFusion(a: SubjectiveOpinion, b: SubjectiveOpinion): SubjectiveOpinion {
-  assertValid(a, "cumulativeFusion.a");
-  assertValid(b, "cumulativeFusion.b");
+  assertValid(a, 'cumulativeFusion.a');
+  assertValid(b, 'cumulativeFusion.b');
 
   const uA = a.uncertainty;
   const uB = b.uncertainty;
@@ -197,8 +200,8 @@ export function cumulativeFusion(a: SubjectiveOpinion, b: SubjectiveOpinion): Su
  * Does NOT reduce uncertainty beyond the mean of inputs.
  */
 export function averagingFusion(a: SubjectiveOpinion, b: SubjectiveOpinion): SubjectiveOpinion {
-  assertValid(a, "averagingFusion.a");
-  assertValid(b, "averagingFusion.b");
+  assertValid(a, 'averagingFusion.a');
+  assertValid(b, 'averagingFusion.b');
 
   const uA = a.uncertainty;
   const uB = b.uncertainty;
@@ -230,15 +233,10 @@ export function averagingFusion(a: SubjectiveOpinion, b: SubjectiveOpinion): Sub
  * Weighted fusion for partially overlapping dependency sets.
  * Weights are typically derived from tier priority.
  */
-export function weightedFusion(
-  a: SubjectiveOpinion,
-  wa: number,
-  b: SubjectiveOpinion,
-  wb: number,
-): SubjectiveOpinion {
-  assertValid(a, "weightedFusion.a");
-  assertValid(b, "weightedFusion.b");
-  if (wa < 0 || wb < 0) throw new Error("Weights must be non-negative");
+export function weightedFusion(a: SubjectiveOpinion, wa: number, b: SubjectiveOpinion, wb: number): SubjectiveOpinion {
+  assertValid(a, 'weightedFusion.a');
+  assertValid(b, 'weightedFusion.b');
+  if (wa < 0 || wb < 0) throw new Error('Weights must be non-negative');
   const total = wa + wb;
   if (total === 0) return vacuous((a.baseRate + b.baseRate) / 2);
 
@@ -258,12 +256,12 @@ export interface ConflictReport {
   /** Conflict mass: b1*d2 + d1*b2. K=0 means full agreement, K>0.5 means high conflict. */
   K: number;
   /** 'fuse' if K <= 0.5, 'reject' if K > 0.5 (Dempster normalization amplifies >2x). */
-  resolution: "fuse" | "reject";
+  resolution: 'fuse' | 'reject';
 }
 
 export function computeConflictReport(a: SubjectiveOpinion, b: SubjectiveOpinion): ConflictReport {
   const K = a.belief * b.disbelief + a.disbelief * b.belief;
-  return { K, resolution: K > 0.5 ? "reject" : "fuse" };
+  return { K, resolution: K > 0.5 ? 'reject' : 'fuse' };
 }
 
 // ---------------------------------------------------------------------------
@@ -319,9 +317,7 @@ export function fuseAll(inputs: FusionInput[]): SubjectiveOpinion {
   if (inputs.length === 0) return vacuous();
 
   // Sort by tier priority (stable sort preserves insertion order within same tier)
-  const sorted = [...inputs].sort(
-    (x, y) => (TIER_PRIORITY[x.tier] ?? 99) - (TIER_PRIORITY[y.tier] ?? 99),
-  );
+  const sorted = [...inputs].sort((x, y) => (TIER_PRIORITY[x.tier] ?? 99) - (TIER_PRIORITY[y.tier] ?? 99));
 
   if (sorted.length === 1) return { ...sorted[0]!.opinion };
 
@@ -334,7 +330,7 @@ export function fuseAll(inputs: FusionInput[]): SubjectiveOpinion {
 
     // Conflict check against accumulator
     const report = computeConflictReport(acc, input.opinion);
-    if (report.resolution === "reject") continue;
+    if (report.resolution === 'reject') continue;
 
     // Select operator by Jaccard overlap with first input's deps
     const j = jaccard(firstDeps, input.deps);
@@ -362,7 +358,7 @@ export function fuseAll(inputs: FusionInput[]): SubjectiveOpinion {
 
 const TIER_U_FLOORS: Record<string, number> = {
   deterministic: 0.01,
-  heuristic: 0.10,
+  heuristic: 0.1,
   pragmatic: 0.18,
   probabilistic: 0.25,
 };
@@ -410,16 +406,16 @@ export function temporalDecay(
   o: SubjectiveOpinion,
   elapsedMs: number,
   halfLifeMs: number,
-  decayModel: "linear" | "step" | "none" | "exponential",
+  decayModel: 'linear' | 'step' | 'none' | 'exponential',
 ): SubjectiveOpinion {
-  if (decayModel === "none") return { ...o };
+  if (decayModel === 'none') return { ...o };
 
-  if (decayModel === "step") {
+  if (decayModel === 'step') {
     if (elapsedMs >= halfLifeMs) return vacuous(o.baseRate);
     return { ...o };
   }
 
-  if (decayModel === "exponential") {
+  if (decayModel === 'exponential') {
     if (elapsedMs <= 0 || halfLifeMs <= 0) return { ...o };
     const oldCertainty = 1 - o.uncertainty;
     if (oldCertainty <= 0) return { ...o };
@@ -470,11 +466,7 @@ export function temporalDecay(
  * @param halfLifeMs - Half-life: time for uncertainty to reach midpoint (ms)
  * @returns Decayed opinion (closer to vacuous as time passes)
  */
-export function decayOpinion(
-  opinion: SubjectiveOpinion,
-  elapsedMs: number,
-  halfLifeMs: number,
-): SubjectiveOpinion {
+export function decayOpinion(opinion: SubjectiveOpinion, elapsedMs: number, halfLifeMs: number): SubjectiveOpinion {
   if (elapsedMs <= 0 || halfLifeMs <= 0) return { ...opinion };
 
   const oldCertainty = 1 - opinion.uncertainty;

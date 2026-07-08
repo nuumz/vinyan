@@ -123,9 +123,7 @@ describe('executeWorkflow — partial-failure decision gate', () => {
   test('emits decision_needed with failed/skipped/completed step ids when cascade-skip happens', async () => {
     const bus = createBus();
     const events: Array<{ name: string; payload: unknown }> = [];
-    bus.on('workflow:partial_failure_decision_needed', (p) =>
-      events.push({ name: 'needed', payload: p }),
-    );
+    bus.on('workflow:partial_failure_decision_needed', (p) => events.push({ name: 'needed', payload: p }));
 
     // Resolve the gate on first emit so the run terminates.
     const unsub = bus.on('workflow:partial_failure_decision_needed', (p) => {
@@ -198,8 +196,8 @@ describe('executeWorkflow — partial-failure decision gate', () => {
     expect(result.synthesizedOutput).toContain('mentor REAL ANSWER');
     // Two _provided events: the user's, plus the executor's echo.
     expect(provided.length).toBeGreaterThanOrEqual(1);
-    const echoes = provided.filter((p): p is { decision: string } =>
-      typeof (p as { decision?: string }).decision === 'string',
+    const echoes = provided.filter(
+      (p): p is { decision: string } => typeof (p as { decision?: string }).decision === 'string',
     );
     expect(echoes.some((e) => e.decision === 'continue')).toBe(true);
   });
@@ -259,15 +257,12 @@ describe('executeWorkflow — partial-failure decision gate', () => {
     const events: unknown[] = [];
     bus.on('workflow:partial_failure_decision_needed', (p) => events.push(p));
 
-    const result = await executeWorkflow(
-      makeInput('three agents', { id: 'sub-task-1', parentTaskId: 'parent-1' }),
-      {
-        bus,
-        llmRegistry: { selectByTier: () => makeProvider(THREE_AGENTS_WITH_COMPARE) } as any,
-        executeTask: makeExecuteTaskWithAuthorFail() as any,
-        workflowConfig: { requireUserApproval: false, approvalTimeoutMs: 30_000 },
-      },
-    );
+    const result = await executeWorkflow(makeInput('three agents', { id: 'sub-task-1', parentTaskId: 'parent-1' }), {
+      bus,
+      llmRegistry: { selectByTier: () => makeProvider(THREE_AGENTS_WITH_COMPARE) } as any,
+      executeTask: makeExecuteTaskWithAuthorFail() as any,
+      workflowConfig: { requireUserApproval: false, approvalTimeoutMs: 30_000 },
+    });
 
     expect(events).toHaveLength(0);
     expect(result.status).toBe('partial');
@@ -281,7 +276,7 @@ describe('executeWorkflow — partial-failure decision gate', () => {
     // but no dependent step gets cascade-skipped, so the user is not asked.
     // Distinguishes "result is incomplete in shape" from "result delivers
     // less than the user asked for". The latter is what needs the gate.
-    const TWO_AGENTS_NO_COMPARE = JSON.stringify({
+    const TwoAgentsNoCompare = JSON.stringify({
       goal: 'two agents, no aggregator',
       steps: [
         {
@@ -307,7 +302,7 @@ describe('executeWorkflow — partial-failure decision gate', () => {
 
     const result = await executeWorkflow(makeInput('two agents'), {
       bus,
-      llmRegistry: { selectByTier: () => makeProvider(TWO_AGENTS_NO_COMPARE) } as any,
+      llmRegistry: { selectByTier: () => makeProvider(TwoAgentsNoCompare) } as any,
       executeTask: makeExecuteTaskWithAuthorFail() as any,
       workflowConfig: { requireUserApproval: false, approvalTimeoutMs: 30_000 },
     });

@@ -86,7 +86,9 @@ function renderDraftUserPrompt(req: DraftRequest): string {
   const lines: string[] = [];
   lines.push(`Task signature: ${req.taskSignature}`);
   lines.push('');
-  lines.push('Expected prediction-error reduction (stamp into frontmatter verbatim as expected_prediction_error_reduction):');
+  lines.push(
+    'Expected prediction-error reduction (stamp into frontmatter verbatim as expected_prediction_error_reduction):',
+  );
   lines.push(`  baseline_composite_error: ${req.expectedReduction.baseline.toFixed(4)}`);
   lines.push(`  target_composite_error:   ${req.expectedReduction.target.toFixed(4)}`);
   lines.push(`  trial_window:             ${req.expectedReduction.window}`);

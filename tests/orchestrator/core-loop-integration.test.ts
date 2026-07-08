@@ -16,10 +16,11 @@ import { createOrchestrator as _createOrchestrator } from '../../src/orchestrato
 // is documented as the test-fixture escape hatch in factory.ts.
 const createOrchestrator: typeof _createOrchestrator = (opts) =>
   _createOrchestrator({ workerBootstrapPolicy: 'grandfather', ...opts });
+
+import type { CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
+import type { CriticEngine } from '../../src/orchestrator/critic/critic-engine.ts';
 import { createMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
-import type { CriticEngine } from '../../src/orchestrator/critic/critic-engine.ts';
-import type { CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
 import type { TaskInput } from '../../src/orchestrator/types.ts';
 
 let tempDir: string;
@@ -121,9 +122,7 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
 
   test('4. traces are collected with LLM usage evidence', async () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
-    await orchestrator.executeTask(
-      makeInput({ targetFiles: ['src/foo.ts'], constraints: ['MIN_ROUTING_LEVEL:1'] }),
-    );
+    await orchestrator.executeTask(makeInput({ targetFiles: ['src/foo.ts'], constraints: ['MIN_ROUTING_LEVEL:1'] }));
     const traces = orchestrator.traceCollector.getTraces();
     expect(traces.length).toBeGreaterThanOrEqual(1);
     // Pre-routing comprehension/understanding phases also record traces
@@ -190,9 +189,7 @@ describe('Core Loop Integration — §16.4 Acceptance Criteria', () => {
   test('9. trace records actual model invocation — modelUsed is a real model, not the L0 sentinel', async () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     // MIN_ROUTING_LEVEL:1 ensures an LLM is dispatched — at L0, modelUsed would be 'none'
-    await orchestrator.executeTask(
-      makeInput({ targetFiles: ['src/foo.ts'], constraints: ['MIN_ROUTING_LEVEL:1'] }),
-    );
+    await orchestrator.executeTask(makeInput({ targetFiles: ['src/foo.ts'], constraints: ['MIN_ROUTING_LEVEL:1'] }));
     const traces = orchestrator.traceCollector.getTraces();
     // Find the L1+ worker trace explicitly (pre-routing comprehension traces
     // carry routingLevel:0 + tokens:0 + modelUsed:'comprehension-engine-id').

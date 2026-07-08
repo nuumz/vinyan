@@ -9,8 +9,8 @@
 import { describe, expect, test } from 'bun:test';
 
 import { assemblePrompt } from '../../../src/orchestrator/llm/prompt-assembler.ts';
-import type { SimpleSkill } from '../../../src/skills/simple/loader.ts';
 import type { PerceptualHierarchy, WorkingMemoryState } from '../../../src/orchestrator/types.ts';
+import type { SimpleSkill } from '../../../src/skills/simple/loader.ts';
 
 function makePerception(): PerceptualHierarchy {
   return {

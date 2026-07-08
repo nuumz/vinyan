@@ -18,13 +18,9 @@ import { SkillTrustLedgerStore } from '../../db/skill-trust-ledger-store.ts';
 import type { SkillArtifactStore } from '../artifact-store.ts';
 import { buildImporterCriticFn, type CriticAdapterDeps } from './critic-adapter.ts';
 import { buildImporterGateFn, type RunGateFn } from './gate-adapter.ts';
-import {
-  DEFAULT_IMPORTER_GUARDRAILS,
-  type ImporterGuardrails,
-  SkillImporter,
-} from './importer.ts';
+import { DEFAULT_IMPORTER_GUARDRAILS, type ImporterGuardrails, SkillImporter } from './importer.ts';
 import type { SkillRegistryAdapter } from './registry-adapter.ts';
-import { StoreBackedSkillTrustLedger, type SkillTrustLedger } from './trust-ledger.ts';
+import { type SkillTrustLedger, StoreBackedSkillTrustLedger } from './trust-ledger.ts';
 
 /**
  * Narrow guardrail shape accepted by `setupSkillImporter` — when present,

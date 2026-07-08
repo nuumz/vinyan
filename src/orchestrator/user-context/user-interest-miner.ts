@@ -34,24 +34,152 @@ const DEFAULTS = {
  * suppress the obvious noise. Over-filtering kills signal for short Thai tokens.
  */
 const STOP_WORDS_EN = new Set([
-  'the', 'and', 'for', 'you', 'that', 'this', 'with', 'have', 'not', 'but',
-  'are', 'was', 'were', 'can', 'will', 'would', 'could', 'should', 'just',
-  'from', 'into', 'about', 'over', 'some', 'been', 'being', 'any', 'all',
-  'what', 'when', 'where', 'why', 'how', 'here', 'there', 'your', 'mine',
-  'please', 'thanks', 'hello', 'hi', 'okay', 'yes', 'no', 'like', 'really',
-  'then', 'than', 'very', 'also', 'still', 'only', 'even', 'want', 'need',
-  'get', 'got', 'one', 'two', 'new', 'old', 'make', 'made', 'use', 'used',
-  'more', 'most', 'less', 'much', 'many', 'few', 'see', 'say', 'said', 'did',
-  'now', 'never', 'ever', 'too', 'own', 'same', 'each', 'both', 'out', 'off',
-  'don', 'does', 'had', 'has', 'its', 'them', 'they', 'their', 'our', 'we',
-  'me', 'my', 'him', 'her', 'his', 'hers', 'who', 'whom',
+  'the',
+  'and',
+  'for',
+  'you',
+  'that',
+  'this',
+  'with',
+  'have',
+  'not',
+  'but',
+  'are',
+  'was',
+  'were',
+  'can',
+  'will',
+  'would',
+  'could',
+  'should',
+  'just',
+  'from',
+  'into',
+  'about',
+  'over',
+  'some',
+  'been',
+  'being',
+  'any',
+  'all',
+  'what',
+  'when',
+  'where',
+  'why',
+  'how',
+  'here',
+  'there',
+  'your',
+  'mine',
+  'please',
+  'thanks',
+  'hello',
+  'hi',
+  'okay',
+  'yes',
+  'no',
+  'like',
+  'really',
+  'then',
+  'than',
+  'very',
+  'also',
+  'still',
+  'only',
+  'even',
+  'want',
+  'need',
+  'get',
+  'got',
+  'one',
+  'two',
+  'new',
+  'old',
+  'make',
+  'made',
+  'use',
+  'used',
+  'more',
+  'most',
+  'less',
+  'much',
+  'many',
+  'few',
+  'see',
+  'say',
+  'said',
+  'did',
+  'now',
+  'never',
+  'ever',
+  'too',
+  'own',
+  'same',
+  'each',
+  'both',
+  'out',
+  'off',
+  'don',
+  'does',
+  'had',
+  'has',
+  'its',
+  'them',
+  'they',
+  'their',
+  'our',
+  'we',
+  'me',
+  'my',
+  'him',
+  'her',
+  'his',
+  'hers',
+  'who',
+  'whom',
 ]);
 
 const STOP_WORDS_TH = new Set([
-  'ช่วย', 'อยาก', 'ผม', 'ฉัน', 'คุณ', 'เรา', 'นี้', 'นั้น', 'หน่อย', 'หรือ',
-  'และ', 'แต่', 'กับ', 'ของ', 'ที่', 'ใน', 'ให้', 'เป็น', 'ได้', 'ไม่',
-  'จะ', 'จาก', 'แล้ว', 'ด้วย', 'ซึ่ง', 'ต่อ', 'ว่า', 'นะ', 'ครับ', 'ค่ะ',
-  'สัก', 'อัน', 'ถ้า', 'แค่', 'ยัง', 'ก็', 'มี', 'เอา', 'เลย', 'บ้าง',
+  'ช่วย',
+  'อยาก',
+  'ผม',
+  'ฉัน',
+  'คุณ',
+  'เรา',
+  'นี้',
+  'นั้น',
+  'หน่อย',
+  'หรือ',
+  'และ',
+  'แต่',
+  'กับ',
+  'ของ',
+  'ที่',
+  'ใน',
+  'ให้',
+  'เป็น',
+  'ได้',
+  'ไม่',
+  'จะ',
+  'จาก',
+  'แล้ว',
+  'ด้วย',
+  'ซึ่ง',
+  'ต่อ',
+  'ว่า',
+  'นะ',
+  'ครับ',
+  'ค่ะ',
+  'สัก',
+  'อัน',
+  'ถ้า',
+  'แค่',
+  'ยัง',
+  'ก็',
+  'มี',
+  'เอา',
+  'เลย',
+  'บ้าง',
 ]);
 
 /** Extract a coarse domain label from a task_type_signature. */
@@ -80,7 +208,7 @@ function tokenize(text: string): string[] {
   // keyword surfacing).
   return text
     .toLowerCase()
-    .split(/[\s,./\\!?"'`()[\]{}<>:;|=+*&^%$#@~—–\-]+/u)
+    .split(/[\s,./\\!?"'`()[\]{}<>:;|=+*&^%$#@~—–-]+/u)
     .filter((t) => t.length > 0);
 }
 
@@ -162,9 +290,7 @@ export class UserInterestMiner {
   private aggregateTaskTypes(cutoff: number, maxTypes: number): TaskTypeCount[] {
     if (!this.deps.traceStore) return [];
     const recent = this.deps.traceStore.findRecent(200);
-    const withinWindow = recent.filter(
-      (t) => t.timestamp >= cutoff && t.taskTypeSignature,
-    );
+    const withinWindow = recent.filter((t) => t.timestamp >= cutoff && t.taskTypeSignature);
     const counts = new Map<string, number>();
     for (const trace of withinWindow) {
       const sig = trace.taskTypeSignature as string;
@@ -234,9 +360,7 @@ export class UserInterestMiner {
 export function formatUserContextForPrompt(snapshot: UserContextSnapshot): string {
   const lines: string[] = [];
   if (snapshot.frequentTaskTypes.length > 0) {
-    const entries = snapshot.frequentTaskTypes
-      .map((t) => `${t.signature} (${t.count})`)
-      .join(', ');
+    const entries = snapshot.frequentTaskTypes.map((t) => `${t.signature} (${t.count})`).join(', ');
     lines.push(`- Frequent task types: ${entries}`);
   }
   if (snapshot.recentDomains.length > 0) {

@@ -6,13 +6,13 @@ import {
   DEFAULT_FAILURE_CLUSTER_CONFIG,
   FailureClusterDetector,
 } from '../../../src/orchestrator/goal-satisfaction/failure-cluster-detector.ts';
+import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
 import {
+  type ReactiveTraceSummary,
   reactiveRuleToEvolutionary,
   synthesizeReactiveRule,
   traceToReactiveSummary,
-  type ReactiveTraceSummary,
 } from '../../../src/sleep-cycle/reactive-cycle.ts';
-import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
 
 describe('FailureClusterDetector', () => {
   test('disabled by default → observe returns null', () => {

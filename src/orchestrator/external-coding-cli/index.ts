@@ -28,39 +28,28 @@
  * Full taxonomy: `docs/foundation/agent-vocabulary.md`.
  * Branded ID type: `CliDelegateProviderId` from `src/core/agent-vocabulary.ts`.
  */
-export * from './types.ts';
+
 export {
-  CodingCliStateMachine,
-  StateMachineError,
-  type TransitionRecord,
-} from './external-coding-cli-state-machine.ts';
-export {
-  parseFinalResult,
-  parseFinalResultWithDiagnosis,
-  findResultBlocks,
-  type ParseFinalResultOptions,
-  type ParseFinalResultDiagnosis,
-} from './external-coding-cli-result-parser.ts';
-export {
-  TranscriptReader,
-  TranscriptAccessError,
-  type TranscriptReaderOptions,
-} from './external-coding-cli-transcript-reader.ts';
-export {
-  HookBridge,
-  HookSink,
-  synthWrapperEvent,
-  type HookBridgeReport,
-  type WrapperEventInput,
-} from './external-coding-cli-hook-bridge.ts';
-export {
-  CodingCliApprovalBridge,
   type ApprovalBridgeContext,
   type ApprovalBridgeOptions,
   type ApprovalResolution,
+  CodingCliApprovalBridge,
   type PolicyDecision,
   type PolicyEvaluation,
 } from './external-coding-cli-approval-bridge.ts';
+export {
+  type CodingCliSessionStore,
+  type ControllerOptions,
+  ExternalCodingCliController,
+  type RouteDecision,
+} from './external-coding-cli-controller.ts';
+export {
+  HookBridge,
+  type HookBridgeReport,
+  HookSink,
+  synthWrapperEvent,
+  type WrapperEventInput,
+} from './external-coding-cli-hook-bridge.ts';
 export {
   PipeProcess,
   type PipeProcessEvents,
@@ -68,9 +57,16 @@ export {
   type PipeProcessOptions,
 } from './external-coding-cli-pty-adapter.ts';
 export {
+  findResultBlocks,
+  type ParseFinalResultDiagnosis,
+  type ParseFinalResultOptions,
+  parseFinalResult,
+  parseFinalResultWithDiagnosis,
+} from './external-coding-cli-result-parser.ts';
+export {
   CodingCliRunner,
-  InteractiveSessionHandle,
   type HeadlessRunResult,
+  InteractiveSessionHandle,
   type RunnerEvents,
 } from './external-coding-cli-runner.ts';
 export {
@@ -79,29 +75,27 @@ export {
   type SessionTimings,
 } from './external-coding-cli-session.ts';
 export {
+  CodingCliStateMachine,
+  StateMachineError,
+  type TransitionRecord,
+} from './external-coding-cli-state-machine.ts';
+export {
+  TranscriptAccessError,
+  TranscriptReader,
+  type TranscriptReaderOptions,
+} from './external-coding-cli-transcript-reader.ts';
+export {
   CodingCliVerifier,
   type VerifierOptions,
 } from './external-coding-cli-verifier.ts';
 export {
-  ExternalCodingCliController,
-  type CodingCliSessionStore,
-  type ControllerOptions,
-  type RouteDecision,
-} from './external-coding-cli-controller.ts';
-export {
+  type CodingCliWorkflowOutcome,
+  type CodingCliWorkflowStep,
   CodingCliWorkflowStrategy,
   EXTERNAL_CODING_CLI_METADATA,
   EXTERNAL_CODING_CLI_STRATEGY,
   registerCodingCliStrategy,
-  type CodingCliWorkflowOutcome,
-  type CodingCliWorkflowStep,
 } from './external-coding-cli-workflow-strategy.ts';
-export {
-  ProviderDetectionRegistry,
-  probeBinary,
-  whichBinary,
-  type DetectionRecord,
-} from './providers/provider-detection.ts';
 export {
   ClaudeCodeAdapter,
   type ClaudeCodeAdapterOptions,
@@ -110,3 +104,10 @@ export {
   GitHubCopilotAdapter,
   type GitHubCopilotAdapterOptions,
 } from './providers/github-copilot-adapter.ts';
+export {
+  type DetectionRecord,
+  ProviderDetectionRegistry,
+  probeBinary,
+  whichBinary,
+} from './providers/provider-detection.ts';
+export * from './types.ts';

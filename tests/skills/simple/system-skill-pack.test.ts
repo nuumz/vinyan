@@ -16,7 +16,7 @@
  * back into domain territory or breaks the matcher's keyword density.
  */
 import { describe, expect, test } from 'bun:test';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { locateBundledSkillsDir, RETIRED_STARTER_NAMES, SYSTEM_SKILL_NAMES } from '../../../src/cli/skills-simple.ts';
@@ -128,20 +128,38 @@ describe('bundled system-skill pack — matcher selection', () => {
   // the matcher exposes to its inputs, and goals that rely on stemming would
   // be testing a behaviour the matcher does not promise.
   const expectations: ReadonlyArray<{ goal: string; expectTop: string }> = [
-    { goal: 'classify the intent of this request and decide whether to clarify route or answer', expectTop: 'workflow-intake' },
+    {
+      goal: 'classify the intent of this request and decide whether to clarify route or answer',
+      expectTop: 'workflow-intake',
+    },
     { goal: 'break this complex task into ordered subgoals with dependencies', expectTop: 'task-decomposition' },
     { goal: 'who should handle this — which persona should I dispatch to?', expectTop: 'persona-dispatch' },
     { goal: 'do we have the capability and skills required for this workflow?', expectTop: 'capability-mapping' },
     { goal: 'investigate the source of truth and gather evidence before acting', expectTop: 'evidence-gathering' },
-    { goal: 'produce a plan with objective, assumptions, affected surfaces, verification', expectTop: 'planning-contract' },
+    {
+      goal: 'produce a plan with objective, assumptions, affected surfaces, verification',
+      expectTop: 'planning-contract',
+    },
     { goal: 'decide the verification tier for this change', expectTop: 'verification-strategy' },
     { goal: 'frame review output by severity and end with a verdict', expectTop: 'reviewer-brief' },
-    { goal: 'recover from failed tool calls — diagnose choose alternate path avoid retry loops', expectTop: 'recovery-replan' },
+    {
+      goal: 'recover from failed tool calls — diagnose choose alternate path avoid retry loops',
+      expectTop: 'recovery-replan',
+    },
     { goal: 'shape the final output to match the user intent and artifact', expectTop: 'output-contract' },
-    { goal: 'decide whether a task produced reusable knowledge worth recording in memory', expectTop: 'learning-capture' },
-    { goal: 'enforce governance guardrails — generator verifier separation, deterministic routing', expectTop: 'governance-guardrails' },
+    {
+      goal: 'decide whether a task produced reusable knowledge worth recording in memory',
+      expectTop: 'learning-capture',
+    },
+    {
+      goal: 'enforce governance guardrails — generator verifier separation, deterministic routing',
+      expectTop: 'governance-guardrails',
+    },
     { goal: 'choose budget and scope proportional to the risk of this change', expectTop: 'budget-and-scope' },
-    { goal: 'coordinate multi-persona collaboration with a shared blackboard and synthesis', expectTop: 'collaboration-room' },
+    {
+      goal: 'coordinate multi-persona collaboration with a shared blackboard and synthesis',
+      expectTop: 'collaboration-room',
+    },
   ];
 
   for (const { goal, expectTop } of expectations) {
@@ -166,10 +184,7 @@ describe('bundled system-skill pack — matcher selection', () => {
     // The prompt-section assembler renders one bullet per loaded skill. Bound
     // the descriptions cumulatively so a future contributor cannot bloat the
     // eager section by writing a 1 KB description.
-    const bulletSize = pool.reduce(
-      (acc, s) => acc + `- ${s.name}: ${s.description}\n`.length,
-      0,
-    );
+    const bulletSize = pool.reduce((acc, s) => acc + `- ${s.name}: ${s.description}\n`.length, 0);
     expect(bulletSize).toBeLessThan(4096);
   });
 });

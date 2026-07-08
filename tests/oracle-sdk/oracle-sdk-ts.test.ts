@@ -6,13 +6,13 @@
 
 import { describe, expect, it } from 'bun:test';
 import {
-  HypothesisTupleSchema,
-  OracleVerdictSchema,
-  EvidenceSchema,
-  QualityScoreSchema,
   buildVerdict,
-  testOracle,
+  EvidenceSchema,
+  HypothesisTupleSchema,
   type OracleTestFixture,
+  OracleVerdictSchema,
+  QualityScoreSchema,
+  testOracle,
 } from '../../packages/oracle-sdk-ts/src/index.ts';
 
 // ── HypothesisTupleSchema ─────────────────────────────────────────────

@@ -8,8 +8,12 @@
  * - code-reasoning: code analysis without mutations
  */
 import { describe, expect, test } from 'bun:test';
-import { classifyTaskDomain, classifyTaskIntent, assessToolRequirement } from '../../src/orchestrator/understanding/task-understanding.ts';
 import type { TaskDomain, TaskIntent, TaskType, TaskUnderstanding } from '../../src/orchestrator/types.ts';
+import {
+  assessToolRequirement,
+  classifyTaskDomain,
+  classifyTaskIntent,
+} from '../../src/orchestrator/understanding/task-understanding.ts';
 
 function makeUnderstanding(overrides: Partial<TaskUnderstanding> = {}): TaskUnderstanding {
   return {
@@ -179,7 +183,8 @@ describe('short generic goals → general-reasoning', () => {
 describe('general reasoning fallback', () => {
   test('long ambiguous goal without code/non-code keywords → general-reasoning', () => {
     const understanding = makeUnderstanding({
-      rawGoal: 'can you help me understand the general architecture of this system and how it processes incoming requests through the pipeline',
+      rawGoal:
+        'can you help me understand the general architecture of this system and how it processes incoming requests through the pipeline',
       expectsMutation: false,
       actionCategory: 'analysis',
     });
@@ -266,13 +271,7 @@ describe('classifyTaskIntent — converse intent', () => {
 });
 
 describe('classifyTaskIntent — meta questions → inquire', () => {
-  const metaQuestions = [
-    'คุณคือใคร',
-    'คุณทำอะไรได้บ้าง',
-    'who are you',
-    'what can you do',
-    'your capabilities',
-  ];
+  const metaQuestions = ['คุณคือใคร', 'คุณทำอะไรได้บ้าง', 'who are you', 'what can you do', 'your capabilities'];
 
   for (const goal of metaQuestions) {
     test(`"${goal}" → inquire (meta)`, () => {

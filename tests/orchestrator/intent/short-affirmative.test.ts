@@ -36,15 +36,11 @@ function assistantTurn(seq: number, text: string): Turn {
   };
 }
 
-const PROMISE_TEXT =
-  'รับทราบครับ ผมจะส่งต่อให้ novelist เขียนนิทานก่อนนอนที่แสนอบอุ่นให้ทันทีครับ';
+const PROMISE_TEXT = 'รับทราบครับ ผมจะส่งต่อให้ novelist เขียนนิทานก่อนนอนที่แสนอบอุ่นให้ทันทีครับ';
 
 describe('detectShortAffirmativeContinuation', () => {
   it('matches the bedtime-story bug case end-to-end', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'ช่วยเขียนนิยายก่อนนอน สำหรับกล่อมลูกนอนให้สัก2บท'),
-      assistantTurn(1, PROMISE_TEXT),
-    ];
+    const turns: Turn[] = [userTurn(0, 'ช่วยเขียนนิยายก่อนนอน สำหรับกล่อมลูกนอนให้สัก2บท'), assistantTurn(1, PROMISE_TEXT)];
     const out = detectShortAffirmativeContinuation({ goal: 'จัดการให้เลย', turns });
     expect(out.matched).toBe(true);
     expect(out.reconstructedWorkflowPrompt).toContain('นิยายก่อนนอน');
@@ -63,10 +59,7 @@ describe('detectShortAffirmativeContinuation', () => {
   });
 
   it('does NOT match when the affirmative carries extra context', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'write a story'),
-      assistantTurn(1, 'I will forward to novelist for a story.'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'write a story'), assistantTurn(1, 'I will forward to novelist for a story.')];
     const out = detectShortAffirmativeContinuation({
       goal: 'ok let me think about it more',
       turns,
@@ -75,10 +68,7 @@ describe('detectShortAffirmativeContinuation', () => {
   });
 
   it('does NOT match when no prior assistant promise exists', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'hi'),
-      assistantTurn(1, 'Hello! How can I help you today?'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'hi'), assistantTurn(1, 'Hello! How can I help you today?')];
     const out = detectShortAffirmativeContinuation({ goal: 'go', turns });
     expect(out.matched).toBe(false);
   });
@@ -100,13 +90,8 @@ describe('detectShortAffirmativeContinuation', () => {
   });
 
   it('does NOT match when the prior assistant turn lacks deliverable noun', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'how are you'),
-      assistantTurn(1, "I'll forward to my friend later."),
-    ];
-    expect(
-      detectShortAffirmativeContinuation({ goal: 'do it', turns }).matched,
-    ).toBe(false);
+    const turns: Turn[] = [userTurn(0, 'how are you'), assistantTurn(1, "I'll forward to my friend later.")];
+    expect(detectShortAffirmativeContinuation({ goal: 'do it', turns }).matched).toBe(false);
   });
 });
 
@@ -137,20 +122,14 @@ describe('detectRetryContinuation', () => {
   });
 
   it('matches "อีกครั้ง" and "try again" too', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'run npm test'),
-      assistantTurn(1, 'Error: tool timed out after 30s.'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'run npm test'), assistantTurn(1, 'Error: tool timed out after 30s.')];
     expect(detectRetryContinuation({ goal: 'อีกครั้ง', turns }).matched).toBe(true);
     expect(detectRetryContinuation({ goal: 'try again', turns }).matched).toBe(true);
     expect(detectRetryContinuation({ goal: 'do it again', turns }).matched).toBe(true);
   });
 
   it('does NOT match when the prior assistant turn looks successful', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'what is 2+2'),
-      assistantTurn(1, '2 + 2 = 4'),
-    ];
+    const turns: Turn[] = [userTurn(0, 'what is 2+2'), assistantTurn(1, '2 + 2 = 4')];
     expect(detectRetryContinuation({ goal: 'retry', turns }).matched).toBe(false);
   });
 
@@ -160,13 +139,8 @@ describe('detectRetryContinuation', () => {
   });
 
   it('does NOT match when the user adds context to retry', () => {
-    const turns: Turn[] = [
-      userTurn(0, 'list files in /tmp'),
-      assistantTurn(1, 'Task timed out after 151s.'),
-    ];
-    expect(
-      detectRetryContinuation({ goal: 'retry but use a different model', turns }).matched,
-    ).toBe(false);
+    const turns: Turn[] = [userTurn(0, 'list files in /tmp'), assistantTurn(1, 'Task timed out after 151s.')];
+    expect(detectRetryContinuation({ goal: 'retry but use a different model', turns }).matched).toBe(false);
   });
 
   it('skips intermediate retry messages and replays the original request', () => {

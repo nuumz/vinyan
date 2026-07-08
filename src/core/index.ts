@@ -1,8 +1,8 @@
 export { type BusEventName, createBus, EventBus, type VinyanBus, type VinyanBusEvents } from './bus.ts';
 export {
-  clampConfidenceToTier,
   CONFIDENCE_TIERS,
   type ConfidenceTier,
+  clampConfidenceToTier,
   isConfidenceTier,
   isStrongerThan,
   rankOf,

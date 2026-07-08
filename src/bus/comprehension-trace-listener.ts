@@ -17,8 +17,8 @@
  */
 
 import type { VinyanBus } from '../core/bus.ts';
-import type { TraceCollector } from '../orchestrator/core-loop.ts';
 import type { ComprehensionCalibrator } from '../orchestrator/comprehension/learning/calibrator.ts';
+import type { TraceCollector } from '../orchestrator/core-loop.ts';
 
 /** Brier threshold above which an engine is flagged miscalibrated. */
 export const MISCALIBRATION_BRIER_THRESHOLD = 0.25;
@@ -133,7 +133,9 @@ export function attachComprehensionTraceListener(
           failureReason: `Brier ${b.brier.toFixed(3)} > ${MISCALIBRATION_BRIER_THRESHOLD}`,
           affectedFiles: [],
         })
-        .catch(() => { /* best-effort */ });
+        .catch(() => {
+          /* best-effort */
+        });
     } else if (!nowAbove && wasAbove) {
       // Above → below. Engine recovered.
       bus.emit('comprehension:recalibrated', {
@@ -162,7 +164,9 @@ export function attachComprehensionTraceListener(
           outcome: 'success',
           affectedFiles: [],
         })
-        .catch(() => { /* best-effort */ });
+        .catch(() => {
+          /* best-effort */
+        });
     }
     // Same-state branches fall through silently.
   });
@@ -192,7 +196,9 @@ export function attachComprehensionTraceListener(
         failureReason: `divergence delta=${payload.delta.toFixed(3)}`,
         affectedFiles: [],
       })
-      .catch(() => { /* best-effort */ });
+      .catch(() => {
+        /* best-effort */
+      });
   });
 
   const offAdjusted = bus.on('comprehension:ceiling_adjusted', (payload) => {
@@ -219,7 +225,9 @@ export function attachComprehensionTraceListener(
         outcome: 'success',
         affectedFiles: [],
       })
-      .catch(() => { /* best-effort */ });
+      .catch(() => {
+        /* best-effort */
+      });
   });
 
   return {

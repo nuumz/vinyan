@@ -55,10 +55,10 @@
  *   §12 Squashed post-041:     migrations 003-033 — see `./_squashed/`
  */
 import type { Database } from 'bun:sqlite';
-import type { Migration } from './migration-runner.ts';
 import { AGENT_PROPOSAL_SCHEMA_SQL } from '../agent-proposal-schema.ts';
 import { PERSONA_OVERCLAIM_SCHEMA_SQL } from '../persona-overclaim-schema.ts';
 import { SKILL_OUTCOME_SCHEMA_SQL } from '../skill-outcome-schema.ts';
+import type { Migration } from './migration-runner.ts';
 
 export const EMBEDDING_DIMENSION = 1024;
 
@@ -720,9 +720,7 @@ export const migration001: Migration = {
       )
       .get();
     if (!squashedAlreadyApplied) {
-    // §12.003 memory_records
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS memory_records (
               id              TEXT PRIMARY KEY,
               profile         TEXT NOT NULL DEFAULT 'default',
@@ -775,71 +773,66 @@ export const migration001: Migration = {
                WHERE id = old.id;
             END;
           `);
-        
-    }
 
-    // §12.004 skill_artifact
-    (() => {
-      interface ColumnSpec {
-        name: string;
-        /** DDL fragment with CHECK clause (preferred). */
-        ddlWithCheck: string;
-        /** Fallback DDL with no CHECK — used if the runtime rejects the CHECK form. */
-        ddlPlain: string;
-      }
-
-      const CONFIDENCE_TIER_CHECK = "CHECK(confidence_tier IN ('deterministic','heuristic','probabilistic','speculative'))";
-
-      const COLUMNS: ColumnSpec[] = [
-        {
-          name: 'confidence_tier',
-          ddlWithCheck: `TEXT NOT NULL DEFAULT 'probabilistic' ${CONFIDENCE_TIER_CHECK}`,
-          ddlPlain: "TEXT NOT NULL DEFAULT 'probabilistic'",
-        },
-        { name: 'skill_md_path', ddlWithCheck: 'TEXT', ddlPlain: 'TEXT' },
-        { name: 'content_hash', ddlWithCheck: 'TEXT', ddlPlain: 'TEXT' },
-        { name: 'expected_error_reduction', ddlWithCheck: 'REAL', ddlPlain: 'REAL' },
-        { name: 'backtest_id', ddlWithCheck: 'TEXT', ddlPlain: 'TEXT' },
-        { name: 'quarantined_at', ddlWithCheck: 'INTEGER', ddlPlain: 'INTEGER' },
-      ];
-
-      /** Fetch existing column names from `cached_skills`. */
-      function existingColumnNames(db: Database): Set<string> {
-        const rows = db.query('PRAGMA table_info(cached_skills)').all() as Array<{ name: string }>;
-        return new Set(rows.map((r) => r.name));
-      }
-
-      /** Try DDL with CHECK; fall back to plain DDL if runtime rejects the CHECK. */
-      function addColumn(db: Database, column: ColumnSpec): void {
-        try {
-          db.exec(`ALTER TABLE cached_skills ADD COLUMN ${column.name} ${column.ddlWithCheck}`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (/check|constraint|syntax/i.test(msg) && column.ddlWithCheck !== column.ddlPlain) {
-            // Older SQLite builds disallow CHECK in ALTER TABLE ADD COLUMN.
-            // The application layer (Zod + SkillStore) enforces the invariant.
-            db.exec(`ALTER TABLE cached_skills ADD COLUMN ${column.name} ${column.ddlPlain}`);
-            return;
-          }
-          throw err;
+      // §12.004 skill_artifact
+      (() => {
+        interface ColumnSpec {
+          name: string;
+          /** DDL fragment with CHECK clause (preferred). */
+          ddlWithCheck: string;
+          /** Fallback DDL with no CHECK — used if the runtime rejects the CHECK form. */
+          ddlPlain: string;
         }
-      }
-          const existing = existingColumnNames(db);
-          for (const column of COLUMNS) {
-            if (!existing.has(column.name)) {
-              addColumn(db, column);
-            }
-          }
-          db.exec(
-            'CREATE INDEX IF NOT EXISTS idx_cached_skills_content_hash ON cached_skills(content_hash) WHERE content_hash IS NOT NULL',
-          );
-          db.exec('CREATE INDEX IF NOT EXISTS idx_cached_skills_tier ON cached_skills(confidence_tier)');
-        
-    })();
 
-    // §12.005 trajectory_export
-    {
-          db.exec(`
+        const ConfidenceTierCheck =
+          "CHECK(confidence_tier IN ('deterministic','heuristic','probabilistic','speculative'))";
+
+        const Columns: ColumnSpec[] = [
+          {
+            name: 'confidence_tier',
+            ddlWithCheck: `TEXT NOT NULL DEFAULT 'probabilistic' ${ConfidenceTierCheck}`,
+            ddlPlain: "TEXT NOT NULL DEFAULT 'probabilistic'",
+          },
+          { name: 'skill_md_path', ddlWithCheck: 'TEXT', ddlPlain: 'TEXT' },
+          { name: 'content_hash', ddlWithCheck: 'TEXT', ddlPlain: 'TEXT' },
+          { name: 'expected_error_reduction', ddlWithCheck: 'REAL', ddlPlain: 'REAL' },
+          { name: 'backtest_id', ddlWithCheck: 'TEXT', ddlPlain: 'TEXT' },
+          { name: 'quarantined_at', ddlWithCheck: 'INTEGER', ddlPlain: 'INTEGER' },
+        ];
+
+        /** Fetch existing column names from `cached_skills`. */
+        function existingColumnNames(db: Database): Set<string> {
+          const rows = db.query('PRAGMA table_info(cached_skills)').all() as Array<{ name: string }>;
+          return new Set(rows.map((r) => r.name));
+        }
+
+        /** Try DDL with CHECK; fall back to plain DDL if runtime rejects the CHECK. */
+        function addColumn(db: Database, column: ColumnSpec): void {
+          try {
+            db.exec(`ALTER TABLE cached_skills ADD COLUMN ${column.name} ${column.ddlWithCheck}`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (/check|constraint|syntax/i.test(msg) && column.ddlWithCheck !== column.ddlPlain) {
+              // Older SQLite builds disallow CHECK in ALTER TABLE ADD COLUMN.
+              // The application layer (Zod + SkillStore) enforces the invariant.
+              db.exec(`ALTER TABLE cached_skills ADD COLUMN ${column.name} ${column.ddlPlain}`);
+              return;
+            }
+            throw err;
+          }
+        }
+        const existing = existingColumnNames(db);
+        for (const column of Columns) {
+          if (!existing.has(column.name)) {
+            addColumn(db, column);
+          }
+        }
+        db.exec(
+          'CREATE INDEX IF NOT EXISTS idx_cached_skills_content_hash ON cached_skills(content_hash) WHERE content_hash IS NOT NULL',
+        );
+        db.exec('CREATE INDEX IF NOT EXISTS idx_cached_skills_tier ON cached_skills(confidence_tier)');
+      })();
+      db.exec(`
             CREATE TABLE IF NOT EXISTS trajectory_exports (
               dataset_id             TEXT PRIMARY KEY,
               profile                TEXT NOT NULL DEFAULT 'default',
@@ -856,12 +849,7 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_trajexport_profile_created
               ON trajectory_exports(profile, created_at);
           `);
-        
-    }
-
-    // §12.006 gateway_tables
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS gateway_identity (
               gateway_user_id    TEXT PRIMARY KEY,
               profile            TEXT NOT NULL DEFAULT 'default',
@@ -904,12 +892,7 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_gateway_schedules_profile_next
               ON gateway_schedules(profile, next_fire_at);
           `);
-        
-    }
-
-    // §12.007 plugin_audit
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS plugin_audit (
               audit_id       INTEGER PRIMARY KEY AUTOINCREMENT,
               profile        TEXT NOT NULL DEFAULT 'default',
@@ -933,12 +916,7 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_plugin_audit_created
               ON plugin_audit(created_at);
           `);
-        
-    }
-
-    // §12.008 skill_trust_ledger
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS skill_trust_ledger (
               ledger_id        INTEGER PRIMARY KEY AUTOINCREMENT,
               profile          TEXT NOT NULL DEFAULT 'default',
@@ -959,12 +937,7 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_skill_trust_ledger_created
               ON skill_trust_ledger(created_at);
           `);
-        
-    }
-
-    // §12.009 user_md_dialectic
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS user_md_sections (
               slug               TEXT NOT NULL,
               profile            TEXT NOT NULL DEFAULT 'default',
@@ -993,12 +966,7 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_ume_profile_slug_ts
               ON user_md_prediction_errors(profile, slug, ts);
           `);
-        
-    }
-
-    // §12.010 commonsense_rules
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS commonsense_rules (
               id                       TEXT PRIMARY KEY,
               microtheory_lang         TEXT NOT NULL,
@@ -1031,83 +999,79 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_commonsense_source
               ON commonsense_rules(source);
           `);
-        
-    }
 
-    // §12.011 commonsense_rule_telemetry
-    (() => {
-      interface ColumnSpec {
-        name: string;
-        ddl: string;
-      }
+      // §12.011 commonsense_rule_telemetry
+      (() => {
+        interface ColumnSpec {
+          name: string;
+          ddl: string;
+        }
 
-      const COLUMNS: ColumnSpec[] = [
-        { name: 'firing_count', ddl: 'INTEGER NOT NULL DEFAULT 0' },
-        { name: 'override_count', ddl: 'INTEGER NOT NULL DEFAULT 0' },
-        { name: 'last_fired_at', ddl: 'INTEGER' },
-        { name: 'retired_at', ddl: 'INTEGER' },
-      ];
+        const Columns: ColumnSpec[] = [
+          { name: 'firing_count', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+          { name: 'override_count', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+          { name: 'last_fired_at', ddl: 'INTEGER' },
+          { name: 'retired_at', ddl: 'INTEGER' },
+        ];
 
-      function existingColumnNames(db: Database): Set<string> {
-        const rows = db.query('PRAGMA table_info(commonsense_rules)').all() as Array<{ name: string }>;
-        return new Set(rows.map((r) => r.name));
-      }
-          const existing = existingColumnNames(db);
-          for (const column of COLUMNS) {
-            if (existing.has(column.name)) continue;
-            db.exec(`ALTER TABLE commonsense_rules ADD COLUMN ${column.name} ${column.ddl}`);
-          }
+        function existingColumnNames(db: Database): Set<string> {
+          const rows = db.query('PRAGMA table_info(commonsense_rules)').all() as Array<{ name: string }>;
+          return new Set(rows.map((r) => r.name));
+        }
+        const existing = existingColumnNames(db);
+        for (const column of Columns) {
+          if (existing.has(column.name)) continue;
+          db.exec(`ALTER TABLE commonsense_rules ADD COLUMN ${column.name} ${column.ddl}`);
+        }
 
-          db.exec(`
+        db.exec(`
             CREATE INDEX IF NOT EXISTS idx_commonsense_retired_at
               ON commonsense_rules(retired_at);
             CREATE INDEX IF NOT EXISTS idx_commonsense_firing_count
               ON commonsense_rules(firing_count DESC);
           `);
-        
-    })();
+      })();
 
-    // §12.012 capability_trace_metadata
-    (() => {
-      interface ColumnSpec {
-        name: string;
-        ddl: string;
-      }
+      // §12.012 capability_trace_metadata
+      (() => {
+        interface ColumnSpec {
+          name: string;
+          ddl: string;
+        }
 
-      const COLUMNS: ColumnSpec[] = [
-        { name: 'capability_requirements', ddl: 'TEXT' },
-        { name: 'capability_analysis', ddl: 'TEXT' },
-        { name: 'synthetic_agent_id', ddl: 'TEXT' },
-        { name: 'knowledge_used', ddl: 'TEXT' },
-      ];
+        const Columns: ColumnSpec[] = [
+          { name: 'capability_requirements', ddl: 'TEXT' },
+          { name: 'capability_analysis', ddl: 'TEXT' },
+          { name: 'synthetic_agent_id', ddl: 'TEXT' },
+          { name: 'knowledge_used', ddl: 'TEXT' },
+        ];
 
-      function existingColumnNames(db: Database): Set<string> {
-        const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
-        return new Set(rows.map((r) => r.name));
-      }
-          const existing = existingColumnNames(db);
-          for (const column of COLUMNS) {
-            if (existing.has(column.name)) continue;
-            db.exec(`ALTER TABLE execution_traces ADD COLUMN ${column.name} ${column.ddl}`);
-          }
-        
-    })();
+        function existingColumnNames(db: Database): Set<string> {
+          const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+          return new Set(rows.map((r) => r.name));
+        }
+        const existing = existingColumnNames(db);
+        for (const column of Columns) {
+          if (existing.has(column.name)) continue;
+          db.exec(`ALTER TABLE execution_traces ADD COLUMN ${column.name} ${column.ddl}`);
+        }
+      })();
 
-    // §12.013 rule_promote_capability_action
-    (() => {
-      const ACTION_CHECK =
-        "'escalate','require-oracle','prefer-model','adjust-threshold','assign-worker','promote-capability'";
+      // §12.013 rule_promote_capability_action
+      (() => {
+        const ActionCheck =
+          "'escalate','require-oracle','prefer-model','adjust-threshold','assign-worker','promote-capability'";
 
-      function currentTableSql(db: Database): string | null {
-        const row = db
-          .query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'evolutionary_rules'")
-          .get() as { sql: string } | null;
-        return row?.sql ?? null;
-      }
-          const sql = currentTableSql(db);
-          if (!sql || sql.includes('promote-capability')) return;
+        function currentTableSql(db: Database): string | null {
+          const row = db
+            .query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'evolutionary_rules'")
+            .get() as { sql: string } | null;
+          return row?.sql ?? null;
+        }
+        const sql = currentTableSql(db);
+        if (!sql || sql.includes('promote-capability')) return;
 
-          db.exec(`
+        db.exec(`
             DROP INDEX IF EXISTS idx_rules_status;
             DROP INDEX IF EXISTS idx_rules_action;
 
@@ -1117,7 +1081,7 @@ export const migration001: Migration = {
               id            TEXT PRIMARY KEY,
               source        TEXT NOT NULL CHECK(source IN ('sleep-cycle','manual')),
               condition     TEXT NOT NULL,
-              action        TEXT NOT NULL CHECK(action IN (${ACTION_CHECK})),
+              action        TEXT NOT NULL CHECK(action IN (${ActionCheck})),
               parameters    TEXT NOT NULL,
               status        TEXT NOT NULL CHECK(status IN ('probation','active','retired')),
               created_at    INTEGER NOT NULL,
@@ -1141,77 +1105,69 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_rules_status ON evolutionary_rules(status);
             CREATE INDEX IF NOT EXISTS idx_rules_action ON evolutionary_rules(action);
           `);
-        
-    })();
+      })();
 
-    // §12.014 session_metadata
-    (() => {
-      interface PragmaColumn {
-        name: string;
-      }
+      // §12.014 session_metadata
+      (() => {
+        interface PragmaColumn {
+          name: string;
+        }
 
-      function hasColumn(db: Database, table: string, column: string): boolean {
-        const rows = db.query(`PRAGMA table_info(${table})`).all() as PragmaColumn[];
-        return rows.some((r) => r.name === column);
-      }
-          if (!hasColumn(db, 'session_store', 'title')) {
-            db.exec('ALTER TABLE session_store ADD COLUMN title TEXT');
-          }
-          if (!hasColumn(db, 'session_store', 'description')) {
-            db.exec('ALTER TABLE session_store ADD COLUMN description TEXT');
-          }
-          if (!hasColumn(db, 'session_store', 'archived_at')) {
-            db.exec('ALTER TABLE session_store ADD COLUMN archived_at INTEGER');
-          }
-          if (!hasColumn(db, 'session_store', 'deleted_at')) {
-            db.exec('ALTER TABLE session_store ADD COLUMN deleted_at INTEGER');
-          }
+        function hasColumn(db: Database, table: string, column: string): boolean {
+          const rows = db.query(`PRAGMA table_info(${table})`).all() as PragmaColumn[];
+          return rows.some((r) => r.name === column);
+        }
+        if (!hasColumn(db, 'session_store', 'title')) {
+          db.exec('ALTER TABLE session_store ADD COLUMN title TEXT');
+        }
+        if (!hasColumn(db, 'session_store', 'description')) {
+          db.exec('ALTER TABLE session_store ADD COLUMN description TEXT');
+        }
+        if (!hasColumn(db, 'session_store', 'archived_at')) {
+          db.exec('ALTER TABLE session_store ADD COLUMN archived_at INTEGER');
+        }
+        if (!hasColumn(db, 'session_store', 'deleted_at')) {
+          db.exec('ALTER TABLE session_store ADD COLUMN deleted_at INTEGER');
+        }
 
-          db.exec(`
+        db.exec(`
             CREATE INDEX IF NOT EXISTS idx_ss_archived_at ON session_store(archived_at);
             CREATE INDEX IF NOT EXISTS idx_ss_deleted_at ON session_store(deleted_at);
             CREATE INDEX IF NOT EXISTS idx_ss_updated_at ON session_store(updated_at);
           `);
-        
-    })();
+      })();
 
-    // §12.015 capability_route_audit
-    (() => {
-      interface ColumnSpec {
-        name: string;
-        ddl: string;
-      }
+      // §12.015 capability_route_audit
+      (() => {
+        interface ColumnSpec {
+          name: string;
+          ddl: string;
+        }
 
-      const COLUMNS: ColumnSpec[] = [
-        { name: 'agent_selection_reason', ddl: 'TEXT' },
-        { name: 'selected_capability_profile_id', ddl: 'TEXT' },
-        { name: 'selected_capability_profile_source', ddl: 'TEXT' },
-        { name: 'selected_capability_profile_trust_tier', ddl: 'TEXT' },
-        { name: 'capability_fit_score', ddl: 'REAL' },
-        { name: 'unmet_capability_ids', ddl: 'TEXT' },
-      ];
+        const Columns: ColumnSpec[] = [
+          { name: 'agent_selection_reason', ddl: 'TEXT' },
+          { name: 'selected_capability_profile_id', ddl: 'TEXT' },
+          { name: 'selected_capability_profile_source', ddl: 'TEXT' },
+          { name: 'selected_capability_profile_trust_tier', ddl: 'TEXT' },
+          { name: 'capability_fit_score', ddl: 'REAL' },
+          { name: 'unmet_capability_ids', ddl: 'TEXT' },
+        ];
 
-      function existingColumnNames(db: Database): Set<string> {
-        const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
-        return new Set(rows.map((row) => row.name));
-      }
-          const existing = existingColumnNames(db);
-          for (const column of COLUMNS) {
-            if (existing.has(column.name)) continue;
-            db.exec(`ALTER TABLE execution_traces ADD COLUMN ${column.name} ${column.ddl}`);
-          }
-        
-    })();
+        function existingColumnNames(db: Database): Set<string> {
+          const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+          return new Set(rows.map((row) => row.name));
+        }
+        const existing = existingColumnNames(db);
+        for (const column of Columns) {
+          if (existing.has(column.name)) continue;
+          db.exec(`ALTER TABLE execution_traces ADD COLUMN ${column.name} ${column.ddl}`);
+        }
+      })();
+      db.exec(AGENT_PROPOSAL_SCHEMA_SQL);
 
-    // §12.016 agent_proposals
-    {
-          db.exec(AGENT_PROPOSAL_SCHEMA_SQL);
-        
-    }
-
-    // §12.017 task_events
-    (() => {
-      const TASK_EVENTS_SCHEMA_SQL = `
+      // §12.017 task_events
+      (() => {
+        const TaskEventsSchemaSql = `
       CREATE TABLE IF NOT EXISTS task_events (
         id           TEXT    PRIMARY KEY,
         task_id      TEXT    NOT NULL,
@@ -1228,84 +1184,70 @@ export const migration001: Migration = {
       CREATE INDEX IF NOT EXISTS idx_task_events_session_ts
         ON task_events (session_id, ts);
       `;
-          db.exec(TASK_EVENTS_SCHEMA_SQL);
-        
-    })();
+        db.exec(TaskEventsSchemaSql);
+      })();
+      db.exec(SKILL_OUTCOME_SCHEMA_SQL);
 
-    // §12.019 skill_outcomes
-    {
-          db.exec(SKILL_OUTCOME_SCHEMA_SQL);
-        
-    }
+      // §12.020 a8_governance_provenance
+      (() => {
+        interface ColumnSpec {
+          name: string;
+          ddl: string;
+        }
 
-    // §12.020 a8_governance_provenance
-    (() => {
-      interface ColumnSpec {
-        name: string;
-        ddl: string;
-      }
+        const Columns: ColumnSpec[] = [
+          { name: 'governance_provenance', ddl: 'TEXT' },
+          { name: 'routing_decision_id', ddl: 'TEXT' },
+          { name: 'policy_version', ddl: 'TEXT' },
+          { name: 'governance_actor', ddl: 'TEXT' },
+          { name: 'decision_timestamp', ddl: 'INTEGER' },
+          { name: 'evidence_observed_at', ddl: 'INTEGER' },
+        ];
 
-      const COLUMNS: ColumnSpec[] = [
-        { name: 'governance_provenance', ddl: 'TEXT' },
-        { name: 'routing_decision_id', ddl: 'TEXT' },
-        { name: 'policy_version', ddl: 'TEXT' },
-        { name: 'governance_actor', ddl: 'TEXT' },
-        { name: 'decision_timestamp', ddl: 'INTEGER' },
-        { name: 'evidence_observed_at', ddl: 'INTEGER' },
-      ];
+        function existingColumnNames(db: Database): Set<string> {
+          const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+          return new Set(rows.map((row) => row.name));
+        }
+        const existing = existingColumnNames(db);
+        for (const column of Columns) {
+          if (existing.has(column.name)) continue;
+          db.exec(`ALTER TABLE execution_traces ADD COLUMN ${column.name} ${column.ddl}`);
+        }
 
-      function existingColumnNames(db: Database): Set<string> {
-        const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
-        return new Set(rows.map((row) => row.name));
-      }
-          const existing = existingColumnNames(db);
-          for (const column of COLUMNS) {
-            if (existing.has(column.name)) continue;
-            db.exec(`ALTER TABLE execution_traces ADD COLUMN ${column.name} ${column.ddl}`);
-          }
+        db.exec('CREATE INDEX IF NOT EXISTS idx_et_routing_decision_id ON execution_traces(routing_decision_id)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_et_policy_version ON execution_traces(policy_version)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_et_governance_actor ON execution_traces(governance_actor)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_et_decision_timestamp ON execution_traces(decision_timestamp)');
+      })();
 
-          db.exec('CREATE INDEX IF NOT EXISTS idx_et_routing_decision_id ON execution_traces(routing_decision_id)');
-          db.exec('CREATE INDEX IF NOT EXISTS idx_et_policy_version ON execution_traces(policy_version)');
-          db.exec('CREATE INDEX IF NOT EXISTS idx_et_governance_actor ON execution_traces(governance_actor)');
-          db.exec('CREATE INDEX IF NOT EXISTS idx_et_decision_timestamp ON execution_traces(decision_timestamp)');
-        
-    })();
+      // §12.021 a10_goal_grounding
+      (() => {
+        function existingColumnNames(db: Database): Set<string> {
+          const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+          return new Set(rows.map((row) => row.name));
+        }
+        const existing = existingColumnNames(db);
+        if (!existing.has('goal_grounding')) {
+          db.exec('ALTER TABLE execution_traces ADD COLUMN goal_grounding TEXT');
+        }
+      })();
 
-    // §12.021 a10_goal_grounding
-    (() => {
-      function existingColumnNames(db: Database): Set<string> {
-        const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
-        return new Set(rows.map((row) => row.name));
-      }
-          const existing = existingColumnNames(db);
-          if (!existing.has('goal_grounding')) {
-            db.exec('ALTER TABLE execution_traces ADD COLUMN goal_grounding TEXT');
-          }
-        
-    })();
+      // §12.022 a5_oracle_independence
+      (() => {
+        function existingColumnNames(db: Database): Set<string> {
+          const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
+          return new Set(rows.map((row) => row.name));
+        }
+        const existing = existingColumnNames(db);
+        if (!existing.has('oracle_independence')) {
+          db.exec('ALTER TABLE execution_traces ADD COLUMN oracle_independence TEXT');
+        }
+      })();
+      db.exec(PERSONA_OVERCLAIM_SCHEMA_SQL);
 
-    // §12.022 a5_oracle_independence
-    (() => {
-      function existingColumnNames(db: Database): Set<string> {
-        const rows = db.query('PRAGMA table_info(execution_traces)').all() as Array<{ name: string }>;
-        return new Set(rows.map((row) => row.name));
-      }
-          const existing = existingColumnNames(db);
-          if (!existing.has('oracle_independence')) {
-            db.exec('ALTER TABLE execution_traces ADD COLUMN oracle_independence TEXT');
-          }
-        
-    })();
-
-    // §12.023 persona_overclaim
-    {
-          db.exec(PERSONA_OVERCLAIM_SCHEMA_SQL);
-        
-    }
-
-    // §12.024 coding_cli
-    (() => {
-      const CODING_CLI_SCHEMA_SQL = `
+      // §12.024 coding_cli
+      (() => {
+        const CodingCliSchemaSql = `
       CREATE TABLE IF NOT EXISTS coding_cli_sessions (
         id                      TEXT PRIMARY KEY,
         task_id                 TEXT NOT NULL,
@@ -1389,13 +1331,9 @@ export const migration001: Migration = {
       CREATE INDEX IF NOT EXISTS idx_coding_cli_decisions_session
         ON coding_cli_decisions (coding_cli_session_id, ts);
       `;
-          db.exec(CODING_CLI_SCHEMA_SQL);
-        
-    })();
-
-    // §12.026 memory_wiki
-    {
-          db.exec(`
+        db.exec(CodingCliSchemaSql);
+      })();
+      db.exec(`
             CREATE TABLE IF NOT EXISTS memory_wiki_sources (
               id            TEXT PRIMARY KEY,
               profile       TEXT NOT NULL DEFAULT 'default',
@@ -1524,12 +1462,7 @@ export const migration001: Migration = {
                WHERE id = old.id;
             END;
           `);
-        
-    }
-
-    // §12.027 task_archive_metadata
-    {
-          db.exec(`
+      db.exec(`
             ALTER TABLE session_tasks ADD COLUMN archived_at INTEGER;
             ALTER TABLE session_tasks ADD COLUMN updated_at INTEGER;
             UPDATE session_tasks SET updated_at = created_at WHERE updated_at IS NULL;
@@ -1540,12 +1473,7 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_st_task_id
               ON session_tasks(task_id);
           `);
-        
-    }
-
-    // §12.028 session_tasks_fts
-    {
-          db.exec(`
+      db.exec(`
             CREATE VIRTUAL TABLE IF NOT EXISTS session_tasks_fts USING fts5(
               task_id UNINDEXED,
               session_id UNINDEXED,
@@ -1605,12 +1533,7 @@ export const migration001: Migration = {
                WHERE task_id = old.task_id AND session_id = old.session_id;
             END;
           `);
-        
-    }
-
-    // §12.029 skill_proposals
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS skill_proposals (
               id                 TEXT PRIMARY KEY,
               profile            TEXT NOT NULL DEFAULT 'default',
@@ -1637,12 +1560,7 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_skill_proposals_name
               ON skill_proposals(profile, proposed_name);
           `);
-        
-    }
-
-    // §12.030 parameter_ledger
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS parameter_adaptations (
               id              INTEGER PRIMARY KEY AUTOINCREMENT,
               ts              INTEGER NOT NULL,
@@ -1658,12 +1576,7 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_param_ledger_owner
               ON parameter_adaptations(owner_module);
           `);
-        
-    }
-
-    // §12.031 skill_autogen_state
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS skill_autogen_state (
               signature_key       TEXT NOT NULL,
               profile             TEXT NOT NULL DEFAULT 'default',
@@ -1682,12 +1595,7 @@ export const migration001: Migration = {
             CREATE INDEX IF NOT EXISTS idx_skill_autogen_state_boot
               ON skill_autogen_state(boot_id);
           `);
-        
-    }
-
-    // §12.032 skill_proposal_revisions
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS skill_proposal_revisions (
               id                  INTEGER PRIMARY KEY AUTOINCREMENT,
               profile             TEXT NOT NULL DEFAULT 'default',
@@ -1726,12 +1634,7 @@ export const migration001: Migration = {
                WHERE r.profile = p.profile AND r.proposal_id = p.id
             );
           `);
-        
-    }
-
-    // §12.033 approval_ledger
-    {
-          db.exec(`
+      db.exec(`
             CREATE TABLE IF NOT EXISTS approval_ledger (
               id                 TEXT PRIMARY KEY,
               task_id            TEXT NOT NULL,
@@ -1764,9 +1667,6 @@ export const migration001: Migration = {
               ON approval_ledger(task_id, approval_key)
               WHERE status = 'pending';
           `);
-        
-    }
-
     }
 
     // §11 Semantic retrieval — conditional on sqlite-vec availability.
@@ -1775,9 +1675,7 @@ export const migration001: Migration = {
     //     falls back to recency-only and we leave the virtual table absent.
     let vecAvailable = false;
     try {
-      const row = db.query('SELECT vec_version() as version').get() as
-        | { version: string }
-        | undefined;
+      const row = db.query('SELECT vec_version() as version').get() as { version: string } | undefined;
       vecAvailable = !!row?.version;
     } catch {
       vecAvailable = false;

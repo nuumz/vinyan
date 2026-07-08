@@ -20,11 +20,7 @@ type SafeInitResult<T> = SafeInitSuccess<T> | SafeInitFailure;
  * Best-effort component initialization — returns the value or a structured failure.
  * Replaces silent `try { ... } catch {}` blocks with observable error surface.
  */
-export function safeInit<T>(
-  component: string,
-  fn: () => T,
-  bus?: VinyanBus,
-): SafeInitResult<T> {
+export function safeInit<T>(component: string, fn: () => T, bus?: VinyanBus): SafeInitResult<T> {
   try {
     return { ok: true, value: fn() };
   } catch (error) {

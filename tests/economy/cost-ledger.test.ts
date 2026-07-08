@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
-import { CostLedger, type CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
+import { CostLedger, type CostLedgerEntry } from '../../src/economy/cost-ledger.ts';
 
 function createLedger(): { ledger: CostLedger; db: Database } {
   const db = new Database(':memory:');

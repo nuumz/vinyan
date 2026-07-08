@@ -71,10 +71,10 @@ function plant(name: string, frontmatter: string, body = 'body content'): void {
 
 describe('skills new', () => {
   test('creates SKILL.md with name + description', async () => {
-    await runSkillsSimpleCommand(
-      ['new', 'my-skill', '--description=Test description', '--no-edit'],
-      { workspace, userSkillsDir: fakeHome },
-    );
+    await runSkillsSimpleCommand(['new', 'my-skill', '--description=Test description', '--no-edit'], {
+      workspace,
+      userSkillsDir: fakeHome,
+    });
     const path = join(workspace, '.vinyan', 'skills', 'my-skill', 'SKILL.md');
     expect(existsSync(path)).toBe(true);
     const content = readFileSync(path, 'utf-8');
@@ -143,7 +143,9 @@ describe('skills show', () => {
   });
 
   test('throws when skill missing', async () => {
-    await expect(runSkillsSimpleCommand(['show', 'ghost'], { workspace, userSkillsDir: fakeHome })).rejects.toThrow(/not found/);
+    await expect(runSkillsSimpleCommand(['show', 'ghost'], { workspace, userSkillsDir: fakeHome })).rejects.toThrow(
+      /not found/,
+    );
   });
 
   test('requires a name', async () => {
@@ -211,7 +213,9 @@ describe('skills mode', () => {
   });
 
   test('rejects invalid mode', async () => {
-    await expect(runSkillsSimpleCommand(['mode', 'turbo'], { workspace, userSkillsDir: fakeHome })).rejects.toThrow(/Invalid mode/);
+    await expect(runSkillsSimpleCommand(['mode', 'turbo'], { workspace, userSkillsDir: fakeHome })).rejects.toThrow(
+      /Invalid mode/,
+    );
   });
 
   test('reads current mode when no arg', async () => {
@@ -389,10 +393,7 @@ describe('pruneRetiredStarters', () => {
     userDir = mkdtempSync(join(tmpdir(), 'prune-user-'));
     for (const name of RETIRED_STARTER_NAMES) {
       mkdirSync(join(examplesRoot, name), { recursive: true });
-      writeFileSync(
-        join(examplesRoot, name, 'SKILL.md'),
-        `---\nname: ${name}\n---\nbundled body for ${name}\n`,
-      );
+      writeFileSync(join(examplesRoot, name, 'SKILL.md'), `---\nname: ${name}\n---\nbundled body for ${name}\n`);
     }
   });
 
@@ -406,10 +407,7 @@ describe('pruneRetiredStarters', () => {
     // seeded the old pack.
     for (const name of RETIRED_STARTER_NAMES) {
       mkdirSync(join(userDir, name), { recursive: true });
-      writeFileSync(
-        join(userDir, name, 'SKILL.md'),
-        readFileSync(join(examplesRoot, name, 'SKILL.md'), 'utf-8'),
-      );
+      writeFileSync(join(userDir, name, 'SKILL.md'), readFileSync(join(examplesRoot, name, 'SKILL.md'), 'utf-8'));
     }
 
     const result = pruneRetiredStarters(examplesRoot, userDir);
@@ -422,10 +420,7 @@ describe('pruneRetiredStarters', () => {
   test('keeps user-customised copies (content differs from exemplar)', () => {
     const target = RETIRED_STARTER_NAMES[0]!;
     mkdirSync(join(userDir, target), { recursive: true });
-    writeFileSync(
-      join(userDir, target, 'SKILL.md'),
-      '---\nname: ' + target + '\n---\nMY CUSTOM BODY\n',
-    );
+    writeFileSync(join(userDir, target, 'SKILL.md'), '---\nname: ' + target + '\n---\nMY CUSTOM BODY\n');
 
     const result = pruneRetiredStarters(examplesRoot, userDir);
     expect(result.removed).not.toContain(target);

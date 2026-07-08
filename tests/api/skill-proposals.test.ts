@@ -239,9 +239,7 @@ describe('lifecycle: approve / reject', () => {
     const created = (await create.json()) as { proposal: { id: string } };
 
     const events: Array<{ decidedBy: string }> = [];
-    const off = bus.on('skill:proposal_approved', (p) =>
-      events.push(p as { decidedBy: string }),
-    );
+    const off = bus.on('skill:proposal_approved', (p) => events.push(p as { decidedBy: string }));
     const approve = await server.handleRequest(
       authedReq(`/api/v1/skill-proposals/${created.proposal.id}/approve`, {
         method: 'POST',
@@ -316,7 +314,9 @@ describe('idempotent merge', () => {
         }),
       }),
     );
-    const firstBody = (await first.json()) as { proposal: { id: string; successCount: number; sourceTaskIds: string[] } };
+    const firstBody = (await first.json()) as {
+      proposal: { id: string; successCount: number; sourceTaskIds: string[] };
+    };
     expect(firstBody.proposal.successCount).toBe(1);
 
     const second = await server.handleRequest(
@@ -331,7 +331,9 @@ describe('idempotent merge', () => {
         }),
       }),
     );
-    const secondBody = (await second.json()) as { proposal: { id: string; successCount: number; sourceTaskIds: string[] } };
+    const secondBody = (await second.json()) as {
+      proposal: { id: string; successCount: number; sourceTaskIds: string[] };
+    };
     expect(secondBody.proposal.id).toBe(firstBody.proposal.id);
     expect(secondBody.proposal.successCount).toBe(2);
     expect(secondBody.proposal.sourceTaskIds.sort()).toEqual(['task-A', 'task-B']);

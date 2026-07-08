@@ -8,9 +8,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
+  loadAutoMemory,
   MAX_ENTRY_FILE_BYTES,
   MAX_ENTRYPOINT_LINES,
-  loadAutoMemory,
   workspaceSlug,
 } from '../../src/memory/auto-memory-loader.ts';
 
@@ -183,9 +183,7 @@ End.
     });
     const memory = loadAutoMemory({ workspace: workDir, overridePath: entrypoint });
     expect(memory!.totalBytes).toBeGreaterThan(0);
-    expect(memory!.totalBytes).toBe(
-      memory!.indexContent.length + memory!.entries[0]!.content.length,
-    );
+    expect(memory!.totalBytes).toBe(memory!.indexContent.length + memory!.entries[0]!.content.length);
   });
 
   test('env override VINYAN_AUTO_MEMORY_PATH takes precedence', () => {

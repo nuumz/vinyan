@@ -41,9 +41,7 @@ export class DecompositionLearner {
       confidence: Math.min(1.0, 0.5 + (existing?.frequency ?? 0) * 0.1),
       taskTypeSignature: taskSignature,
       approach: serializeDagShape(dag),
-      sourceTraceIds: existing
-        ? [...(existing.sourceTraceIds ?? []), traceId].slice(-10)
-        : [traceId],
+      sourceTraceIds: existing ? [...(existing.sourceTraceIds ?? []), traceId].slice(-10) : [traceId],
       createdAt: existing?.createdAt ?? Date.now(),
       decayWeight: 1.0,
     };

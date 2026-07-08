@@ -8,8 +8,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { cpSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
-import { type GateRequest, runGate } from '../../src/gate/index.ts';
 import { clearGateDeps } from '../../src/gate/gate.ts';
+import { type GateRequest, runGate } from '../../src/gate/index.ts';
 
 let workspace: string;
 

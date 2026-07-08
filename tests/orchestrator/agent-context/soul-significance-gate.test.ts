@@ -1,12 +1,12 @@
 /**
  * Tests for soul-significance-gate — deterministic reflection trigger.
  */
-import { describe, expect, test, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import {
-  isSignificant,
-  isRateLimited,
-  recordReflection,
   clearRateLimits,
+  isRateLimited,
+  isSignificant,
+  recordReflection,
 } from '../../../src/orchestrator/agent-context/soul-significance-gate.ts';
 import { createEmptyContext } from '../../../src/orchestrator/agent-context/types.ts';
 
@@ -35,10 +35,15 @@ describe('Soul Significance Gate', () => {
         timestamp: 1000 + i,
       });
     }
-    expect(isSignificant({
-      outcome: 'success',
-      taskTypeSignature: 'code:refactor:medium',
-    }, ctx)).toBe(false);
+    expect(
+      isSignificant(
+        {
+          outcome: 'success',
+          taskTypeSignature: 'code:refactor:medium',
+        },
+        ctx,
+      ),
+    ).toBe(false);
   });
 
   test('high prediction error is significant', () => {
@@ -55,20 +60,30 @@ describe('Soul Significance Gate', () => {
         timestamp: 1000 + i,
       });
     }
-    expect(isSignificant({
-      outcome: 'success',
-      taskTypeSignature: 'code:test:small',
-      predictionError: { error: { composite: 0.5 } },
-    }, ctx)).toBe(true);
+    expect(
+      isSignificant(
+        {
+          outcome: 'success',
+          taskTypeSignature: 'code:test:small',
+          predictionError: { error: { composite: 0.5 } },
+        },
+        ctx,
+      ),
+    ).toBe(true);
   });
 
   test('novel task type is significant', () => {
     const ctx = createEmptyContext('worker-1');
     // No prior episodes for this task type
-    expect(isSignificant({
-      outcome: 'success',
-      taskTypeSignature: 'code:new-feature:large',
-    }, ctx)).toBe(true);
+    expect(
+      isSignificant(
+        {
+          outcome: 'success',
+          taskTypeSignature: 'code:new-feature:large',
+        },
+        ctx,
+      ),
+    ).toBe(true);
   });
 
   test('rate limiting blocks rapid reflections', () => {

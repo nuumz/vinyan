@@ -16,13 +16,9 @@
  * this machine state with soul-sourced narrative at build time.
  */
 import type { Database } from 'bun:sqlite';
-import type {
-  AgentContext,
-  AgentEpisode,
-  SkillProficiency,
-} from '../orchestrator/agent-context/types.ts';
-import { createEmptyContext } from '../orchestrator/agent-context/types.ts';
 import type { PendingInsight } from '../orchestrator/agent-context/soul-schema.ts';
+import type { AgentContext, AgentEpisode, SkillProficiency } from '../orchestrator/agent-context/types.ts';
+import { createEmptyContext } from '../orchestrator/agent-context/types.ts';
 
 interface AgentContextRow {
   agent_id: string;
@@ -99,9 +95,7 @@ export class AgentContextStore {
   }
 
   findAll(): AgentContext[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM agent_contexts ORDER BY updated_at DESC`)
-      .all() as AgentContextRow[];
+    const rows = this.db.prepare(`SELECT * FROM agent_contexts ORDER BY updated_at DESC`).all() as AgentContextRow[];
     return rows.map(rowToContext);
   }
 
@@ -132,9 +126,9 @@ export class AgentContextStore {
 
   /** Get all pending insights for an agent. */
   getPendingInsights(agentId: string): PendingInsight[] {
-    const row = this.db
-      .prepare(`SELECT pending_insights FROM agent_contexts WHERE agent_id = ?`)
-      .get(agentId) as { pending_insights: string } | null;
+    const row = this.db.prepare(`SELECT pending_insights FROM agent_contexts WHERE agent_id = ?`).get(agentId) as {
+      pending_insights: string;
+    } | null;
     if (!row) return [];
     try {
       return JSON.parse(row.pending_insights) as PendingInsight[];
@@ -145,8 +139,6 @@ export class AgentContextStore {
 
   /** Clear pending insights after sleep cycle synthesis. */
   clearPendingInsights(agentId: string): void {
-    this.db
-      .prepare(`UPDATE agent_contexts SET pending_insights = '[]' WHERE agent_id = ?`)
-      .run(agentId);
+    this.db.prepare(`UPDATE agent_contexts SET pending_insights = '[]' WHERE agent_id = ?`).run(agentId);
   }
 }

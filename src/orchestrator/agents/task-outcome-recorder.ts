@@ -99,11 +99,7 @@ export function recordSimpleSkillOutcomes(
   let recorded = 0;
   for (const name of invokedSimpleSkillNames) {
     try {
-      store.recordOutcome(
-        { personaId: input.agentId, skillId: name, taskSignature },
-        outcome,
-        now,
-      );
+      store.recordOutcome({ personaId: input.agentId, skillId: name, taskSignature }, outcome, now);
       recorded += 1;
     } catch {
       /* per-skill best-effort */

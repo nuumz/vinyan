@@ -199,7 +199,12 @@ export async function recoverStaleInstance(opts: RecoveryOptions): Promise<Recov
   }
   const unverifiedCandidates = new Set<number>();
   const portHolder = await findPortHolder(port);
-  if (portHolder !== null && !protectedPids.has(portHolder) && !trustedCandidates.has(portHolder) && isProcessAlive(portHolder)) {
+  if (
+    portHolder !== null &&
+    !protectedPids.has(portHolder) &&
+    !trustedCandidates.has(portHolder) &&
+    isProcessAlive(portHolder)
+  ) {
     unverifiedCandidates.add(portHolder);
   }
 
@@ -229,7 +234,11 @@ export async function recoverStaleInstance(opts: RecoveryOptions): Promise<Recov
 
     // Phase 3: SIGTERM
     for (const pid of toKill) {
-      try { process.kill(pid, 'SIGTERM'); } catch { /* ignore */ }
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        /* ignore */
+      }
     }
     for (let i = 0; i < 30; i++) {
       if (toKill.every((pid) => !isProcessAlive(pid))) break;
@@ -241,7 +250,11 @@ export async function recoverStaleInstance(opts: RecoveryOptions): Promise<Recov
     if (survivors.length > 0) {
       console.log(`${logPrefix} SIGTERM timed out on ${survivors.join(', ')} — escalating to SIGKILL`);
       for (const pid of survivors) {
-        try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          /* ignore */
+        }
       }
       for (let i = 0; i < 20; i++) {
         if (survivors.every((pid) => !isProcessAlive(pid))) break;

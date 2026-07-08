@@ -67,8 +67,12 @@ describe('Migration 025 — session_id backfill', () => {
 
     migration025.up(db);
 
-    const aSession = db.query<{ session_id: string }, [string]>('SELECT session_id FROM task_events WHERE id = ?').get('a-2');
-    const bSession = db.query<{ session_id: string }, [string]>('SELECT session_id FROM task_events WHERE id = ?').get('b-2');
+    const aSession = db
+      .query<{ session_id: string }, [string]>('SELECT session_id FROM task_events WHERE id = ?')
+      .get('a-2');
+    const bSession = db
+      .query<{ session_id: string }, [string]>('SELECT session_id FROM task_events WHERE id = ?')
+      .get('b-2');
     expect(aSession?.session_id).toBe('sess-A');
     expect(bSession?.session_id).toBe('sess-B');
   });
@@ -77,14 +81,26 @@ describe('Migration 025 — session_id backfill', () => {
     const db = setupDbAtVersion024();
     // Pathological case: every event for this task is NULL — no source of
     // truth to recover. Backfill must be a no-op rather than fabricate data.
-    insertEvent(db, { id: 'orphan-1', taskId: 'orphan', sessionId: null, seq: 1, eventType: 'agent:plan_update', ts: 100 });
-    insertEvent(db, { id: 'orphan-2', taskId: 'orphan', sessionId: null, seq: 2, eventType: 'workflow:step_start', ts: 110 });
+    insertEvent(db, {
+      id: 'orphan-1',
+      taskId: 'orphan',
+      sessionId: null,
+      seq: 1,
+      eventType: 'agent:plan_update',
+      ts: 100,
+    });
+    insertEvent(db, {
+      id: 'orphan-2',
+      taskId: 'orphan',
+      sessionId: null,
+      seq: 2,
+      eventType: 'workflow:step_start',
+      ts: 110,
+    });
 
     migration025.up(db);
 
-    const rows = db
-      .query<{ session_id: string | null }, []>('SELECT session_id FROM task_events')
-      .all();
+    const rows = db.query<{ session_id: string | null }, []>('SELECT session_id FROM task_events').all();
     expect(rows.every((r) => r.session_id === null)).toBe(true);
   });
 

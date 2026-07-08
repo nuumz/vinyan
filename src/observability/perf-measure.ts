@@ -61,9 +61,7 @@ export function measureHot<R>(name: string, budgetUs: number, fn: () => R): R {
   if (durationNs > budgetNs) {
     const entry: PerfEntry = { name, durationNs, budgetNs, exceeded: true };
     warnings.push(entry);
-    console.warn(
-      `[perf] ${name}: ${(durationNs / 1000).toFixed(1)}µs exceeds budget ${budgetUs}µs`,
-    );
+    console.warn(`[perf] ${name}: ${(durationNs / 1000).toFixed(1)}µs exceeds budget ${budgetUs}µs`);
   }
 
   return result;

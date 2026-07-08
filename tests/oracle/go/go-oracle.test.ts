@@ -4,11 +4,7 @@
  * Tests the Go compiler/vet output mapper and registration.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import {
-  parseGoBuildOutput,
-  parseGoModTidyOutput,
-  parseGoVetOutput,
-} from '../../../src/oracle/go/go-output-mapper.ts';
+import { parseGoBuildOutput, parseGoModTidyOutput, parseGoVetOutput } from '../../../src/oracle/go/go-output-mapper.ts';
 import { registerGoOracle } from '../../../src/oracle/go/register.ts';
 import { clearDynamicOracles, getOracleEntry, listOraclesForLanguage } from '../../../src/oracle/registry.ts';
 

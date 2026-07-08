@@ -34,9 +34,30 @@ function makeContext(overrides: Partial<SectionContext> = {}): SectionContext {
 describe('PromptSectionRegistry', () => {
   it('renders sections sorted by priority', () => {
     const registry = new PromptSectionRegistry();
-    registry.register({ id: 'b', target: 'user', cache: 'ephemeral', volatility: 'turn', priority: 20, render: () => 'B' });
-    registry.register({ id: 'a', target: 'user', cache: 'ephemeral', volatility: 'turn', priority: 10, render: () => 'A' });
-    registry.register({ id: 'c', target: 'user', cache: 'ephemeral', volatility: 'turn', priority: 30, render: () => 'C' });
+    registry.register({
+      id: 'b',
+      target: 'user',
+      cache: 'ephemeral',
+      volatility: 'turn',
+      priority: 20,
+      render: () => 'B',
+    });
+    registry.register({
+      id: 'a',
+      target: 'user',
+      cache: 'ephemeral',
+      volatility: 'turn',
+      priority: 10,
+      render: () => 'A',
+    });
+    registry.register({
+      id: 'c',
+      target: 'user',
+      cache: 'ephemeral',
+      volatility: 'turn',
+      priority: 30,
+      render: () => 'C',
+    });
 
     const result = registry.renderTarget('user', makeContext());
     expect(result).toBe('A\n\nB\n\nC');
@@ -44,9 +65,30 @@ describe('PromptSectionRegistry', () => {
 
   it('skips sections that return null', () => {
     const registry = new PromptSectionRegistry();
-    registry.register({ id: 'a', target: 'user', cache: 'ephemeral', volatility: 'turn', priority: 10, render: () => 'A' });
-    registry.register({ id: 'b', target: 'user', cache: 'ephemeral', volatility: 'turn', priority: 20, render: () => null });
-    registry.register({ id: 'c', target: 'user', cache: 'ephemeral', volatility: 'turn', priority: 30, render: () => 'C' });
+    registry.register({
+      id: 'a',
+      target: 'user',
+      cache: 'ephemeral',
+      volatility: 'turn',
+      priority: 10,
+      render: () => 'A',
+    });
+    registry.register({
+      id: 'b',
+      target: 'user',
+      cache: 'ephemeral',
+      volatility: 'turn',
+      priority: 20,
+      render: () => null,
+    });
+    registry.register({
+      id: 'c',
+      target: 'user',
+      cache: 'ephemeral',
+      volatility: 'turn',
+      priority: 30,
+      render: () => 'C',
+    });
 
     const result = registry.renderTarget('user', makeContext());
     expect(result).toBe('A\n\nC');
@@ -54,8 +96,22 @@ describe('PromptSectionRegistry', () => {
 
   it('filters by target', () => {
     const registry = new PromptSectionRegistry();
-    registry.register({ id: 'sys', target: 'system', cache: 'static', volatility: 'frozen', priority: 10, render: () => 'SYS' });
-    registry.register({ id: 'usr', target: 'user', cache: 'ephemeral', volatility: 'turn', priority: 10, render: () => 'USR' });
+    registry.register({
+      id: 'sys',
+      target: 'system',
+      cache: 'static',
+      volatility: 'frozen',
+      priority: 10,
+      render: () => 'SYS',
+    });
+    registry.register({
+      id: 'usr',
+      target: 'user',
+      cache: 'ephemeral',
+      volatility: 'turn',
+      priority: 10,
+      render: () => 'USR',
+    });
 
     expect(registry.renderTarget('system', makeContext())).toBe('SYS');
     expect(registry.renderTarget('user', makeContext())).toBe('USR');
@@ -63,8 +119,22 @@ describe('PromptSectionRegistry', () => {
 
   it('getSectionIds returns all registered IDs', () => {
     const registry = new PromptSectionRegistry();
-    registry.register({ id: 'a', target: 'user', cache: 'ephemeral', volatility: 'turn', priority: 10, render: () => 'A' });
-    registry.register({ id: 'b', target: 'system', cache: 'static', volatility: 'frozen', priority: 20, render: () => 'B' });
+    registry.register({
+      id: 'a',
+      target: 'user',
+      cache: 'ephemeral',
+      volatility: 'turn',
+      priority: 10,
+      render: () => 'A',
+    });
+    registry.register({
+      id: 'b',
+      target: 'system',
+      cache: 'static',
+      volatility: 'frozen',
+      priority: 20,
+      render: () => 'B',
+    });
 
     expect(registry.getSectionIds()).toEqual(['a', 'b']);
   });
@@ -257,7 +327,7 @@ describe('createDefaultRegistry', () => {
       tierReliability: 0.99,
     };
 
-    function renderWith(facts: typeof factA[]): string {
+    function renderWith(facts: (typeof factA)[]): string {
       const registry = createDefaultRegistry();
       const ctx = makeContext({
         perception: {

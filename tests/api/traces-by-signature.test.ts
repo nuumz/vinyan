@@ -46,7 +46,9 @@ function req(path: string): Request {
   });
 }
 
-function makeTrace(over: Partial<ExecutionTrace> & Pick<ExecutionTrace, 'id' | 'taskId' | 'taskTypeSignature'>): ExecutionTrace {
+function makeTrace(
+  over: Partial<ExecutionTrace> & Pick<ExecutionTrace, 'id' | 'taskId' | 'taskTypeSignature'>,
+): ExecutionTrace {
   return {
     timestamp: Date.now(),
     routingLevel: 2,
@@ -76,10 +78,18 @@ beforeAll(() => {
 
   const traceStore = new TraceStore(db);
   // Three signatures, varying counts — enough to verify exact-match filtering.
-  traceStore.insert(makeTrace({ id: 't1', taskId: 'task-1', taskTypeSignature: 'review::typescript::small', timestamp: 100 }));
-  traceStore.insert(makeTrace({ id: 't2', taskId: 'task-2', taskTypeSignature: 'review::typescript::small', timestamp: 200 }));
-  traceStore.insert(makeTrace({ id: 't3', taskId: 'task-3', taskTypeSignature: 'review::typescript::medium', timestamp: 300 }));
-  traceStore.insert(makeTrace({ id: 't4', taskId: 'task-4', taskTypeSignature: 'unknown::none::single', timestamp: 400 }));
+  traceStore.insert(
+    makeTrace({ id: 't1', taskId: 'task-1', taskTypeSignature: 'review::typescript::small', timestamp: 100 }),
+  );
+  traceStore.insert(
+    makeTrace({ id: 't2', taskId: 'task-2', taskTypeSignature: 'review::typescript::small', timestamp: 200 }),
+  );
+  traceStore.insert(
+    makeTrace({ id: 't3', taskId: 'task-3', taskTypeSignature: 'review::typescript::medium', timestamp: 300 }),
+  );
+  traceStore.insert(
+    makeTrace({ id: 't4', taskId: 'task-4', taskTypeSignature: 'unknown::none::single', timestamp: 400 }),
+  );
 
   const sessionStore = new SessionStore(db);
   const sessionManager = new SessionManager(sessionStore);
@@ -108,9 +118,7 @@ afterAll(() => {
 
 describe('GET /api/v1/traces filtering', () => {
   test('?taskSignature= returns only matching rows (exact match, ordered by timestamp desc)', async () => {
-    const res = await server.handleRequest(
-      req('/api/v1/traces?taskSignature=review%3A%3Atypescript%3A%3Asmall'),
-    );
+    const res = await server.handleRequest(req('/api/v1/traces?taskSignature=review%3A%3Atypescript%3A%3Asmall'));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { traces: Array<{ id: string; taskTypeSignature: string }> };
     expect(body.traces.map((t) => t.id)).toEqual(['t2', 't1']);
@@ -120,26 +128,20 @@ describe('GET /api/v1/traces filtering', () => {
   });
 
   test('?taskSignature= is exact, not prefix (medium does NOT bleed into small)', async () => {
-    const res = await server.handleRequest(
-      req('/api/v1/traces?taskSignature=review%3A%3Atypescript%3A%3Amedium'),
-    );
+    const res = await server.handleRequest(req('/api/v1/traces?taskSignature=review%3A%3Atypescript%3A%3Amedium'));
     const body = (await res.json()) as { traces: Array<{ id: string }> };
     expect(body.traces.map((t) => t.id)).toEqual(['t3']);
   });
 
   test('?taskType= legacy alias still works for back-compat', async () => {
-    const res = await server.handleRequest(
-      req('/api/v1/traces?taskType=unknown%3A%3Anone%3A%3Asingle'),
-    );
+    const res = await server.handleRequest(req('/api/v1/traces?taskType=unknown%3A%3Anone%3A%3Asingle'));
     const body = (await res.json()) as { traces: Array<{ id: string }> };
     expect(body.traces.map((t) => t.id)).toEqual(['t4']);
   });
 
   test('?taskSignature= takes precedence when both legacy and canonical are supplied', async () => {
     const res = await server.handleRequest(
-      req(
-        '/api/v1/traces?taskSignature=review%3A%3Atypescript%3A%3Asmall&taskType=unknown%3A%3Anone%3A%3Asingle',
-      ),
+      req('/api/v1/traces?taskSignature=review%3A%3Atypescript%3A%3Asmall&taskType=unknown%3A%3Anone%3A%3Asingle'),
     );
     const body = (await res.json()) as { traces: Array<{ id: string }> };
     expect(body.traces.map((t) => t.id).sort()).toEqual(['t1', 't2']);
@@ -153,9 +155,7 @@ describe('GET /api/v1/traces filtering', () => {
   });
 
   test('unknown signature returns empty', async () => {
-    const res = await server.handleRequest(
-      req('/api/v1/traces?taskSignature=nope%3A%3Anope%3A%3Anope'),
-    );
+    const res = await server.handleRequest(req('/api/v1/traces?taskSignature=nope%3A%3Anope%3A%3Anope'));
     const body = (await res.json()) as { traces: unknown[] };
     expect(body.traces).toEqual([]);
   });

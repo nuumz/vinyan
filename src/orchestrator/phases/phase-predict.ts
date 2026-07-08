@@ -204,22 +204,25 @@ export async function executePredictPhase(
         }
       }
 
-      const uncertainTrace: import('../types.ts').ExecutionTrace = applyRoutingGovernance({
-        id: `trace-${input.id}-uncertain`,
-        taskId: input.id,
-        workerId: 'none',
-        timestamp: Date.now(),
-        routingLevel: routing.level,
-        approach: 'fleet-uncertain',
-        oracleVerdicts: {},
-        modelUsed: 'none',
-        tokensConsumed: 0,
-        durationMs: Date.now() - startTime,
-        outcome: 'failure',
-        failureReason: `All workers below capability threshold (max: ${selection.maxCapability?.toFixed(2)}) — abstaining per A2`,
-        affectedFiles: input.targetFiles ?? [],
-        workerSelectionAudit: selection,
-      }, routing);
+      const uncertainTrace: import('../types.ts').ExecutionTrace = applyRoutingGovernance(
+        {
+          id: `trace-${input.id}-uncertain`,
+          taskId: input.id,
+          workerId: 'none',
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: 'fleet-uncertain',
+          oracleVerdicts: {},
+          modelUsed: 'none',
+          tokensConsumed: 0,
+          durationMs: Date.now() - startTime,
+          outcome: 'failure',
+          failureReason: `All workers below capability threshold (max: ${selection.maxCapability?.toFixed(2)}) — abstaining per A2`,
+          affectedFiles: input.targetFiles ?? [],
+          workerSelectionAudit: selection,
+        },
+        routing,
+      );
       await deps.traceCollector.record(uncertainTrace);
       deps.bus?.emit('trace:record', { trace: uncertainTrace });
       const uncertainResult: TaskResult = {

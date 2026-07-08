@@ -7,8 +7,8 @@
  * path stays on the critical path.
  */
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { afterEach, describe, expect, it } from 'bun:test';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { PluginAuditStore } from '../../src/db/plugin-audit-store.ts';
 import { type MessagingAdapterLifecycleDeps, MessagingAdapterLifecycleManager } from '../../src/gateway/lifecycle.ts';

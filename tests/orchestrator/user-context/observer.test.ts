@@ -14,8 +14,8 @@
  *   - applyPending idempotent when no new observations arrive between calls.
  */
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 
 import { UserMdStore } from '../../../src/db/user-md-store.ts';
 import type { DialecticCritic } from '../../../src/orchestrator/user-context/dialectic.ts';

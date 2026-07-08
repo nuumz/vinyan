@@ -111,8 +111,8 @@ describe('wrapProviderWithGovernance', () => {
     expect(names).toContain('llm:provider_quota_exhausted');
     expect(names).toContain('llm:provider_cooldown_started');
     expect(names).toContain('llm:provider_health_changed');
-    const quotaPayload = events.find((e) => e.name === 'llm:provider_quota_exhausted')!.payload as
-      VinyanBusEvents['llm:provider_quota_exhausted'];
+    const quotaPayload = events.find((e) => e.name === 'llm:provider_quota_exhausted')!
+      .payload as VinyanBusEvents['llm:provider_quota_exhausted'];
     expect(quotaPayload.taskId).toBe('task-Q');
     expect(quotaPayload.errorKind).toBe('quota_exhausted');
   });

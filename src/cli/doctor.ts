@@ -112,10 +112,7 @@ export interface DoctorOptions {
  * Run all workspace health checks and return the structured result.
  * Never prints; never exits. Safe to call from HTTP handlers and tests.
  */
-export async function runDoctorChecks(
-  workspace: string,
-  options: DoctorOptions = {},
-): Promise<DoctorCheck[]> {
+export async function runDoctorChecks(workspace: string, options: DoctorOptions = {}): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
 
   // 1. Workspace
@@ -143,9 +140,10 @@ export async function runDoctorChecks(
       checks.push({
         name: 'Oracles',
         status: enabledOracles.length > 0 ? 'ok' : 'warn',
-        detail: enabledOracles.length > 0
-          ? `${enabledOracles.length} enabled: ${enabledOracles.map(([k]) => k).join(', ')}`
-          : 'No oracles enabled — verification will be limited',
+        detail:
+          enabledOracles.length > 0
+            ? `${enabledOracles.length} enabled: ${enabledOracles.map(([k]) => k).join(', ')}`
+            : 'No oracles enabled — verification will be limited',
       });
 
       // 2b. Economy
@@ -166,7 +164,11 @@ export async function runDoctorChecks(
         detail: api?.enabled !== false ? `Port ${api?.port ?? 3927}` : 'Disabled',
       });
     } catch (err) {
-      checks.push({ name: 'Config', status: 'fail', detail: `Invalid vinyan.json: ${err instanceof Error ? err.message : String(err)}` });
+      checks.push({
+        name: 'Config',
+        status: 'fail',
+        detail: `Invalid vinyan.json: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   } else {
     checks.push({ name: 'Config', status: 'fail', detail: 'vinyan.json not found — run `vinyan init`' });
@@ -182,7 +184,11 @@ export async function runDoctorChecks(
       db.close();
       checks.push({ name: 'Database', status: 'ok', detail: `${tables.length} tables in vinyan.db` });
     } catch (err) {
-      checks.push({ name: 'Database', status: 'fail', detail: `DB corrupt: ${err instanceof Error ? err.message : String(err)}` });
+      checks.push({
+        name: 'Database',
+        status: 'fail',
+        detail: `DB corrupt: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   } else {
     checks.push({ name: 'Database', status: 'warn', detail: 'No database yet — will be created on first run' });
@@ -205,7 +211,11 @@ export async function runDoctorChecks(
     if (hasAnthropic) providers.push('Anthropic');
     checks.push({ name: 'LLM Provider', status: 'ok', detail: providers.join(' + ') });
   } else {
-    checks.push({ name: 'LLM Provider', status: 'fail', detail: 'No OPENROUTER_API_KEY or ANTHROPIC_API_KEY — set in .env' });
+    checks.push({
+      name: 'LLM Provider',
+      status: 'fail',
+      detail: 'No OPENROUTER_API_KEY or ANTHROPIC_API_KEY — set in .env',
+    });
   }
 
   // 6. Sessions — hybrid-aware. The architectural direction is per-
@@ -237,17 +247,15 @@ export async function runDoctorChecks(
       const archived = db
         .query('SELECT COUNT(*) as c FROM session_store WHERE archived_at IS NOT NULL AND deleted_at IS NULL')
         .get() as { c: number } | null;
-      const total = db
-        .query('SELECT COUNT(*) as c FROM session_store WHERE deleted_at IS NULL')
-        .get() as { c: number } | null;
+      const total = db.query('SELECT COUNT(*) as c FROM session_store WHERE deleted_at IS NULL').get() as {
+        c: number;
+      } | null;
       db.close();
 
       const sessionCfg = loadedConfig?.session;
       const dualWrite = sessionCfg?.dualWrite?.enabled === true;
       const readJsonl = sessionCfg?.readFromJsonl
-        ? Object.entries(sessionCfg.readFromJsonl).some(
-            ([k, v]) => k !== 'fallbackToSqlite' && v === true,
-          )
+        ? Object.entries(sessionCfg.readFromJsonl).some(([k, v]) => k !== 'fallbackToSqlite' && v === true)
         : false;
       const mode: 'sqlite-only' | 'dual-write' | 'jsonl-primary' = readJsonl
         ? 'jsonl-primary'
@@ -303,9 +311,7 @@ export async function runDoctorChecks(
       const { Database } = await import('bun:sqlite');
       const { ALL_MIGRATIONS } = await import('../db/migrations/index.ts');
       const db = new Database(dbPath, { readonly: true });
-      const applied = db
-        .query('SELECT MAX(version) as v FROM schema_version')
-        .get() as { v: number | null } | null;
+      const applied = db.query('SELECT MAX(version) as v FROM schema_version').get() as { v: number | null } | null;
       db.close();
       const codeMax = Math.max(...ALL_MIGRATIONS.map((m) => m.version));
       const dbMax = applied?.v ?? 0;
@@ -402,19 +408,15 @@ export async function runDoctorChecks(
         try {
           const { Database } = await import('bun:sqlite');
           const db = new Database(dbPath, { readonly: true });
-          pageCount =
-            (db.query('SELECT COUNT(*) as c FROM memory_wiki_pages').get() as { c: number } | null)
-              ?.c ?? 0;
+          pageCount = (db.query('SELECT COUNT(*) as c FROM memory_wiki_pages').get() as { c: number } | null)?.c ?? 0;
           sourceCount =
-            (db.query('SELECT COUNT(*) as c FROM memory_wiki_sources').get() as
-              | { c: number }
-              | null)?.c ?? 0;
+            (db.query('SELECT COUNT(*) as c FROM memory_wiki_sources').get() as { c: number } | null)?.c ?? 0;
           openLint =
-            (db
-              .query(
-                'SELECT COUNT(*) as c FROM memory_wiki_lint_findings WHERE resolved_at IS NULL',
-              )
-              .get() as { c: number } | null)?.c ?? 0;
+            (
+              db.query('SELECT COUNT(*) as c FROM memory_wiki_lint_findings WHERE resolved_at IS NULL').get() as {
+                c: number;
+              } | null
+            )?.c ?? 0;
           db.close();
           countsAvailable = true;
         } catch {
@@ -477,9 +479,7 @@ export async function runDoctorChecks(
         name: 'In-Flight Tasks',
         status: rt.inFlightTaskCount > 50 ? 'warn' : 'ok',
         detail: `${rt.inFlightTaskCount} task(s) in flight`,
-        ...(rt.inFlightTaskCount > 50
-          ? { remediation: 'Inspect /api/v1/tasks for stuck or runaway tasks.' }
-          : {}),
+        ...(rt.inFlightTaskCount > 50 ? { remediation: 'Inspect /api/v1/tasks for stuck or runaway tasks.' } : {}),
       });
     }
     if (typeof rt.recoveredOrphanCount === 'number' && rt.recoveredOrphanCount > 0) {
@@ -520,8 +520,7 @@ export async function runDoctorChecks(
       try {
         const state = rt.autogenTrackerState();
         if (state) {
-          const oldestAge =
-            state.oldestSeen != null ? Math.round((Date.now() - state.oldestSeen) / 60_000) : null;
+          const oldestAge = state.oldestSeen != null ? Math.round((Date.now() - state.oldestSeen) / 60_000) : null;
           checks.push({
             name: 'Autogen Tracker',
             status: 'ok',
@@ -562,8 +561,7 @@ export function summarizeChecks(checks: DoctorCheck[]): {
   const failed = checks.filter((c) => c.status === 'fail').length;
   const warned = checks.filter((c) => c.status === 'warn').length;
 
-  const status: 'healthy' | 'degraded' | 'critical' =
-    failed > 0 ? 'critical' : warned > 0 ? 'degraded' : 'healthy';
+  const status: 'healthy' | 'degraded' | 'critical' = failed > 0 ? 'critical' : warned > 0 ? 'degraded' : 'healthy';
 
   return { status, passed, total };
 }
@@ -576,7 +574,8 @@ export async function runDoctor(workspace: string): Promise<void> {
 
   let hasFailures = false;
   for (const check of checks) {
-    const icon = check.status === 'ok' ? '\x1b[32m✓\x1b[0m' : check.status === 'warn' ? '\x1b[33m!\x1b[0m' : '\x1b[31m✗\x1b[0m';
+    const icon =
+      check.status === 'ok' ? '\x1b[32m✓\x1b[0m' : check.status === 'warn' ? '\x1b[33m!\x1b[0m' : '\x1b[31m✗\x1b[0m';
     const color = check.status === 'ok' ? '' : check.status === 'warn' ? '\x1b[33m' : '\x1b[31m';
     const reset = check.status === 'ok' ? '' : '\x1b[0m';
     console.log(`  ${icon} ${check.name.padEnd(14)} ${color}${check.detail}${reset}`);

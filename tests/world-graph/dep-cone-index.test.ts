@@ -1,6 +1,6 @@
-import { describe, test, expect, beforeEach } from 'bun:test';
-import { DepConeIndex } from '../../src/world-graph/dep-cone-index.ts';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import type { DependencyEdge } from '../../src/world-graph/dep-cone-index.ts';
+import { DepConeIndex } from '../../src/world-graph/dep-cone-index.ts';
 
 function makeEdge(from: string, to: string): DependencyEdge {
   return { fromFile: from, toFile: to };
@@ -123,12 +123,7 @@ describe('DepConeIndex', () => {
 
     test('handles diamond dependency', () => {
       // D→B, D→C, B→A, C→A
-      index.loadAll([
-        makeEdge('D', 'B'),
-        makeEdge('D', 'C'),
-        makeEdge('B', 'A'),
-        makeEdge('C', 'A'),
-      ]);
+      index.loadAll([makeEdge('D', 'B'), makeEdge('D', 'C'), makeEdge('B', 'A'), makeEdge('C', 'A')]);
       const result = index.queryDependents('A', 3);
       expect(result).toHaveLength(3); // B, C, D
       expect(result).toContain('B');

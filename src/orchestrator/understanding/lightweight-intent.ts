@@ -37,10 +37,7 @@ const ACTION_VERB_MAP: Record<string, SemanticIntent['primaryAction']> = {
  * Build lightweight SemanticIntent from L0-L1 understanding metadata.
  * This is deterministic and free — no LLM call required.
  */
-export function buildLightweightIntent(
-  understanding: SemanticTaskUnderstanding,
-  input: TaskInput,
-): SemanticIntent {
+export function buildLightweightIntent(understanding: SemanticTaskUnderstanding, input: TaskInput): SemanticIntent {
   const primaryAction = ACTION_VERB_MAP[understanding.actionVerb] ?? 'other';
 
   // Generate success criteria from available metadata
@@ -87,9 +84,7 @@ export function buildLightweightIntent(
   }));
 
   // Resolved entities → affected components
-  const affectedComponents = understanding.resolvedEntities
-    ?.flatMap((e) => e.resolvedPaths)
-    .slice(0, 5);
+  const affectedComponents = understanding.resolvedEntities?.flatMap((e) => e.resolvedPaths).slice(0, 5);
 
   return {
     primaryAction,

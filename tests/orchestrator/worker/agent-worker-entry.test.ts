@@ -5,9 +5,6 @@
  * instead of spawning a real subprocess.
  */
 import { describe, expect, test } from 'bun:test';
-import { createScriptedMockProvider, type ScriptedMockResponse } from '../../../src/orchestrator/llm/mock-provider.ts';
-import type { WorkerTurn } from '../../../src/orchestrator/protocol.ts';
-import type { HistoryMessage, Message } from '../../../src/orchestrator/types.ts';
 import {
   buildInitUserMessage,
   buildSystemPrompt,
@@ -16,6 +13,9 @@ import {
   runAgentWorkerLoop,
   type WorkerIO,
 } from '../../../src/orchestrator/agent/agent-worker-entry.ts';
+import { createScriptedMockProvider, type ScriptedMockResponse } from '../../../src/orchestrator/llm/mock-provider.ts';
+import type { WorkerTurn } from '../../../src/orchestrator/protocol.ts';
+import type { HistoryMessage, Message } from '../../../src/orchestrator/types.ts';
 
 // ── Test helpers ─────────────────────────────────────────────────────
 

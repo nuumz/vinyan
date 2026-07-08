@@ -33,6 +33,7 @@ import { sanitizeForPrompt, sanitizeForPromptPassthrough } from '../../guardrail
 import { OracleCircuitBreaker } from '../../oracle/circuit-breaker.ts';
 import type { LLMProvider } from '../types.ts';
 import type { ComprehensionCalibrator } from './learning/calibrator.ts';
+import { classifyGoalReferenceMode } from './rule-comprehender.ts';
 import type {
   ComprehendedTaskMessage,
   ComprehensionEngine,
@@ -40,7 +41,6 @@ import type {
   ComprehensionInput,
 } from './types.ts';
 import { computeInputHash } from './types.ts';
-import { classifyGoalReferenceMode } from './rule-comprehender.ts';
 
 // ── Hard limits ─────────────────────────────────────────────────────────
 

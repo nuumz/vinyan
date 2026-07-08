@@ -8,8 +8,8 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { relative, resolve } from 'path';
-import { buildDependencyGraph, computeBlastRadius } from '../oracle/dep/dep-analyzer.ts';
 import type { CausalEdgeExtractor } from '../oracle/dep/causal-edge-extractor.ts';
+import { buildDependencyGraph, computeBlastRadius } from '../oracle/dep/dep-analyzer.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import type { PerceptionAssembler } from './core-loop.ts';
 import { detectFrameworkMarkers } from './task-fingerprint.ts';
@@ -54,10 +54,14 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     ];
   }
 
-  async assemble(input: TaskInput, level: RoutingLevel, understanding?: TaskUnderstanding): Promise<PerceptualHierarchy> {
+  async assemble(
+    input: TaskInput,
+    level: RoutingLevel,
+    understanding?: TaskUnderstanding,
+  ): Promise<PerceptualHierarchy> {
     // Gap 7A+2A: Only skip perception for reasoning tasks WITHOUT target files.
     // Reasoning tasks with targetFiles (analysis, investigation) get full structural perception.
-    if (input.taskType === 'reasoning' && !(input.targetFiles?.length)) {
+    if (input.taskType === 'reasoning' && !input.targetFiles?.length) {
       return {
         taskTarget: { file: '', symbol: undefined, description: input.goal },
         dependencyCone: {
@@ -107,7 +111,8 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     const verifiedFacts = this.queryVerifiedFacts(factTargets, level);
 
     // Run diagnostics — only at L2+ (analytical); L0/L1 don't have budget to act on type errors
-    const diagnostics = level >= 2 ? await this.runDiagnostics() : { lintWarnings: [], typeErrors: [], failingTests: [] };
+    const diagnostics =
+      level >= 2 ? await this.runDiagnostics() : { lintWarnings: [], typeErrors: [], failingTests: [] };
 
     // Extract causal edges for target files (FP-B)
     let causalEdges: PerceptualHierarchy['causalEdges'];
@@ -118,9 +123,13 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
         if (this.worldGraph && causalEdges && causalEdges.length > 0) {
           try {
             this.worldGraph.storeCausalEdgesTyped(causalEdges);
-          } catch { /* best-effort persist */ }
+          } catch {
+            /* best-effort persist */
+          }
         }
-      } catch { /* causal extraction failed — proceed without */ }
+      } catch {
+        /* causal extraction failed — proceed without */
+      }
     }
 
     // Gap 3A: Populate symbol from TaskUnderstanding (extracted from goal text)
@@ -290,7 +299,7 @@ export class PerceptionAssemblerImpl implements PerceptionAssembler {
     const p1Remaining = p1Budget - p1Used;
 
     // P2: Test files — remainder (15% base + any unused from P0/P1)
-    const p2Budget = (totalBudget - totalChars); // All remaining budget
+    const p2Budget = totalBudget - totalChars; // All remaining budget
     readTier(testFiles, p2Budget);
 
     return contents.length > 0 ? contents : undefined;

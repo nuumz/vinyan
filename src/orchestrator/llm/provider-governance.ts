@@ -52,10 +52,7 @@ export interface ProviderGovernanceDeps {
  */
 const GOVERNED_MARKER = Symbol.for('vinyan.llm.providerGoverned');
 
-export function wrapProviderWithGovernance(
-  provider: LLMProvider,
-  deps: ProviderGovernanceDeps,
-): LLMProvider {
+export function wrapProviderWithGovernance(provider: LLMProvider, deps: ProviderGovernanceDeps): LLMProvider {
   if ((provider as { [GOVERNED_MARKER]?: boolean })[GOVERNED_MARKER]) return provider;
 
   const wrapped: LLMProvider = {
@@ -92,10 +89,7 @@ export function wrapProviderWithGovernance(
 }
 
 /** Wrap every provider in a registry. Idempotent. Used by `factory.ts`. */
-export function applyGovernanceToRegistry(
-  registry: LLMProviderRegistry,
-  deps: ProviderGovernanceDeps,
-): void {
+export function applyGovernanceToRegistry(registry: LLMProviderRegistry, deps: ProviderGovernanceDeps): void {
   registry.setHealthStore(deps.healthStore);
   for (const provider of registry.listProviders()) {
     const wrapped = wrapProviderWithGovernance(provider, deps);
@@ -172,11 +166,7 @@ export function selectGoverned(input: GovernedSelectionInput): LLMProvider | nul
 // Internal: shared success / failure handling for the wrapper
 // ────────────────────────────────────────────────────────────────────────
 
-function onSuccess(
-  provider: LLMProvider,
-  deps: ProviderGovernanceDeps,
-  cooldownUntilBefore: number | undefined,
-): void {
+function onSuccess(provider: LLMProvider, deps: ProviderGovernanceDeps, cooldownUntilBefore: number | undefined): void {
   const now = Date.now();
   const wasCooled = cooldownUntilBefore !== undefined && cooldownUntilBefore > now;
   deps.healthStore.recordSuccess({ id: provider.id });
@@ -192,12 +182,7 @@ function onSuccess(
   }
 }
 
-function onFailure(
-  provider: LLMProvider,
-  request: LLMRequest,
-  rawErr: unknown,
-  deps: ProviderGovernanceDeps,
-): unknown {
+function onFailure(provider: LLMProvider, request: LLMRequest, rawErr: unknown, deps: ProviderGovernanceDeps): unknown {
   // PromptTooLargeError is a non-quota signal — let it pass through unmodified
   // so compress-and-retry logic upstream still works. Health bookkeeping does
   // not apply.

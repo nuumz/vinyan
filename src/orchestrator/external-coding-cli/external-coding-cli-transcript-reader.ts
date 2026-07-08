@@ -52,10 +52,7 @@ export class TranscriptReader {
       throw new TranscriptAccessError('symlink-blocked', `symlink blocked: ${abs}`);
     }
     if (stat.size > this.maxBytes) {
-      throw new TranscriptAccessError(
-        'too-large',
-        `transcript ${abs} exceeds cap (${stat.size} > ${this.maxBytes})`,
-      );
+      throw new TranscriptAccessError('too-large', `transcript ${abs} exceeds cap (${stat.size} > ${this.maxBytes})`);
     }
     try {
       return fs.readFileSync(abs, 'utf8');

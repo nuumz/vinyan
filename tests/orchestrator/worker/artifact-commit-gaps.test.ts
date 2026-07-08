@@ -6,10 +6,11 @@
  * Gap 7: with `rollbackOnPartialFailure: true`, partial Pass 2 failure
  * restores pre-write content (or unlinks newly-created files).
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { EventBus, type VinyanBusEvents } from '../../../src/core/bus.ts';
 import { commitArtifacts } from '../../../src/orchestrator/worker/artifact-commit.ts';
 
@@ -46,11 +47,7 @@ describe('Gap 4 — commit:dormant_pending_reload', () => {
     const bus = new EventBus<VinyanBusEvents>();
     const events: VinyanBusEvents['commit:dormant_pending_reload'][] = [];
     bus.on('commit:dormant_pending_reload', (p) => events.push(p));
-    commitArtifacts(
-      tmp,
-      [{ path: 'docs/foo.md', content: '# foo' }],
-      { bus, taskId: 't', actor: 'a' },
-    );
+    commitArtifacts(tmp, [{ path: 'docs/foo.md', content: '# foo' }], { bus, taskId: 't', actor: 'a' });
     expect(events.length).toBe(0);
   });
 });
@@ -79,9 +76,7 @@ describe('Gap 7 — rollback on partial failure', () => {
     // Rollback path: applied is empty (all-or-nothing).
     expect(result.applied.length).toBe(0);
     // Restored: pre-existing file's content is the original.
-    expect(readFileSync(join(tmp, 'src/exists.ts'), 'utf-8')).toBe(
-      'export const original = true;',
-    );
+    expect(readFileSync(join(tmp, 'src/exists.ts'), 'utf-8')).toBe('export const original = true;');
   });
 
   test('without rollback flag, partial failure leaves siblings on disk (legacy MVP behavior)', () => {

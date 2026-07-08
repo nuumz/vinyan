@@ -118,9 +118,7 @@ describe('GET /api/v1/agents/:id/context/export', () => {
   test('returns full context JSON with timestamp', async () => {
     agentContextStore.upsert(makeContext('developer'));
 
-    const res = await server.handleRequest(
-      req('/api/v1/agents/developer/context/export'),
-    );
+    const res = await server.handleRequest(req('/api/v1/agents/developer/context/export'));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       agentId: string;
@@ -140,9 +138,7 @@ describe('GET /api/v1/agents/:id/context/export', () => {
   });
 
   test('404 when agent has no recorded context', async () => {
-    const res = await server.handleRequest(
-      req('/api/v1/agents/never-seen/context/export'),
-    );
+    const res = await server.handleRequest(req('/api/v1/agents/never-seen/context/export'));
     expect(res.status).toBe(404);
   });
 });
@@ -175,9 +171,7 @@ describe('POST /api/v1/agents/:id/proficiencies/reset', () => {
     // Persistence — re-read confirms removal AND that the other entry stays.
     const after = agentContextStore.findById('developer');
     expect(after).not.toBeNull();
-    expect(Object.keys(after!.skills.proficiencies)).toEqual([
-      'review::typescript::small',
-    ]);
+    expect(Object.keys(after!.skills.proficiencies)).toEqual(['review::typescript::small']);
   });
 
   test('idempotent — second reset returns removed:false', async () => {

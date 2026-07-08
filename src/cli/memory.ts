@@ -28,6 +28,7 @@ import {
   AmbiguousProposalError,
   approveProposal,
   listPendingProposals,
+  type PendingProposalFile,
   parseProposalFile,
   rejectProposal,
   resolveProposalBySlug,
@@ -105,7 +106,7 @@ async function handleShow(args: string[]): Promise<void> {
     return;
   }
 
-  let pending;
+  let pending: PendingProposalFile;
   try {
     pending = resolveProposalBySlug(workspace, handle);
   } catch (e) {
@@ -128,9 +129,7 @@ async function handleApprove(args: string[]): Promise<void> {
     return;
   }
   if (!reviewer) {
-    process.stderr.write(
-      'Error: approve requires --reviewer <name> (A1 compliance: audit trail must name a human)\n',
-    );
+    process.stderr.write('Error: approve requires --reviewer <name> (A1 compliance: audit trail must name a human)\n');
     process.exit(2);
     return;
   }
@@ -162,16 +161,12 @@ async function handleReject(args: string[]): Promise<void> {
     return;
   }
   if (!reviewer) {
-    process.stderr.write(
-      'Error: reject requires --reviewer <name> (audit trail must name a human)\n',
-    );
+    process.stderr.write('Error: reject requires --reviewer <name> (audit trail must name a human)\n');
     process.exit(2);
     return;
   }
   if (!reason) {
-    process.stderr.write(
-      'Error: reject requires --reason <text> (rejections must be explained)\n',
-    );
+    process.stderr.write('Error: reject requires --reason <text> (rejections must be explained)\n');
     process.exit(2);
     return;
   }

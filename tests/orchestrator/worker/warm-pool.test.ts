@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { resolve } from 'path';
-import { LineReader, WarmWorkerPool } from '../../../src/orchestrator/worker/worker-pool.ts';
 import { createBus } from '../../../src/core/bus.ts';
+import { LineReader, WarmWorkerPool } from '../../../src/orchestrator/worker/worker-pool.ts';
 
 // ── LineReader ────────────────────────────────────────────────────────
 
@@ -319,7 +319,13 @@ describe('Warm Worker Integration — real worker-entry.ts', () => {
     });
     // Cast stdin — always FileSink when stdin: 'pipe'
     const stdin = proc.stdin as import('bun').FileSink;
-    return { proc, stdin, get stdout() { return proc!.stdout; } };
+    return {
+      proc,
+      stdin,
+      get stdout() {
+        return proc!.stdout;
+      },
+    };
   }
 
   test('warm worker-entry.ts sends ready signal', async () => {

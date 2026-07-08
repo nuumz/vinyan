@@ -14,11 +14,8 @@ import { computeBidSpread, detectCollusion } from './anti-gaming.ts';
 import { type BidderContext, runAuction } from './auction-engine.ts';
 import { type BidAccuracyPersistence, BidAccuracyTracker } from './bid-accuracy-tracker.ts';
 import { FamilyStatsTracker } from './family-stats-tracker.ts';
-import {
-  type PersonaOverclaimPersistence,
-  PersonaOverclaimTracker,
-} from './persona-overclaim-tracker.ts';
 import { createInitialPhaseState, evaluateMarketPhase, type MarketPhaseStats } from './market-phase.ts';
+import { type PersonaOverclaimPersistence, PersonaOverclaimTracker } from './persona-overclaim-tracker.ts';
 import type { AuctionResult, EngineBid, MarketPhaseState } from './schemas.ts';
 import { type ActualOutcome, isAccurateBid, settleBid } from './settlement-engine.ts';
 

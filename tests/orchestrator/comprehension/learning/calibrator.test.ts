@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import type { ComprehensionRecordRow, ComprehensionOutcome } from '../../../../src/db/comprehension-store.ts';
+import type { ComprehensionOutcome, ComprehensionRecordRow } from '../../../../src/db/comprehension-store.ts';
 import {
   ComprehensionCalibrator,
   DATA_GATE_MIN,
@@ -32,8 +32,7 @@ function row(outcome: ComprehensionOutcome, at: number): ComprehensionRecordRow 
 
 function loaderWith(records: ComprehensionRecordRow[]) {
   return {
-    recentByEngine: (_engineId: string, limit?: number) =>
-      records.slice(0, limit ?? records.length),
+    recentByEngine: (_engineId: string, limit?: number) => records.slice(0, limit ?? records.length),
   };
 }
 
@@ -106,7 +105,7 @@ describe('ComprehensionCalibrator', () => {
     // (oldest first, newest last) the EMA finishes near 0 (bad).
     const data: ComprehensionRecordRow[] = [];
     for (let i = 0; i < 10; i++) data.push(row('corrected', 1000 - i)); // newest
-    for (let i = 0; i < 10; i++) data.push(row('confirmed', 100 - i));  // oldest
+    for (let i = 0; i < 10; i++) data.push(row('confirmed', 100 - i)); // oldest
     const calib = new ComprehensionCalibrator(loaderWith(data), { alpha: 0.3 });
     const acc = calib.getEngineAccuracy('rule-comprehender');
     expect(acc.rawAccuracy).toBe(0.5);
@@ -319,7 +318,12 @@ describe('ComprehensionCalibrator', () => {
         for (let i = 0; i < confirmedCount; i++) out.push(row('confirmed', t--));
         return out;
       };
-      for (const [c, e] of [[20, 20], [15, 25], [30, 10], [25, 15]] as const) {
+      for (const [c, e] of [
+        [20, 20],
+        [15, 25],
+        [30, 10],
+        [25, 15],
+      ] as const) {
         const calib = new ComprehensionCalibrator(loaderWith(mkData(c, e)));
         const base = calib.confidenceCeiling('x');
         const eff = calib.effectiveCeiling('x');

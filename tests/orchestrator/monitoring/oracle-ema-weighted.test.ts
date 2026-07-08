@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { OracleEMACalibrator, ORACLE_EMA_WARM_THRESHOLD } from '../../../src/orchestrator/monitoring/oracle-ema-calibrator.ts';
+import {
+  ORACLE_EMA_WARM_THRESHOLD,
+  OracleEMACalibrator,
+} from '../../../src/orchestrator/monitoring/oracle-ema-calibrator.ts';
 
 describe('getWeightedConfidence (Wave C)', () => {
   test('cold oracle (0 observations) returns raw confidence', () => {

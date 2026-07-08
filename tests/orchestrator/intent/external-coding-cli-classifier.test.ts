@@ -27,9 +27,7 @@ describe('classifyExternalCodingCliIntent — positive matches', () => {
   });
 
   it('matches English "delegate to Claude Code"', () => {
-    const out = classifyExternalCodingCliIntent(
-      'delegate to claude code cli to refactor src/foo.ts',
-    );
+    const out = classifyExternalCodingCliIntent('delegate to claude code cli to refactor src/foo.ts');
     expect(out.matched).toBe(true);
     expect(out.providerId).toBe('claude-code');
     expect(out.confidence).toBeGreaterThanOrEqual(0.85);
@@ -55,34 +53,26 @@ describe('classifyExternalCodingCliIntent — positive matches', () => {
   });
 
   it('returns auto-provider for generic "external coding cli" mention', () => {
-    const out = classifyExternalCodingCliIntent(
-      'ลองใช้ external coding cli ช่วยอ่าน /tmp/spec.md',
-    );
+    const out = classifyExternalCodingCliIntent('ลองใช้ external coding cli ช่วยอ่าน /tmp/spec.md');
     expect(out.matched).toBe(true);
     expect(out.providerId).toBe('auto');
     expect(out.targetPaths).toContain('/tmp/spec.md');
   });
 
   it('detects interactive mode hint', () => {
-    const out = classifyExternalCodingCliIntent(
-      'use claude code in interactive mode to review my code',
-    );
+    const out = classifyExternalCodingCliIntent('use claude code in interactive mode to review my code');
     expect(out.matched).toBe(true);
     expect(out.requestedMode).toBe('interactive');
   });
 
   it('detects headless mode hint', () => {
-    const out = classifyExternalCodingCliIntent(
-      'run claude code one-shot to generate a README',
-    );
+    const out = classifyExternalCodingCliIntent('run claude code one-shot to generate a README');
     expect(out.matched).toBe(true);
     expect(out.requestedMode).toBe('headless');
   });
 
   it('extracts multiple paths', () => {
-    const out = classifyExternalCodingCliIntent(
-      'ask claude code to compare `/a/b.ts` and `/a/c.ts`',
-    );
+    const out = classifyExternalCodingCliIntent('ask claude code to compare `/a/b.ts` and `/a/c.ts`');
     expect(out.matched).toBe(true);
     expect(out.targetPaths).toContain('/a/b.ts');
     expect(out.targetPaths).toContain('/a/c.ts');

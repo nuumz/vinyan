@@ -149,12 +149,7 @@ describe('ParameterStore + Ledger — write path', () => {
 
   test('set() rejects out-of-range values', () => {
     const store = new ParameterStore();
-    const result = store.set(
-      'intent.deterministic_skip_threshold',
-      1.5,
-      'experimental',
-      'test',
-    );
+    const result = store.set('intent.deterministic_skip_threshold', 1.5, 'experimental', 'test');
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain('out of range');

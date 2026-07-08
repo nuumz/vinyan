@@ -209,7 +209,11 @@ export function createProxyProvider(socketPath: string, tier: LLMProvider['tier'
         return await Promise.race([socketPromise, timeoutPromise]);
       } finally {
         if (timeoutTimer) clearTimeout(timeoutTimer);
-        try { resolvedSocket?.end(); } catch { /* already closed */ }
+        try {
+          resolvedSocket?.end();
+        } catch {
+          /* already closed */
+        }
       }
     },
   };

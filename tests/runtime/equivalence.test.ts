@@ -11,10 +11,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import {
-  createMockProvider,
-  createMockReasoningEngine,
-} from '../../src/orchestrator/llm/mock-provider.ts';
+import { createMockProvider, createMockReasoningEngine } from '../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type {
   PerceptualHierarchy,
@@ -134,20 +131,8 @@ describe('WorkerBackend equivalence (MVP L0 opt-in)', () => {
       backendSelector: selector,
     });
 
-    const legacy = await legacyPool.dispatch(
-      makeInput(),
-      makePerception(),
-      makeMemory(),
-      undefined,
-      makeRouting(0),
-    );
-    const next = await newPool.dispatch(
-      makeInput(),
-      makePerception(),
-      makeMemory(),
-      undefined,
-      makeRouting(0),
-    );
+    const legacy = await legacyPool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(0));
+    const next = await newPool.dispatch(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(0));
 
     // durationMs will differ because the backend path exercises spawn /
     // teardown. All other fields must match byte-for-byte.

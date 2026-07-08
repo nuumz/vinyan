@@ -1,11 +1,10 @@
-import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-
+import { describe, expect, it } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
-import { ReasoningEngineRegistry } from '../../../src/orchestrator/llm/llm-reasoning-engine.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
-import type { ReasoningEngine, RERequest, REResponse } from '../../../src/orchestrator/types.ts';
+import { ReasoningEngineRegistry } from '../../../src/orchestrator/llm/llm-reasoning-engine.ts';
+import type { RERequest, REResponse, ReasoningEngine } from '../../../src/orchestrator/types.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
@@ -63,9 +62,7 @@ describe('Engine registry auto-refresh', () => {
     const { coordinator, runtime, departments } = buildEcosystem({
       db,
       bus,
-      departments: [
-        { id: 'code', anchorCapabilities: ['code-generation'], minMatchCount: 1 },
-      ],
+      departments: [{ id: 'code', anchorCapabilities: ['code-generation'], minMatchCount: 1 }],
       taskResolver: () => null,
       engineRoster: () => reg.listEngines(),
     });
@@ -94,9 +91,7 @@ describe('Engine registry auto-refresh', () => {
     const { coordinator, runtime, departments } = buildEcosystem({
       db,
       bus,
-      departments: [
-        { id: 'code', anchorCapabilities: ['code-generation'], minMatchCount: 1 },
-      ],
+      departments: [{ id: 'code', anchorCapabilities: ['code-generation'], minMatchCount: 1 }],
       taskResolver: () => null,
       engineRoster: () => reg.listEngines(),
     });
@@ -122,9 +117,7 @@ describe('Engine registry auto-refresh', () => {
     const { coordinator, runtime, departments } = buildEcosystem({
       db,
       bus,
-      departments: [
-        { id: 'code', anchorCapabilities: ['code-generation'], minMatchCount: 1 },
-      ],
+      departments: [{ id: 'code', anchorCapabilities: ['code-generation'], minMatchCount: 1 }],
       taskResolver: () => null,
       engineRoster: () => reg.listEngines(),
     });

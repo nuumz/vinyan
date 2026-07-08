@@ -107,9 +107,7 @@ describe('GET /api/v1/sessions/:sessionId/event-history', () => {
       { taskId: 'a', sessionId: 'sess-multi', eventType: 'phase:timing', payload: { i: 2 }, ts: 30 },
     ]);
 
-    const res = await serverWithStore.handleRequest(
-      req('/api/v1/sessions/sess-multi/event-history'),
-    );
+    const res = await serverWithStore.handleRequest(req('/api/v1/sessions/sess-multi/event-history'));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       events: Array<{ taskId: string; payload: { i: number } }>;
@@ -132,9 +130,7 @@ describe('GET /api/v1/sessions/:sessionId/event-history', () => {
       });
     }
 
-    const page1Res = await serverWithStore.handleRequest(
-      req('/api/v1/sessions/sess-page/event-history?limit=3'),
-    );
+    const page1Res = await serverWithStore.handleRequest(req('/api/v1/sessions/sess-page/event-history?limit=3'));
     expect(page1Res.status).toBe(200);
     const page1 = (await page1Res.json()) as {
       events: Array<{ payload: { i: number } }>;
@@ -144,11 +140,7 @@ describe('GET /api/v1/sessions/:sessionId/event-history', () => {
     expect(page1.nextCursor).toBeDefined();
 
     const page2Res = await serverWithStore.handleRequest(
-      req(
-        `/api/v1/sessions/sess-page/event-history?limit=3&since=${encodeURIComponent(
-          page1.nextCursor as string,
-        )}`,
-      ),
+      req(`/api/v1/sessions/sess-page/event-history?limit=3&since=${encodeURIComponent(page1.nextCursor as string)}`),
     );
     expect(page2Res.status).toBe(200);
     const page2 = (await page2Res.json()) as {
@@ -163,11 +155,7 @@ describe('GET /api/v1/sessions/:sessionId/event-history', () => {
     // One more page beyond the data should be empty (and may or may not
     // expose a cursor — the contract says strict-greater pagination).
     const page3Res = await serverWithStore.handleRequest(
-      req(
-        `/api/v1/sessions/sess-page/event-history?since=${encodeURIComponent(
-          page2.nextCursor as string,
-        )}`,
-      ),
+      req(`/api/v1/sessions/sess-page/event-history?since=${encodeURIComponent(page2.nextCursor as string)}`),
     );
     expect(page3Res.status).toBe(200);
     const page3 = (await page3Res.json()) as { events: unknown[] };
@@ -175,9 +163,7 @@ describe('GET /api/v1/sessions/:sessionId/event-history', () => {
   });
 
   test('returns 404 when no taskEventStore is wired (no DB)', async () => {
-    const res = await serverWithoutStore.handleRequest(
-      req('/api/v1/sessions/anything/event-history'),
-    );
+    const res = await serverWithoutStore.handleRequest(req('/api/v1/sessions/anything/event-history'));
     expect(res.status).toBe(404);
   });
 });

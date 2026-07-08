@@ -58,7 +58,9 @@ export async function executeWithGoalLoop(
       const taskSig = computeTaskSignature(input);
       const seed = deps.decompositionLearner.retrieveSeedShape(taskSig);
       if (seed && seed.nodes.length > 0) {
-        const seedDesc = seed.nodes.map((n) => `${n.id}: ${n.description} [${n.assignedOracles.join(',')}]`).join(' → ');
+        const seedDesc = seed.nodes
+          .map((n) => `${n.id}: ${n.description} [${n.assignedOracles.join(',')}]`)
+          .join(' → ');
         input = {
           ...input,
           goal: `${input.goal}\n\n[SEED DECOMPOSITION] A prior winning plan shape for similar tasks: ${seedDesc}. Consider reusing this structure.`,
@@ -163,8 +165,7 @@ export async function executeWithGoalLoop(
     // and MUST NOT be reported as done. Force escalation so the replan engine
     // (or human) can intervene.
     const blockedByGrade =
-      satisfaction.score >= cfg.goalSatisfactionThreshold &&
-      satisfaction.accountabilityGrade === 'C';
+      satisfaction.score >= cfg.goalSatisfactionThreshold && satisfaction.accountabilityGrade === 'C';
     if (blockedByGrade) {
       deps.bus?.emit('goal-loop:accountability-block', {
         taskId: input.id,
@@ -292,10 +293,7 @@ function annotate(
   const escalationReason = info.satisfaction
     ? `${info.reason} (score=${info.satisfaction.score.toFixed(2)}, failed=[${info.satisfaction.failedChecks.join(',')}])`
     : info.reason;
-  const notes = [
-    ...(result.notes ?? []),
-    `goal-loop: ${info.reason} @ iteration ${info.iteration}`,
-  ];
+  const notes = [...(result.notes ?? []), `goal-loop: ${info.reason} @ iteration ${info.iteration}`];
   return { ...result, status: info.status, escalationReason, notes };
 }
 

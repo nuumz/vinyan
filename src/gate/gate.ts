@@ -11,8 +11,9 @@ import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { loadConfig } from '../config/loader.ts';
 import { buildVerdict } from '../core/index.ts';
-import { isAbstention } from '../core/types.ts';
 import type { HypothesisTuple, OracleAbstention, OracleResponse, OracleVerdict, QualityScore } from '../core/types.ts';
+import { isAbstention } from '../core/types.ts';
+import type { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
 import { containsBypassAttempt, detectPromptInjection } from '../guardrails/index.ts';
 import { verify as astVerify } from '../oracle/ast/ast-verifier.ts';
 import { OracleCircuitBreaker } from '../oracle/circuit-breaker.ts';
@@ -26,19 +27,19 @@ import { verify as testVerify } from '../oracle/test/test-verifier.ts';
 import { clampByTier } from '../oracle/tier-clamp.ts';
 import { verify as typeVerify } from '../oracle/type/type-verifier.ts';
 import type { RiskFactors, VerificationHint } from '../orchestrator/types.ts';
-import type { OracleAccuracyStore } from '../db/oracle-accuracy-store.ts';
-import { verifyContentHashes, applyContentHashVerification } from './content-hash-verifier.ts';
 import { resolveConflicts } from './conflict-resolver.ts';
+import { applyContentHashVerification, verifyContentHashes } from './content-hash-verifier.ts';
 import {
   computeAggregateConfidence,
   computeSLAggregate,
   deriveEpistemicDecision,
-  generateResolutionHints,
   type EpistemicGateDecision,
   type FusionInput,
+  fromScalar,
+  generateResolutionHints,
+  projectedProbability,
   type SLAggregateResult,
   type SubjectiveOpinion,
-  fromScalar,
 } from './epistemic-decision.ts';
 import { logDecision, type SessionLogEntry } from './logger.ts';
 import type { ComplexityContext, TestContext } from './quality-score.ts';
@@ -74,9 +75,7 @@ export interface GateDeps {
 let oracleAccuracyStore: OracleAccuracyStore | undefined;
 let oracleEMACalibrator: import('../orchestrator/monitoring/oracle-ema-calibrator.ts').OracleEMACalibrator | undefined;
 let gateBus: import('../core/bus.ts').VinyanBus | undefined;
-let localOracleProfileStore:
-  | import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore
-  | undefined;
+let localOracleProfileStore: import('../db/local-oracle-profile-store.ts').LocalOracleProfileStore | undefined;
 
 /** Inject everything the gate module needs in a single call. */
 export function setGateDeps(deps: GateDeps): void {
@@ -95,9 +94,7 @@ export function clearGateDeps(): void {
 }
 
 /** Convert profile status → confidence multiplier. Exported for tests + transparency. */
-export function profileStatusWeight(
-  status: 'active' | 'probation' | 'demoted' | 'retired' | null,
-): number {
+export function profileStatusWeight(status: 'active' | 'probation' | 'demoted' | 'retired' | null): number {
   switch (status) {
     case 'active':
       return 1.0;
@@ -199,7 +196,12 @@ const ORACLE_ENTRIES: Record<string, OracleEntry> = {
   test: { verify: testVerify, defaultPattern: 'test-pass', requiresContext: false },
   lint: { verify: lintVerify, defaultPattern: 'lint-clean', requiresContext: false },
   'goal-alignment': {
-    verify: (h) => goalAlignmentVerify(h, h.context?.understanding as import('../orchestrator/types.ts').TaskUnderstanding | undefined, h.context?.targetFiles as string[] | undefined),
+    verify: (h) =>
+      goalAlignmentVerify(
+        h,
+        h.context?.understanding as import('../orchestrator/types.ts').TaskUnderstanding | undefined,
+        h.context?.targetFiles as string[] | undefined,
+      ),
     defaultPattern: 'goal-alignment',
     requiresContext: false, // Runs whenever understanding is available (abstains if missing)
   },
@@ -353,7 +355,14 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
             tool: request.tool,
             ...(request.params.content ? { content: request.params.content } : {}),
             // A1 Understanding layer: inject TaskUnderstanding for goal-alignment oracle
-            ...(request.verificationHint?.understanding ? { understanding: request.verificationHint.understanding } : {}),
+            ...(request.verificationHint?.understanding
+              ? { understanding: request.verificationHint.understanding }
+              : {}),
+            // AST oracle needs a symbol to verify — thread the understanding's
+            // target symbol through so 'symbol-exists' can run instead of abstaining.
+            ...(request.verificationHint?.understanding?.targetSymbol
+              ? { symbolName: request.verificationHint.understanding.targetSymbol }
+              : {}),
             ...(request.verificationHint?.targetFiles ? { targetFiles: request.verificationHint.targetFiles } : {}),
           },
           workspace: request.params.workspace,
@@ -367,7 +376,16 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
           if (raceResult === '__timeout__') {
             circuitBreaker.recordFailure(name);
             if (timeoutBehavior === 'warn') {
-              return { name, result: null };
+              // A9: a timed-out safety check degrades to a recorded abstention,
+              // never a silent skip — if it was the only oracle, the decision
+              // path must see "all abstained" (uncertain), not "no oracles ran" (allow).
+              const timeoutAbstention: OracleAbstention = {
+                type: 'abstained',
+                reason: 'timeout',
+                oracleName: name,
+                durationMs: timeoutMs,
+              };
+              return { name, result: timeoutAbstention };
             }
             const timeoutResult: OracleVerdict = buildVerdict({
               verified: false,
@@ -391,8 +409,7 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
           // Only infrastructure failures (ORACLE_CRASH, TIMEOUT) trip the breaker —
           // legitimate detection results like TYPE_MISMATCH mean the oracle is working
           // correctly and must NOT count as failures.
-          const isInfraFailure =
-            raceResult.errorCode === 'ORACLE_CRASH' || raceResult.errorCode === 'TIMEOUT';
+          const isInfraFailure = raceResult.errorCode === 'ORACLE_CRASH' || raceResult.errorCode === 'TIMEOUT';
           if (isInfraFailure) {
             circuitBreaker.recordFailure(name);
           } else {
@@ -437,7 +454,6 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
   );
 
   // ⑤ Collect results — partition into verdicts vs abstentions
-  // (skip null — oracle was excluded via timeout_behavior: "warn")
   for (const { name, result } of results) {
     if (!result) continue;
     if (isAbstention(result)) {
@@ -480,13 +496,18 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     }
   }
 
-  const resolved = resolveConflicts(oracleResults, {
-    oracleTiers: Object.fromEntries(
-      Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? 'deterministic']),
-    ),
-    informationalOracles: INFORMATIONAL_ORACLES,
-    oracleAccuracy,
-  }, oracleAbstentions, request.routingLevel);
+  const resolved = resolveConflicts(
+    oracleResults,
+    {
+      oracleTiers: Object.fromEntries(
+        Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? 'deterministic']),
+      ),
+      informationalOracles: INFORMATIONAL_ORACLES,
+      oracleAccuracy,
+    },
+    oracleAbstentions,
+    request.routingLevel,
+  );
   reasons.push(...resolved.reasons);
 
   // Compute aggregate confidence (weighted harmonic mean across oracle tiers)
@@ -494,14 +515,26 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
     Object.entries(config.oracles).map(([name, conf]) => [name, conf.tier ?? 'heuristic']),
   );
 
-  // Phase 4.9: Build SL fusion inputs from oracle results (direction-aware opinion, tier, evidence files as deps)
-  const fusionInputs: FusionInput[] = Object.entries(oracleResults).map(([name, verdict]) => ({
-    opinion: verdict.opinion != null
-      ? verdict.opinion
-      : (verdict.verified ? fromScalar(verdict.confidence) : fromScalar(1 - verdict.confidence)),
-    tier: oracleTiersForConfidence[name] ?? 'heuristic',
-    deps: verdict.evidence.map(e => e.file),
-  }));
+  // Phase 4.9: Build SL fusion inputs from oracle results (direction-aware opinion, tier, evidence files as deps).
+  // A3 guard: a native opinion is only trusted when its direction agrees with the
+  // boolean verdict — a failing oracle that reports belief > 0.5 (mis-oriented
+  // producer, e.g. an external subprocess oracle) would otherwise invert fusion
+  // and let a rejection raise aggregate confidence. Disagreement falls back to
+  // the direction-aware scalar conversion.
+  const fusionInputs: FusionInput[] = Object.entries(oracleResults).map(([name, verdict]) => {
+    const native = verdict.opinion;
+    const nativeAgreesWithVerdict =
+      native != null && (verdict.verified ? projectedProbability(native) >= 0.5 : projectedProbability(native) <= 0.5);
+    return {
+      opinion: nativeAgreesWithVerdict
+        ? native
+        : verdict.verified
+          ? fromScalar(verdict.confidence)
+          : fromScalar(1 - verdict.confidence),
+      tier: oracleTiersForConfidence[name] ?? 'heuristic',
+      deps: verdict.evidence.map((e) => e.file),
+    };
+  });
   const slResult: SLAggregateResult = computeSLAggregate(fusionInputs);
 
   // Use SL aggregate when available; harmonic mean as NaN/empty fallback
@@ -516,17 +549,21 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
   // Backward-compat: map epistemic decision to binary allow/block
   // When no oracles ran at all (e.g., L0 hash-only risk tier), fall back to reasons-only decision.
   const noOraclesDispatched = Object.keys(oracleResults).length === 0 && Object.keys(oracleAbstentions).length === 0;
-  const decision: GateDecision = reasons.length > 0
-    ? 'block'
-    : noOraclesDispatched
-      ? 'allow'
-      : (epistemicDecision === 'allow' || epistemicDecision === 'allow-with-caveats') ? 'allow' : 'block';
+  const decision: GateDecision =
+    reasons.length > 0
+      ? 'block'
+      : noOraclesDispatched
+        ? 'allow'
+        : epistemicDecision === 'allow' || epistemicDecision === 'allow-with-caveats'
+          ? 'allow'
+          : 'block';
 
   // Generate caveats for non-clean passes
-  const abstentionReasons = Object.values(oracleAbstentions).map(a => a.reason);
-  const caveats = epistemicDecision !== 'allow'
-    ? generateResolutionHints(abstentionReasons, aggregateConfidence).map(h => h as string)
-    : [];
+  const abstentionReasons = Object.values(oracleAbstentions).map((a) => a.reason);
+  const caveats =
+    epistemicDecision !== 'allow'
+      ? generateResolutionHints(abstentionReasons, aggregateConfidence).map((h) => h as string)
+      : [];
 
   const durationMs = performance.now() - start;
 

@@ -18,8 +18,8 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createBus } from '../../src/core/bus.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SkillProposalStore } from '../../src/db/skill-proposal-store.ts';
-import { wireSkillProposalAutogen } from '../../src/skills/proposal-autogen.ts';
 import type { CachedSkill } from '../../src/orchestrator/types.ts';
+import { wireSkillProposalAutogen } from '../../src/skills/proposal-autogen.ts';
 
 let db: Database;
 

@@ -242,20 +242,23 @@ export async function executePlanPhase(
       reason: decision,
     });
     if (decision === 'rejected') {
-      const rejectedTrace: ExecutionTrace = applyRoutingGovernance({
-        id: `trace-${input.id}-rejected`,
-        taskId: input.id,
-        timestamp: Date.now(),
-        routingLevel: routing.level,
-        approach: 'rejected-by-human',
-        oracleVerdicts: {},
-        modelUsed: routing.model ?? 'none',
-        tokensConsumed: 0,
-        durationMs: Date.now() - startTime,
-        outcome: 'failure',
-        failureReason: 'Rejected by human approval gate',
-        affectedFiles: input.targetFiles ?? [],
-      }, routing);
+      const rejectedTrace: ExecutionTrace = applyRoutingGovernance(
+        {
+          id: `trace-${input.id}-rejected`,
+          taskId: input.id,
+          timestamp: Date.now(),
+          routingLevel: routing.level,
+          approach: 'rejected-by-human',
+          oracleVerdicts: {},
+          modelUsed: routing.model ?? 'none',
+          tokensConsumed: 0,
+          durationMs: Date.now() - startTime,
+          outcome: 'failure',
+          failureReason: 'Rejected by human approval gate',
+          affectedFiles: input.targetFiles ?? [],
+        },
+        routing,
+      );
       return Phase.return({
         id: input.id,
         status: 'failed',

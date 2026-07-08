@@ -19,15 +19,12 @@
  * must run even when the learning substrate is unavailable.
  */
 import type { Database, Statement } from 'bun:sqlite';
-import type {
-  ComprehendedTaskMessage,
-  ComprehensionEngineType,
-} from '../orchestrator/comprehension/types.ts';
+import type { ComprehendedTaskMessage, ComprehensionEngineType } from '../orchestrator/comprehension/types.ts';
 
 /** Outcome taxonomy (A2 — explicit state, no silent defaults). */
 export type ComprehensionOutcome =
-  | 'confirmed'  // user's next turn continued the thread naturally
-  | 'corrected'  // user explicitly overrode the resolvedGoal
+  | 'confirmed' // user's next turn continued the thread naturally
+  | 'corrected' // user explicitly overrode the resolvedGoal
   | 'abandoned'; // session ended / long gap before a follow-up
 
 export interface ComprehensionRecordRow {
@@ -224,17 +221,9 @@ export class ComprehensionStore {
    * contaminate calibration for the legitimate owner. Callers that know
    * their engine's type SHOULD always pass it.
    */
-  recentByEngine(
-    engineId: string,
-    limit = 200,
-    engineType?: ComprehensionEngineType,
-  ): ComprehensionRecordRow[] {
+  recentByEngine(engineId: string, limit = 200, engineType?: ComprehensionEngineType): ComprehensionRecordRow[] {
     if (engineType) {
-      return this.recentByEngineTypedStmt.all(
-        engineId,
-        engineType,
-        limit,
-      ) as ComprehensionRecordRow[];
+      return this.recentByEngineTypedStmt.all(engineId, engineType, limit) as ComprehensionRecordRow[];
     }
     return this.recentByEngineStmt.all(engineId, limit) as ComprehensionRecordRow[];
   }
@@ -264,5 +253,4 @@ export class ComprehensionStore {
   outcomedInWindow(sinceMs: number, limit = 2000): ComprehensionRecordRow[] {
     return this.outcomedInWindowStmt.all(sinceMs, limit) as ComprehensionRecordRow[];
   }
-
 }

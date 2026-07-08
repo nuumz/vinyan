@@ -373,7 +373,7 @@ export class CalibratedSelfModel implements SelfModel {
     if (params.observationCount < 10) {
       return {
         generationBudget: 0.65,
-        verificationBudget: 0.20,
+        verificationBudget: 0.2,
         contingencyReserve: 0.15,
         oraclePriority: ['ast', 'type', 'dep', 'lint', 'test'],
         basis: 'default',

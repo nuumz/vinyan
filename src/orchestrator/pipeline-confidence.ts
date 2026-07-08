@@ -31,10 +31,10 @@ export interface PipelineConfidence {
 export const PIPELINE_WEIGHTS = {
   prediction: 0.15,
   metaPrediction: 0.05,
-  planning: 0.10,
-  generation: 0.10,
-  verification: 0.40, // Hard evidence dominates
-  critic: 0.20,
+  planning: 0.1,
+  generation: 0.1,
+  verification: 0.4, // Hard evidence dominates
+  critic: 0.2,
 } as const;
 
 /**
@@ -42,10 +42,10 @@ export const PIPELINE_WEIGHTS = {
  * Different from gate-level thresholds — applied to the full 6-step composite.
  */
 export const PIPELINE_THRESHOLDS = {
-  ALLOW: 0.70, // composite >= 0.70: allow
-  RE_VERIFY: 0.50, // 0.50 <= composite < 0.70: re-verify
-  ESCALATE: 0.30, // 0.30 <= composite < 0.50: escalate
-  REFUSE: 0.00, // composite < 0.30: refuse
+  ALLOW: 0.7, // composite >= 0.70: allow
+  RE_VERIFY: 0.5, // 0.50 <= composite < 0.70: re-verify
+  ESCALATE: 0.3, // 0.30 <= composite < 0.50: escalate
+  REFUSE: 0.0, // composite < 0.30: refuse
 } as const;
 
 export type ConfidenceDecision = 'allow' | 're-verify' | 'escalate' | 'refuse';

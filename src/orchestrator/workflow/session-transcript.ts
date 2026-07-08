@@ -48,10 +48,7 @@ function plainText(turn: Turn): string {
  * test the return value before appending to a prompt so a no-history case
  * doesn't leave a dangling header.
  */
-export function formatSessionTranscript(
-  turns: Turn[] | undefined,
-  options: FormatOptions = {},
-): string {
+export function formatSessionTranscript(turns: Turn[] | undefined, options: FormatOptions = {}): string {
   if (!turns || turns.length === 0) return '';
   const opts = { ...DEFAULTS, ...options };
   const tail = turns.slice(-opts.maxTurns);
@@ -62,9 +59,7 @@ export function formatSessionTranscript(
     const text = plainText(turn);
     if (!text) continue;
     const truncated =
-      text.length > opts.maxCharsPerTurn
-        ? `${text.slice(0, opts.maxCharsPerTurn)}\n…[truncated]`
-        : text;
+      text.length > opts.maxCharsPerTurn ? `${text.slice(0, opts.maxCharsPerTurn)}\n…[truncated]` : text;
     const role = turn.role === 'user' ? 'User' : 'Assistant';
     const section = `[${role} · turn ${turn.seq}]\n${truncated}`;
     if (totalChars + section.length > opts.maxTotalChars) {

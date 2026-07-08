@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { applyPredictionEscalation, LEVEL_CONFIG } from '@vinyan/gate/risk-router.ts';
-import type { OutcomePrediction, CausalRiskEntry } from '@vinyan/orchestrator/forward-predictor-types.ts';
+import type { CausalRiskEntry, OutcomePrediction } from '@vinyan/orchestrator/forward-predictor-types.ts';
 import type { RoutingDecision, RoutingLevel } from '@vinyan/orchestrator/types.ts';
 
 // ── Factories ────────────────────────────────────────────────────

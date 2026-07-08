@@ -92,18 +92,11 @@ export function detectDrift(
     trace.affectedFiles.length,
     relThreshold,
   );
-  const durationDim = continuousDimension(
-    'duration',
-    prediction.expectedDuration,
-    trace.durationMs,
-    relThreshold,
-  );
+  const durationDim = continuousDimension('duration', prediction.expectedDuration, trace.durationMs, relThreshold);
 
   // qualityScore uses absolute threshold per the docstring rationale.
   const actualQuality =
-    trace.qualityScore != null && !Number.isNaN(trace.qualityScore.composite)
-      ? trace.qualityScore.composite
-      : 0.5;
+    trace.qualityScore != null && !Number.isNaN(trace.qualityScore.composite) ? trace.qualityScore.composite : 0.5;
   const qualityAbsDelta = Math.abs(actualQuality - prediction.expectedQualityScore);
   const qualityDim: DriftDimension = {
     name: 'qualityScore',

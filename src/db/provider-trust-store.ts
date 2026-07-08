@@ -66,7 +66,13 @@ export class ProviderTrustStore {
   private warmCache(): void {
     const rows = this.db
       .prepare('SELECT provider, capability, successes, failures, evidence_hash FROM provider_trust')
-      .all() as Array<{ provider: string; capability: string; successes: number; failures: number; evidence_hash: string | null }>;
+      .all() as Array<{
+      provider: string;
+      capability: string;
+      successes: number;
+      failures: number;
+      evidence_hash: string | null;
+    }>;
     for (const row of rows) {
       const key = cacheKey(row.provider, row.capability);
       this.cache.set(key, {

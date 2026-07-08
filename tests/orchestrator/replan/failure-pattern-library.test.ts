@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { buildFailurePatternLibrary } from '../../../src/orchestrator/replan/failure-pattern-library.ts';
 import type { ClassifiedFailure } from '../../../src/orchestrator/failure-classifier.ts';
+import { buildFailurePatternLibrary } from '../../../src/orchestrator/replan/failure-pattern-library.ts';
 import type { TaskDAG } from '../../../src/orchestrator/types.ts';
 
 const library = buildFailurePatternLibrary();
@@ -41,7 +41,9 @@ function twoNodeDag(): TaskDAG {
   };
 }
 
-function failure(overrides: Partial<ClassifiedFailure> & { category: ClassifiedFailure['category'] }): ClassifiedFailure {
+function failure(
+  overrides: Partial<ClassifiedFailure> & { category: ClassifiedFailure['category'] },
+): ClassifiedFailure {
   return {
     message: 'test error',
     severity: 'error',
@@ -54,9 +56,7 @@ describe('FailurePatternLibrary', () => {
     test('single-node DAG with 2 files produces 2-node DAG', () => {
       const strategy = library.get('type_error')!;
       const dag = singleNodeDag();
-      const result = strategy.dagTransform(dag, [
-        failure({ category: 'type_error', file: 'src/foo.ts', line: 42 }),
-      ]);
+      const result = strategy.dagTransform(dag, [failure({ category: 'type_error', file: 'src/foo.ts', line: 42 })]);
 
       expect(result).not.toBeNull();
       expect(result!.nodes.length).toBe(2);
@@ -75,18 +75,14 @@ describe('FailurePatternLibrary', () => {
     test('returns null when failure has no file', () => {
       const strategy = library.get('type_error')!;
       const dag = singleNodeDag();
-      const result = strategy.dagTransform(dag, [
-        failure({ category: 'type_error' }),
-      ]);
+      const result = strategy.dagTransform(dag, [failure({ category: 'type_error' })]);
       expect(result).toBeNull();
     });
 
     test('returns null when no node targets the failing file', () => {
       const strategy = library.get('type_error')!;
       const dag = singleNodeDag();
-      const result = strategy.dagTransform(dag, [
-        failure({ category: 'type_error', file: 'src/unrelated.ts' }),
-      ]);
+      const result = strategy.dagTransform(dag, [failure({ category: 'type_error', file: 'src/unrelated.ts' })]);
       expect(result).toBeNull();
     });
   });
@@ -95,9 +91,7 @@ describe('FailurePatternLibrary', () => {
     test('prepends test-expectations node, all existing nodes depend on it', () => {
       const strategy = library.get('test_failure')!;
       const dag = twoNodeDag();
-      const result = strategy.dagTransform(dag, [
-        failure({ category: 'test_failure', file: 'tests/foo.test.ts' }),
-      ]);
+      const result = strategy.dagTransform(dag, [failure({ category: 'test_failure', file: 'tests/foo.test.ts' })]);
 
       expect(result).not.toBeNull();
       expect(result!.nodes.length).toBe(3);
@@ -118,13 +112,23 @@ describe('FailurePatternLibrary', () => {
       const strategy = library.get('test_failure')!;
       const dag: TaskDAG = {
         nodes: [
-          { id: 'n0-test-expectations', description: 'existing', targetFiles: [], dependencies: [], assignedOracles: [] },
-          { id: 'n1', description: 'edit', targetFiles: ['src/foo.ts'], dependencies: ['n0-test-expectations'], assignedOracles: [] },
+          {
+            id: 'n0-test-expectations',
+            description: 'existing',
+            targetFiles: [],
+            dependencies: [],
+            assignedOracles: [],
+          },
+          {
+            id: 'n1',
+            description: 'edit',
+            targetFiles: ['src/foo.ts'],
+            dependencies: ['n0-test-expectations'],
+            assignedOracles: [],
+          },
         ],
       };
-      const result = strategy.dagTransform(dag, [
-        failure({ category: 'test_failure' }),
-      ]);
+      const result = strategy.dagTransform(dag, [failure({ category: 'test_failure' })]);
       expect(result).toBeNull();
     });
   });
@@ -133,9 +137,7 @@ describe('FailurePatternLibrary', () => {
     test('replaces nodes referencing hallucinated files with perception-recheck', () => {
       const strategy = library.get('hallucination_file')!;
       const dag = twoNodeDag();
-      const result = strategy.dagTransform(dag, [
-        failure({ category: 'hallucination_file', file: 'src/foo.ts' }),
-      ]);
+      const result = strategy.dagTransform(dag, [failure({ category: 'hallucination_file', file: 'src/foo.ts' })]);
 
       expect(result).not.toBeNull();
       // n1 targeted src/foo.ts → removed, replaced by perception-recheck
@@ -152,9 +154,7 @@ describe('FailurePatternLibrary', () => {
 
     test('returns null when no file in failures', () => {
       const strategy = library.get('hallucination_file')!;
-      const result = strategy.dagTransform(twoNodeDag(), [
-        failure({ category: 'hallucination_file' }),
-      ]);
+      const result = strategy.dagTransform(twoNodeDag(), [failure({ category: 'hallucination_file' })]);
       expect(result).toBeNull();
     });
   });
@@ -163,9 +163,7 @@ describe('FailurePatternLibrary', () => {
     test('splits multi-file node into per-file atomic nodes', () => {
       const strategy = library.get('goal_misalignment')!;
       const dag = singleNodeDag(); // n1 has 2 target files
-      const result = strategy.dagTransform(dag, [
-        failure({ category: 'goal_misalignment' }),
-      ]);
+      const result = strategy.dagTransform(dag, [failure({ category: 'goal_misalignment' })]);
 
       expect(result).not.toBeNull();
       expect(result!.nodes.length).toBe(2);
@@ -178,13 +176,9 @@ describe('FailurePatternLibrary', () => {
     test('returns null when all nodes already have single file', () => {
       const strategy = library.get('goal_misalignment')!;
       const dag: TaskDAG = {
-        nodes: [
-          { id: 'n1', description: 'edit', targetFiles: ['src/foo.ts'], dependencies: [], assignedOracles: [] },
-        ],
+        nodes: [{ id: 'n1', description: 'edit', targetFiles: ['src/foo.ts'], dependencies: [], assignedOracles: [] }],
       };
-      const result = strategy.dagTransform(dag, [
-        failure({ category: 'goal_misalignment' }),
-      ]);
+      const result = strategy.dagTransform(dag, [failure({ category: 'goal_misalignment' })]);
       expect(result).toBeNull();
     });
 
@@ -211,9 +205,7 @@ describe('FailurePatternLibrary', () => {
     test('appends lint-fix node after each leaf', () => {
       const strategy = library.get('lint_violation')!;
       const dag = twoNodeDag(); // n2 is a leaf (nothing depends on it)
-      const result = strategy.dagTransform(dag, [
-        failure({ category: 'lint_violation' }),
-      ]);
+      const result = strategy.dagTransform(dag, [failure({ category: 'lint_violation' })]);
 
       expect(result).not.toBeNull();
       expect(result!.nodes.length).toBe(3); // n1, n2, n2-lint-fix
@@ -230,7 +222,13 @@ describe('FailurePatternLibrary', () => {
       const dag: TaskDAG = {
         nodes: [
           { id: 'n1', description: 'edit', targetFiles: ['src/foo.ts'], dependencies: [], assignedOracles: [] },
-          { id: 'n1-lint-fix', description: 'lint', targetFiles: ['src/foo.ts'], dependencies: ['n1'], assignedOracles: ['lint'] },
+          {
+            id: 'n1-lint-fix',
+            description: 'lint',
+            targetFiles: ['src/foo.ts'],
+            dependencies: ['n1'],
+            assignedOracles: ['lint'],
+          },
         ],
       };
       const result = strategy.dagTransform(dag, [failure({ category: 'lint_violation' })]);
@@ -252,9 +250,7 @@ describe('FailurePatternLibrary', () => {
     test('original DAG is unchanged after transform', () => {
       const dag = singleNodeDag();
       const originalJson = JSON.stringify(dag);
-      library.get('type_error')!.dagTransform(dag, [
-        failure({ category: 'type_error', file: 'src/foo.ts' }),
-      ]);
+      library.get('type_error')!.dagTransform(dag, [failure({ category: 'type_error', file: 'src/foo.ts' })]);
       expect(JSON.stringify(dag)).toBe(originalJson);
     });
   });

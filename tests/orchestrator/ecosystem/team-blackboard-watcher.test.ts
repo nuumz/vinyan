@@ -1,4 +1,4 @@
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
+import { Database } from 'bun:sqlite';
 /**
  * Phase 3 — filesystem watcher & internal/external event discrimination.
  *
@@ -11,16 +11,15 @@ import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
  *  - `EcosystemCoordinator.stop()` detaches the watcher cleanly.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-
 import { createBus, type VinyanBus } from '../../../src/core/bus.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { TeamStore } from '../../../src/db/team-store.ts';
 import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
-import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 import { TeamManager } from '../../../src/orchestrator/ecosystem/team.ts';
+import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');

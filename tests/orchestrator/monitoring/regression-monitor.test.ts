@@ -6,6 +6,7 @@ import {
   REGRESSION_MIN_OBSERVATIONS,
   REGRESSION_RECENT_WINDOW,
   RegressionMonitor,
+  type RegressionVerdict,
 } from '../../../src/orchestrator/monitoring/regression-monitor.ts';
 
 function fillBaseline(monitor: RegressionMonitor, sig: string, successRate: number): void {
@@ -38,7 +39,7 @@ describe('RegressionMonitor', () => {
       monitor.record({ taskTypeSignature: 'edit::ts::single', succeeded: i % 10 !== 0 });
     }
     // Recent: 50% success — drop of 0.4, well above the 0.10 threshold.
-    let alertedVerdict;
+    let alertedVerdict: RegressionVerdict | undefined;
     for (let i = 0; i < REGRESSION_RECENT_WINDOW; i++) {
       const v = monitor.record({ taskTypeSignature: 'edit::ts::single', succeeded: i % 2 === 0 });
       if (v.alerted) alertedVerdict = v;
@@ -52,7 +53,10 @@ describe('RegressionMonitor', () => {
     const monitor = new RegressionMonitor();
     // Both halves at ~70% success → drop is ~0 → no alert.
     for (let i = 0; i < REGRESSION_BASELINE_MIN + REGRESSION_RECENT_WINDOW; i++) {
-      monitor.record({ taskTypeSignature: 'edit::ts::single', succeeded: i % 10 !== 0 && i % 10 !== 1 && i % 10 !== 2 });
+      monitor.record({
+        taskTypeSignature: 'edit::ts::single',
+        succeeded: i % 10 !== 0 && i % 10 !== 1 && i % 10 !== 2,
+      });
     }
     const verdict = monitor.snapshot()[0]!;
     expect(verdict.alerted).toBe(false);

@@ -3,12 +3,12 @@
  * A7: Measures understanding accuracy — entity overlap, category match, enriched signatures.
  */
 import { describe, expect, test } from 'bun:test';
+import type { ExecutionTrace, SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
 import {
   calibrateUnderstanding,
   computeEnrichedSignature,
   ENRICHMENT_THRESHOLD,
 } from '../../src/orchestrator/understanding/understanding-calibrator.ts';
-import type { ExecutionTrace, SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -55,8 +55,20 @@ describe('calibrateUnderstanding', () => {
   test('all resolved paths match affected files → entityAccuracy = 1.0', () => {
     const understanding = makeUnderstanding({
       resolvedEntities: [
-        { reference: 'auth', resolvedPaths: ['src/auth/service.ts'], resolution: 'exact', confidence: 1.0, confidenceSource: 'evidence-derived' },
-        { reference: 'utils', resolvedPaths: ['src/utils/helper.ts'], resolution: 'fuzzy-path', confidence: 0.8, confidenceSource: 'evidence-derived' },
+        {
+          reference: 'auth',
+          resolvedPaths: ['src/auth/service.ts'],
+          resolution: 'exact',
+          confidence: 1.0,
+          confidenceSource: 'evidence-derived',
+        },
+        {
+          reference: 'utils',
+          resolvedPaths: ['src/utils/helper.ts'],
+          resolution: 'fuzzy-path',
+          confidence: 0.8,
+          confidenceSource: 'evidence-derived',
+        },
       ],
     });
     const trace = makeTrace({ affectedFiles: ['src/auth/service.ts', 'src/utils/helper.ts'] });
@@ -67,7 +79,13 @@ describe('calibrateUnderstanding', () => {
   test('half resolved paths match → entityAccuracy = 0.5', () => {
     const understanding = makeUnderstanding({
       resolvedEntities: [
-        { reference: 'auth', resolvedPaths: ['src/auth/service.ts', 'src/auth/middleware.ts'], resolution: 'fuzzy-path', confidence: 0.8, confidenceSource: 'evidence-derived' },
+        {
+          reference: 'auth',
+          resolvedPaths: ['src/auth/service.ts', 'src/auth/middleware.ts'],
+          resolution: 'fuzzy-path',
+          confidence: 0.8,
+          confidenceSource: 'evidence-derived',
+        },
       ],
     });
     const trace = makeTrace({ affectedFiles: ['src/auth/service.ts'] });
@@ -85,7 +103,13 @@ describe('calibrateUnderstanding', () => {
   test('no overlap → entityAccuracy = 0.0', () => {
     const understanding = makeUnderstanding({
       resolvedEntities: [
-        { reference: 'auth', resolvedPaths: ['src/auth/service.ts'], resolution: 'exact', confidence: 1.0, confidenceSource: 'evidence-derived' },
+        {
+          reference: 'auth',
+          resolvedPaths: ['src/auth/service.ts'],
+          resolution: 'exact',
+          confidence: 1.0,
+          confidenceSource: 'evidence-derived',
+        },
       ],
     });
     const trace = makeTrace({ affectedFiles: ['src/payment/gateway.ts'] });

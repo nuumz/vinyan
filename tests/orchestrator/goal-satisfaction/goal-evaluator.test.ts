@@ -306,11 +306,9 @@ describe('DefaultGoalEvaluator › accountability grade', () => {
     });
 
     expect(satisfaction.accountabilityGrade).toBe('C');
-    expect(
-      satisfaction.blockers.some(
-        (b) => b.category === 'mutation-expectation' && b.resolvable === false,
-      ),
-    ).toBe(true);
+    expect(satisfaction.blockers.some((b) => b.category === 'mutation-expectation' && b.resolvable === false)).toBe(
+      true,
+    );
   });
 });
 
@@ -358,9 +356,7 @@ describe('DefaultGoalEvaluator › prediction error wiring', () => {
     // Severe overconfidence: agent claims A on a result that has an oracle
     // contradiction, which forces deterministic grade C.
     const result = makeResult({
-      mutations: [
-        { file: 'src/foo.ts', diff: '+ export const foo = 1;', oracleVerdicts: {} },
-      ],
+      mutations: [{ file: 'src/foo.ts', diff: '+ export const foo = 1;', oracleVerdicts: {} }],
       workerSelfAssessment: { grade: 'A', gaps: [] },
     });
 
@@ -387,9 +383,7 @@ describe('DefaultGoalEvaluator › prediction error wiring', () => {
     const wm = new WorkingMemory({ taskId: 'task-1' });
     const input = makeInput();
     const result = makeResult({
-      mutations: [
-        { file: 'src/foo.ts', diff: '+ export const foo = 1;', oracleVerdicts: {} },
-      ],
+      mutations: [{ file: 'src/foo.ts', diff: '+ export const foo = 1;', oracleVerdicts: {} }],
       // workerSelfAssessment intentionally absent
     });
 
@@ -409,9 +403,7 @@ describe('DefaultGoalEvaluator › prediction error wiring', () => {
     const wm = new WorkingMemory({ taskId: 'task-1' });
     const input = makeInput({ acceptanceCriteria: ['add foo'] });
     const result = makeResult({
-      mutations: [
-        { file: 'src/foo.ts', diff: '+ export const foo = 1;', oracleVerdicts: {} },
-      ],
+      mutations: [{ file: 'src/foo.ts', diff: '+ export const foo = 1;', oracleVerdicts: {} }],
       answer: 'add foo done',
       workerSelfAssessment: { grade: 'A' },
     });

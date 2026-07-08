@@ -10,7 +10,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
-import { promoteCapabilityClaims } from '../../src/sleep-cycle/promotion.ts';
+import type { AgentRegistry } from '../../src/orchestrator/agents/registry.ts';
 import type {
   AgentSpec,
   CapabilityClaim,
@@ -18,7 +18,7 @@ import type {
   ExecutionTrace,
   RoutingLevel,
 } from '../../src/orchestrator/types.ts';
-import type { AgentRegistry } from '../../src/orchestrator/agents/registry.ts';
+import { promoteCapabilityClaims } from '../../src/sleep-cycle/promotion.ts';
 
 // ── Test helpers ────────────────────────────────────────────────────────
 
@@ -39,10 +39,7 @@ function makeTrace(overrides: Partial<ExecutionTrace>): ExecutionTrace {
   };
 }
 
-function makeRequirement(
-  id: string,
-  overrides: Partial<CapabilityRequirement> = {},
-): CapabilityRequirement {
+function makeRequirement(id: string, overrides: Partial<CapabilityRequirement> = {}): CapabilityRequirement {
   return {
     id,
     weight: 0.8,
@@ -351,7 +348,8 @@ describe('promoteCapabilityClaims', () => {
     );
 
     promoteCapabilityClaims(traces, { agentRegistry: stub.registry });
-    const claim = stub.agents.get('ts-coder')!.capabilities?.find((c) => c.id === 'code.review.ts')!;
+    const claim = stub.agents.get('ts-coder')?.capabilities?.find((c) => c.id === 'code.review.ts');
+    if (!claim) throw new Error('expected promoted claim code.review.ts');
     expect(claim.actionVerbs).toEqual(['review', 'analyze']);
     expect(claim.fileExtensions).toEqual(['.ts', '.tsx']);
     expect(claim.domains).toEqual(['code-mutation']);

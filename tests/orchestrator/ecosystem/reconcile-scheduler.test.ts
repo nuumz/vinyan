@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-
+import { describe, expect, it } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
-import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import type { CoordinatorTimerImpl } from '../../../src/orchestrator/ecosystem/index.ts';
+import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
+
 function makeDb(): Database {
   const db = new Database(':memory:');
   migration001.up(db);

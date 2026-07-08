@@ -50,7 +50,7 @@ function mockResult(id: string): TaskResult {
   };
 }
 
-function planJSON(stepDescription: string): string {
+function planJson(stepDescription: string): string {
   return JSON.stringify({
     goal: 'parent',
     steps: [{ id: 'step1', description: stepDescription, strategy: 'delegate-sub-agent', budgetFraction: 0.5 }],
@@ -70,7 +70,7 @@ function makePlannerProvider(plan: string) {
       ({
         id: 'mock',
         generate: async () => ({ content: plan, tokensUsed: { input: 10, output: 10 } }),
-      } as unknown as ReturnType<NonNullable<Parameters<typeof executeWorkflow>[1]['llmRegistry']>['selectByTier']>),
+      }) as unknown as ReturnType<NonNullable<Parameters<typeof executeWorkflow>[1]['llmRegistry']>['selectByTier']>,
   };
 }
 
@@ -81,7 +81,7 @@ describe('Phase-13 A1 verifier routing in delegate-sub-agent', () => {
       const captured: TaskInput[] = [];
       const events: Array<{ event: string; payload: unknown }> = [];
       const result = await executeWorkflow(makeInput('refactor', 'code'), {
-        llmRegistry: makePlannerProvider(planJSON('review the implementation for correctness')) as any,
+        llmRegistry: makePlannerProvider(planJson('review the implementation for correctness')) as any,
         agentRegistry: reg,
         executeTask: async (subInput) => {
           captured.push(subInput);
@@ -105,7 +105,7 @@ describe('Phase-13 A1 verifier routing in delegate-sub-agent', () => {
     try {
       const captured: TaskInput[] = [];
       await executeWorkflow(makeInput('write essay', 'reasoning'), {
-        llmRegistry: makePlannerProvider(planJSON('review the draft')) as any,
+        llmRegistry: makePlannerProvider(planJson('review the draft')) as any,
         agentRegistry: reg,
         executeTask: async (subInput) => {
           captured.push(subInput);
@@ -124,7 +124,7 @@ describe('Phase-13 A1 verifier routing in delegate-sub-agent', () => {
     try {
       const captured: TaskInput[] = [];
       await executeWorkflow(makeInput('refactor', 'code'), {
-        llmRegistry: makePlannerProvider(planJSON('extract a helper function')) as any,
+        llmRegistry: makePlannerProvider(planJson('extract a helper function')) as any,
         agentRegistry: reg,
         executeTask: async (subInput) => {
           captured.push(subInput);
@@ -141,7 +141,7 @@ describe('Phase-13 A1 verifier routing in delegate-sub-agent', () => {
   test('agentRegistry omitted → no override (legacy / minimal setups)', async () => {
     const captured: TaskInput[] = [];
     await executeWorkflow(makeInput('refactor', 'code'), {
-      llmRegistry: makePlannerProvider(planJSON('review the implementation')) as any,
+      llmRegistry: makePlannerProvider(planJson('review the implementation')) as any,
       executeTask: async (subInput) => {
         captured.push(subInput);
         return mockResult(subInput.id);
@@ -159,7 +159,7 @@ describe('Phase-13 A1 verifier routing in delegate-sub-agent', () => {
       const parent = makeInput('audit code', 'code');
       parent.agentId = asPersonaId('reviewer');
       await executeWorkflow(parent, {
-        llmRegistry: makePlannerProvider(planJSON('verify the patch')) as any,
+        llmRegistry: makePlannerProvider(planJson('verify the patch')) as any,
         agentRegistry: reg,
         executeTask: async (subInput) => {
           captured.push(subInput);
@@ -182,7 +182,7 @@ describe('Phase-13 A1 verifier routing in delegate-sub-agent', () => {
       try {
         const captured: TaskInput[] = [];
         await executeWorkflow(makeInput('refactor', 'code'), {
-          llmRegistry: makePlannerProvider(planJSON(`${verb} the code`)) as any,
+          llmRegistry: makePlannerProvider(planJson(`${verb} the code`)) as any,
           agentRegistry: reg,
           executeTask: async (subInput) => {
             captured.push(subInput);

@@ -1,9 +1,12 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
-import { EntityResolver, PERCEPTION_EXPANSION_THRESHOLD } from '../../src/orchestrator/understanding/entity-resolver.ts';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { TaskInput, TaskUnderstanding } from '../../src/orchestrator/types.ts';
+import {
+  EntityResolver,
+  PERCEPTION_EXPANSION_THRESHOLD,
+} from '../../src/orchestrator/understanding/entity-resolver.ts';
 
 function makeInput(overrides?: Partial<TaskInput>): TaskInput {
   return {
@@ -90,10 +93,10 @@ describe('EntityResolver', () => {
 
       const result = resolver.resolve(input, understanding);
 
-      const fuzzyEntity = result.find(e => e.resolution === 'fuzzy-path');
+      const fuzzyEntity = result.find((e) => e.resolution === 'fuzzy-path');
       expect(fuzzyEntity).toBeDefined();
       // Should match files containing "auth"
-      const authPaths = fuzzyEntity!.resolvedPaths.filter(p => p.includes('auth'));
+      const authPaths = fuzzyEntity!.resolvedPaths.filter((p) => p.includes('auth'));
       expect(authPaths.length).toBeGreaterThan(0);
     });
 
@@ -105,7 +108,7 @@ describe('EntityResolver', () => {
 
       const result = resolver.resolve(input, understanding);
 
-      const fuzzyResults = result.filter(e => e.resolution === 'fuzzy-path');
+      const fuzzyResults = result.filter((e) => e.resolution === 'fuzzy-path');
       expect(fuzzyResults).toHaveLength(0);
     });
 
@@ -158,7 +161,7 @@ describe('EntityResolver', () => {
 
       const result = resolver.resolve(input, understanding);
 
-      const symbolEntity = result.find(e => e.resolution === 'fuzzy-symbol');
+      const symbolEntity = result.find((e) => e.resolution === 'fuzzy-symbol');
       expect(symbolEntity).toBeDefined();
       expect(symbolEntity!.resolvedPaths).toContain('src/services/auth-service.ts');
       expect(symbolEntity!.confidence).toBe(0.85);
@@ -172,7 +175,7 @@ describe('EntityResolver', () => {
 
       const result = resolver.resolve(input, understanding);
 
-      const symbolEntity = result.find(e => e.resolution === 'fuzzy-symbol');
+      const symbolEntity = result.find((e) => e.resolution === 'fuzzy-symbol');
       expect(symbolEntity).toBeUndefined();
     });
   });
@@ -201,7 +204,7 @@ describe('EntityResolver', () => {
 
       const result = resolver.resolve(input, understanding);
 
-      const inferred = result.find(e => e.resolution === 'dependency-inferred');
+      const inferred = result.find((e) => e.resolution === 'dependency-inferred');
       expect(inferred).toBeDefined();
       expect(inferred!.confidence).toBe(0.75);
       expect(inferred!.resolvedPaths).toContain('src/app.ts');
@@ -227,8 +230,10 @@ describe('EntityResolver', () => {
       const result = resolver.resolve(input, understanding);
 
       // If no entity has confidence >= 0.8, dependency inference should not trigger
-      const inferred = result.find(e => e.resolution === 'dependency-inferred');
-      const hasHighConfidence = result.some(e => e.confidence >= PERCEPTION_EXPANSION_THRESHOLD && e.resolution !== 'dependency-inferred');
+      const inferred = result.find((e) => e.resolution === 'dependency-inferred');
+      const hasHighConfidence = result.some(
+        (e) => e.confidence >= PERCEPTION_EXPANSION_THRESHOLD && e.resolution !== 'dependency-inferred',
+      );
       if (!hasHighConfidence) {
         expect(inferred).toBeUndefined();
       }
@@ -264,11 +269,11 @@ describe('EntityResolver', () => {
 
       // Without forceRefresh — uses stale cache
       const staleResult = resolver.resolve(input, understanding);
-      const stalePaths = staleResult.flatMap(e => e.resolvedPaths);
+      const stalePaths = staleResult.flatMap((e) => e.resolvedPaths);
 
       // With forceRefresh — picks up new file
       const freshResult = resolver.resolve(input, understanding, { forceRefresh: true });
-      const freshPaths = freshResult.flatMap(e => e.resolvedPaths);
+      const freshPaths = freshResult.flatMap((e) => e.resolvedPaths);
 
       // Fresh should potentially have more paths
       expect(freshPaths.length).toBeGreaterThanOrEqual(stalePaths.length);
@@ -310,9 +315,9 @@ describe('EntityResolver', () => {
       expect(entities.length).toBeGreaterThan(0);
 
       // Check that prior facts can contribute (if the token "auth" matched)
-      const allPaths = entities.flatMap(e => e.resolvedPaths);
+      const allPaths = entities.flatMap((e) => e.resolvedPaths);
       // The auth directory should be found either from fuzzy match or prior facts
-      expect(allPaths.some(p => p.includes('auth'))).toBe(true);
+      expect(allPaths.some((p) => p.includes('auth'))).toBe(true);
     });
 
     test('prior facts are discounted (confidence * 0.9, capped at 0.85)', () => {
@@ -338,7 +343,7 @@ describe('EntityResolver', () => {
       const understanding = makeUnderstanding({ targetSymbol: undefined });
       const entities = resolver.resolve(input, understanding);
 
-      const priorEntity = entities.find(e => e.reference.startsWith('prior:'));
+      const priorEntity = entities.find((e) => e.reference.startsWith('prior:'));
       if (priorEntity) {
         // Confidence should be discounted
         expect(priorEntity.confidence).toBeLessThanOrEqual(0.85);
@@ -353,7 +358,7 @@ describe('EntityResolver', () => {
       const entities = resolver.resolve(input, understanding);
 
       // Should still resolve via fuzzy path match
-      const priorEntities = entities.filter(e => e.reference.startsWith('prior:'));
+      const priorEntities = entities.filter((e) => e.reference.startsWith('prior:'));
       expect(priorEntities).toHaveLength(0);
     });
   });

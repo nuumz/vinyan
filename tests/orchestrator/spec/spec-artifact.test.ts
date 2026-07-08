@@ -85,10 +85,7 @@ describe('specToAcceptanceCriteriaList', () => {
   test('returns only testable criteria as flat strings', () => {
     const spec = makeSpec();
     const list = specToAcceptanceCriteriaList(spec);
-    expect(list).toEqual([
-      'Cost ledger writes a row per task',
-      'Exceeding budget returns budget-exceeded error',
-    ]);
+    expect(list).toEqual(['Cost ledger writes a row per task', 'Exceeding budget returns budget-exceeded error']);
     expect(list.length).toBe(2); // non-testable was filtered
   });
 
@@ -138,9 +135,7 @@ describe('reasoning variant', () => {
       { id: 'ac-1', description: 'Each strategy listed with pros/cons', testable: true, oracle: 'goal-alignment' },
       { id: 'ac-2', description: 'Recommendation justified', testable: true, oracle: 'critic' },
     ],
-    expectedDeliverables: [
-      { kind: 'comparison', audience: 'platform engineer', format: 'table' },
-    ],
+    expectedDeliverables: [{ kind: 'comparison', audience: 'platform engineer', format: 'table' }],
     scopeBoundaries: {
       outOfScope: ['client-side caching'],
       assumptions: ['p95 read latency target is 50ms'],
@@ -156,9 +151,7 @@ describe('reasoning variant', () => {
   test('reasoning variant rejects mechanical oracles (ast / type / test / lint / dep)', () => {
     const bad = {
       ...baseReasoning,
-      acceptanceCriteria: [
-        { id: 'ac-1', description: 'Pass tests', testable: true, oracle: 'test' as const },
-      ],
+      acceptanceCriteria: [{ id: 'ac-1', description: 'Pass tests', testable: true, oracle: 'test' as const }],
     };
     expect(SpecArtifactSchema.safeParse(bad).success).toBe(false);
   });
@@ -179,9 +172,7 @@ describe('reasoning variant', () => {
       version: SPEC_ARTIFACT_VERSION,
       // variant intentionally omitted — simulates pre-Gap C persisted spec
       summary: 'Legacy spec without variant field',
-      acceptanceCriteria: [
-        { id: 'ac-1', description: 'Does the thing', testable: true, oracle: 'test' as const },
-      ],
+      acceptanceCriteria: [{ id: 'ac-1', description: 'Does the thing', testable: true, oracle: 'test' as const }],
       apiShape: [],
       dataContracts: [],
       edgeCases: [],

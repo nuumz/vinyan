@@ -23,11 +23,7 @@
 
 import type { VinyanBus } from '../../core/bus.ts';
 import type { LLMProvider } from '../types.ts';
-import {
-  type LLMProviderErrorKind,
-  type NormalizedLLMProviderError,
-  quotaKey,
-} from './provider-errors.ts';
+import { type LLMProviderErrorKind, type NormalizedLLMProviderError, quotaKey } from './provider-errors.ts';
 
 // ────────────────────────────────────────────────────────────────────────
 // Tunables — exported as constants so tests can read the same numbers.
@@ -245,21 +241,12 @@ export class ProviderHealthStore {
    * (caller knows which model it's about to dispatch). Provider-wide
    * is the right default for "is this provider up at all" diagnostics.
    */
-  isAvailable(
-    provider: Pick<LLMProvider, 'id'>,
-    nowOrModel?: number | string,
-    nowOpt?: number,
-  ): boolean {
+  isAvailable(provider: Pick<LLMProvider, 'id'>, nowOrModel?: number | string, nowOpt?: number): boolean {
     // Backwards-compatible signature: isAvailable(provider) — old callers
     // pass only provider; isAvailable(provider, now) — old test callers;
     // isAvailable(provider, model, now?) — new per-model check.
     const model = typeof nowOrModel === 'string' ? nowOrModel : undefined;
-    const now =
-      typeof nowOrModel === 'number'
-        ? nowOrModel
-        : typeof nowOpt === 'number'
-          ? nowOpt
-          : this.clock();
+    const now = typeof nowOrModel === 'number' ? nowOrModel : typeof nowOpt === 'number' ? nowOpt : this.clock();
     // R3: O(buckets-for-this-provider) — indexed by providerId.
     const keys = this.byProvider.get(provider.id);
     if (!keys || keys.size === 0) return true;
@@ -287,12 +274,7 @@ export class ProviderHealthStore {
     nowOpt?: number,
   ): ProviderHealthRecord | null {
     const model = typeof nowOrModel === 'string' ? nowOrModel : undefined;
-    const now =
-      typeof nowOrModel === 'number'
-        ? nowOrModel
-        : typeof nowOpt === 'number'
-          ? nowOpt
-          : this.clock();
+    const now = typeof nowOrModel === 'number' ? nowOrModel : typeof nowOpt === 'number' ? nowOpt : this.clock();
     const keys = this.byProvider.get(provider.id);
     if (!keys || keys.size === 0) return null;
     let soonest: ProviderHealthRecord | null = null;
@@ -368,6 +350,6 @@ export function computeCooldownMs(err: NormalizedLLMProviderError, failureCount:
     return Math.min(HEALTH_TRANSIENT_COOLDOWN_MS * failureCount, HEALTH_MAX_COOLDOWN_MS);
   }
   // Repeated 429 with no retryAfter → exponential backoff with cap.
-  const expo = HEALTH_DEFAULT_BASE_COOLDOWN_MS * Math.pow(HEALTH_BACKOFF_FACTOR, failureCount - 1);
+  const expo = HEALTH_DEFAULT_BASE_COOLDOWN_MS * HEALTH_BACKOFF_FACTOR ** (failureCount - 1);
   return Math.min(expo, HEALTH_MAX_COOLDOWN_MS);
 }

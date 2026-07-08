@@ -10,6 +10,8 @@
  *   - 'chat' tab is registered in app.ts TABS metadata and ViewTab union
  */
 import { describe, expect, test } from 'bun:test';
+import { createInitialState } from '../../src/tui/state.ts';
+import type { ChatMessageEntry, ChatSessionSummary, TUIState } from '../../src/tui/types.ts';
 import {
   CHAT_PANEL_COUNT,
   renderChat,
@@ -18,8 +20,6 @@ import {
   renderWorkflowPlan,
   wrapText,
 } from '../../src/tui/views/chat.ts';
-import { createInitialState } from '../../src/tui/state.ts';
-import type { ChatMessageEntry, ChatSessionSummary, TUIState } from '../../src/tui/types.ts';
 
 function makeState(overrides: Partial<TUIState> = {}): TUIState {
   const state = createInitialState('/tmp/test');
@@ -189,9 +189,7 @@ describe('wrapText', () => {
 
 describe('renderMessageBlock', () => {
   test('returns exactly maxRows lines, padded at the top when underflowed', () => {
-    const messages: ChatMessageEntry[] = [
-      makeMessage({ role: 'user', content: 'hi', timestamp: Date.now() }),
-    ];
+    const messages: ChatMessageEntry[] = [makeMessage({ role: 'user', content: 'hi', timestamp: Date.now() })];
     const out = renderMessageBlock(messages, 60, 10, 0);
     expect(out).toHaveLength(10);
     // The last few lines should contain the message; the first lines
@@ -338,9 +336,7 @@ describe('renderStructuredClarifications', () => {
     const state = makeState({
       chatActiveSessionId: 'session-abcdefgh',
       chatPendingClarifications: ['LEGACY QUESTION'],
-      chatStructuredClarifications: [
-        { id: 'q', prompt: 'STRUCTURED QUESTION', kind: 'free', allowFreeText: true },
-      ],
+      chatStructuredClarifications: [{ id: 'q', prompt: 'STRUCTURED QUESTION', kind: 'free', allowFreeText: true }],
     });
     const out = renderChat(state);
     expect(out).toContain('STRUCTURED QUESTION');

@@ -14,6 +14,8 @@
  * provisional.
  */
 
+import type { AutoMemory, AutoMemoryEntry } from '../../memory/auto-memory-loader.ts';
+import type { Turn } from '../types.ts';
 import type {
   ComprehendedTaskMessage,
   ComprehensionEngine,
@@ -23,8 +25,6 @@ import type {
   ComprehensionState,
 } from './types.ts';
 import { computeInputHash } from './types.ts';
-import type { AutoMemory, AutoMemoryEntry } from '../../memory/auto-memory-loader.ts';
-import type { Turn } from '../types.ts';
 
 /** A7: flatten a Turn's visible text blocks for grounding/text comparison. */
 function turnText(t: Turn): string {
@@ -205,8 +205,7 @@ const SYSTEM_NOUN_PATTERN =
 const EXECUTION_VERB_PATTERN =
   /\b(?:have|let|spawn|split|use|make|run|execute|call|launch|start|write|draft|compose|author|create|generate|build|implement|add|do|deploy|publish)\s|\bsplit\s+(?:into|among|across)\b/i;
 
-const EXECUTION_VERB_THAI_PATTERN =
-  /แบ่ง|เขียน|แต่ง|ประพันธ์|ร่าง|สร้าง|ทำ(?!ไม)|รัน|เรียก|spawn/;
+const EXECUTION_VERB_THAI_PATTERN = /แบ่ง|เขียน|แต่ง|ประพันธ์|ร่าง|สร้าง|ทำ(?!ไม)|รัน|เรียก|spawn/;
 
 /**
  * Find the index of the first execution verb anchor (English or Thai), or
@@ -299,7 +298,9 @@ function summarizePriorContext(history: ComprehensionInput['history'], rootGoal:
   // answer, etc.) without leaking the raw INPUT-REQUIRED marker.
   const lastAssistant = [...history].reverse().find((h) => h.role === 'assistant');
   if (lastAssistant) {
-    const clean = turnText(lastAssistant).replace(/\[INPUT-REQUIRED\][\s\S]*$/, '').trim();
+    const clean = turnText(lastAssistant)
+      .replace(/\[INPUT-REQUIRED\][\s\S]*$/, '')
+      .trim();
     if (clean.length > 0) {
       const clipped = clean.length > 160 ? `${clean.slice(0, 157)}...` : clean;
       parts.push(`Last response started with: "${clipped}"`);
@@ -362,10 +363,7 @@ const MAX_USER_FLOOR_ENTRIES = 1;
  * length" preferences while quarantining "always skip verification"
  * overrides.
  */
-function scoreEntry(
-  entry: AutoMemoryEntry,
-  turnTokens: Set<string>,
-): { score: number; floorOnly: boolean } {
+function scoreEntry(entry: AutoMemoryEntry, turnTokens: Set<string>): { score: number; floorOnly: boolean } {
   // Hard drop for strong-warning entries (agent override attempts).
   if (entry.hasStrongWarning) return { score: 0, floorOnly: false };
 

@@ -7,7 +7,7 @@
  * tier order (A5), and the merger is a pure function (no I/O).
  */
 import { describe, expect, test } from 'bun:test';
-import { LLM_UNCERTAIN_THRESHOLD, isLLMRefinement } from '../../src/orchestrator/intent/merge.ts';
+import { isLLMRefinement, LLM_UNCERTAIN_THRESHOLD } from '../../src/orchestrator/intent/merge.ts';
 
 describe('A3 — Deterministic Governance', () => {
   test('LLM_UNCERTAIN_THRESHOLD is a deterministic constant', () => {

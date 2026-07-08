@@ -24,11 +24,7 @@ import {
   type KnowledgeProvider,
   planFromGapForResearch,
 } from '../../../src/orchestrator/capabilities/knowledge-acquisition.ts';
-import type {
-  CapabilityFit,
-  CapabilityGapAnalysis,
-  CapabilityRequirement,
-} from '../../../src/orchestrator/types.ts';
+import type { CapabilityFit, CapabilityGapAnalysis, CapabilityRequirement } from '../../../src/orchestrator/types.ts';
 
 function req(id: string, weight = 1, extras?: Partial<CapabilityRequirement>): CapabilityRequirement {
   return { id, weight, source: 'llm-extract', ...extras };
@@ -76,12 +72,7 @@ describe('planFromGapForResearch', () => {
   });
 
   test('returns null when there are no required capabilities', () => {
-    expect(
-      planFromGapForResearch(
-        't-1',
-        makeAnalysis({ required: [], candidates: [fit('best', 0)] }),
-      ),
-    ).toBeNull();
+    expect(planFromGapForResearch('t-1', makeAnalysis({ required: [], candidates: [fit('best', 0)] }))).toBeNull();
   });
 
   test('returns null when every requirement is matched by best candidate', () => {
@@ -106,9 +97,7 @@ describe('planFromGapForResearch', () => {
 
   test('action verbs and framework markers feed the query set', () => {
     const a = makeAnalysis({
-      required: [
-        req('research.web', 1, { actionVerbs: ['investigate', 'crawl'], frameworkMarkers: ['react'] }),
-      ],
+      required: [req('research.web', 1, { actionVerbs: ['investigate', 'crawl'], frameworkMarkers: ['react'] })],
       candidates: [fit('best', 0)],
     });
     const plan = planFromGapForResearch('t-1', a)!;
@@ -161,10 +150,7 @@ describe('acquireKnowledge', () => {
   test('workspace docs grep produces heuristic-tier entries', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'vinyan-doc-'));
     try {
-      writeFileSync(
-        join(dir, 'README.md'),
-        '# Project\nSome notes about research.web tactics — fetch + summarize.',
-      );
+      writeFileSync(join(dir, 'README.md'), '# Project\nSome notes about research.web tactics — fetch + summarize.');
       mkdirSync(join(dir, 'docs'));
       writeFileSync(join(dir, 'docs', 'guide.md'), 'Unrelated text.');
       const ctxs = await acquireKnowledge(
@@ -221,8 +207,7 @@ describe('acquireKnowledge', () => {
 
   test('honors maxTotal cap', async () => {
     const wg = {
-      queryFacts: (_t: string) =>
-        Array.from({ length: 20 }, (_, i) => fakeFact(`f${i}`, 'q', `pattern ${i}`, 0.5)),
+      queryFacts: (_t: string) => Array.from({ length: 20 }, (_, i) => fakeFact(`f${i}`, 'q', `pattern ${i}`, 0.5)),
     } as never;
     const ctxs = await acquireKnowledge(
       { taskId: 't-1', capabilities: ['q'], queries: ['q'] },

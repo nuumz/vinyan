@@ -69,17 +69,15 @@ export class BidAccuracyStore {
   }
 
   getRecord(bidderId: string): BidAccuracyRecord | null {
-    const row = this.db
-      .prepare(`SELECT * FROM bid_accuracy WHERE bidder_id = ?`)
-      .get(bidderId) as BidAccuracyRow | undefined;
+    const row = this.db.prepare(`SELECT * FROM bid_accuracy WHERE bidder_id = ?`).get(bidderId) as
+      | BidAccuracyRow
+      | undefined;
     return row ? rowToRecord(row) : null;
   }
 
   /** Snapshot every row — tracker calls on construction to rehydrate. */
   listAll(): BidAccuracyRecord[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM bid_accuracy ORDER BY bidder_id ASC`)
-      .all() as BidAccuracyRow[];
+    const rows = this.db.prepare(`SELECT * FROM bid_accuracy ORDER BY bidder_id ASC`).all() as BidAccuracyRow[];
     return rows.map(rowToRecord);
   }
 }

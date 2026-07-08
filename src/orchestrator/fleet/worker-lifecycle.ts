@@ -17,7 +17,7 @@
 
 import type { VinyanBus } from '../../core/bus.ts';
 import type { WorkerStore } from '../../db/worker-store.ts';
-import { CleanupHookRegistry, type CleanupHook } from '../profile/cleanup-hooks.ts';
+import { type CleanupHook, CleanupHookRegistry } from '../profile/cleanup-hooks.ts';
 import { ProfileLifecycle } from '../profile/profile-lifecycle.ts';
 import { SafetyViolationTracker } from '../profile/safety-violation-tracker.ts';
 import { WorkerGates } from '../profile/worker-gates.ts';

@@ -426,9 +426,9 @@ describe('WorkerStore', () => {
       );
 
       // Raw column value is JSON
-      const raw = db
-        .prepare(`SELECT engine_config FROM worker_profiles WHERE id = ?`)
-        .get('w-ec') as { engine_config: string | null };
+      const raw = db.prepare(`SELECT engine_config FROM worker_profiles WHERE id = ?`).get('w-ec') as {
+        engine_config: string | null;
+      };
       expect(raw.engine_config).not.toBeNull();
       expect(() => JSON.parse(raw.engine_config!)).not.toThrow();
 

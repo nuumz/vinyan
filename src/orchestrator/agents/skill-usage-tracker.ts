@@ -91,10 +91,7 @@ export interface OverclaimEvaluation {
  *     (too few skills for overclaim to be meaningful)
  *   - `viewedRatio < OVERCLAIM_RATIO_THRESHOLD` → flagged
  */
-export function evaluateOverclaim(
-  loadedSkillIds: readonly string[],
-  viewed: ReadonlySet<string>,
-): OverclaimEvaluation {
+export function evaluateOverclaim(loadedSkillIds: readonly string[], viewed: ReadonlySet<string>): OverclaimEvaluation {
   const declaredCount = loadedSkillIds.length;
   if (declaredCount === 0) {
     return { flagged: false, declaredCount: 0, viewedCount: 0, viewedRatio: 1, reason: 'no-skills' };

@@ -6,10 +6,10 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
+  computeIntents,
+  DISCORD_INTENT_BITS,
   DiscordApi,
   DiscordApiError,
-  DISCORD_INTENT_BITS,
-  computeIntents,
   type DiscordWebSocketCtor,
   type DiscordWebSocketLike,
 } from '../../../src/gateway/adapters/discord-api.ts';
@@ -20,9 +20,10 @@ interface FetchCall {
   init: RequestInit;
 }
 
-function makeFetch(
-  responder: (call: FetchCall) => { status?: number; json?: unknown; throws?: Error },
-): { fetchImpl: typeof fetch; calls: FetchCall[] } {
+function makeFetch(responder: (call: FetchCall) => { status?: number; json?: unknown; throws?: Error }): {
+  fetchImpl: typeof fetch;
+  calls: FetchCall[];
+} {
   const calls: FetchCall[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;

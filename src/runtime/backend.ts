@@ -61,11 +61,7 @@ export interface BackendSpawnSpec {
    */
   readonly agentContract?: unknown;
   /** Structured log sink from the orchestrator. */
-  readonly log: (
-    level: 'debug' | 'info' | 'warn' | 'error',
-    msg: string,
-    meta?: Record<string, unknown>,
-  ) => void;
+  readonly log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, meta?: Record<string, unknown>) => void;
 }
 
 export interface BackendHandle {

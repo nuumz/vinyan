@@ -8,14 +8,14 @@
  * `targetAgentId`) and emit `delegation:a1_verifier_routed`.
  */
 import { describe, expect, test } from 'bun:test';
-import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { createBus } from '../../../src/core/bus.ts';
 import { AgentBudgetTracker } from '../../../src/orchestrator/agent/agent-budget.ts';
-import { handleDelegation } from '../../../src/orchestrator/agent/agent-loop.ts';
 import type { AgentLoopDeps } from '../../../src/orchestrator/agent/agent-loop.ts';
+import { handleDelegation } from '../../../src/orchestrator/agent/agent-loop.ts';
 import { loadAgentRegistry } from '../../../src/orchestrator/agents/registry.ts';
 import { DelegationRouter } from '../../../src/orchestrator/delegation-router.ts';
 import type { DelegationRequest } from '../../../src/orchestrator/protocol.ts';
@@ -147,13 +147,7 @@ describe('Item 4 — handleDelegation A1 verifier routing', () => {
         targetFiles: [],
         requestedTokens: 5000,
       };
-      await handleDelegation(
-        request,
-        makeParent({ taskType: 'reasoning' }),
-        makeBudget(),
-        makeRouting(),
-        h.deps,
-      );
+      await handleDelegation(request, makeParent({ taskType: 'reasoning' }), makeBudget(), makeRouting(), h.deps);
       expect(h.capturedSubInputs[0]!.agentId).toBeUndefined();
       expect(h.events).toHaveLength(0);
     } finally {

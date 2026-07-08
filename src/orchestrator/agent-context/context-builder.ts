@@ -18,9 +18,9 @@
 import type { Database } from 'bun:sqlite';
 import type { AgentContextStore } from '../../db/agent-context-store.ts';
 import type { CapabilityModel, CapabilityScore } from '../fleet/capability-model.ts';
-import type { SoulStore } from './soul-store.ts';
 import type { SoulDocument } from './soul-schema.ts';
-import { type AgentContext, type AgentEpisode, MAX_EPISODES, createEmptyContext } from './types.ts';
+import type { SoulStore } from './soul-store.ts';
+import { type AgentContext, type AgentEpisode, createEmptyContext, MAX_EPISODES } from './types.ts';
 
 /** Lightweight trace projection — only the fields we need for cold-start derivation. */
 interface TraceProjection {
@@ -86,9 +86,7 @@ export class AgentContextBuilder {
     // Hydrate narrative from soul.md when available; otherwise fall back
     // to trace-derived so a newly-spawned agent without a soul still has
     // a reasonable persona string.
-    const narrative = soul
-      ? this.narrativeFromSoul(soul)
-      : this.narrativeFromTraces(agentId);
+    const narrative = soul ? this.narrativeFromSoul(soul) : this.narrativeFromTraces(agentId);
 
     const merged: AgentContext = {
       identity: {
@@ -99,10 +97,7 @@ export class AgentContextBuilder {
         approachStyle: narrative.approachStyle,
       },
       memory: {
-        episodes:
-          machine.memory.episodes.length > 0
-            ? machine.memory.episodes
-            : this.seedEpisodesFromTraces(agentId),
+        episodes: machine.memory.episodes.length > 0 ? machine.memory.episodes : this.seedEpisodesFromTraces(agentId),
         lessonsSummary: narrative.lessonsSummary,
       },
       skills: {
@@ -118,8 +113,7 @@ export class AgentContextBuilder {
     // is the home for them.
     if (
       (machine.memory.episodes.length === 0 && merged.memory.episodes.length > 0) ||
-      Object.keys(merged.skills.proficiencies).length !==
-        Object.keys(machine.skills.proficiencies).length
+      Object.keys(merged.skills.proficiencies).length !== Object.keys(machine.skills.proficiencies).length
     ) {
       merged.lastUpdated = Date.now();
       this.store.upsert(merged);
@@ -146,9 +140,7 @@ export class AgentContextBuilder {
     antiPatterns: string[];
     preferredApproaches: Record<string, string>;
   } {
-    const lessons = soul.domainExpertise
-      .map((d) => `${d.area}: ${d.knowledge}`)
-      .join('; ');
+    const lessons = soul.domainExpertise.map((d) => `${d.area}: ${d.knowledge}`).join('; ');
     const anti = soul.antiPatterns.map((a) => `${a.pattern} — ${a.cause}`);
     const preferred: Record<string, string> = {};
     for (const s of soul.winningStrategies) {
@@ -296,7 +288,10 @@ export class AgentContextBuilder {
     // Find the most common approach pattern
     const wordFreq = new Map<string, number>();
     for (const approach of approaches) {
-      const words = approach.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+      const words = approach
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 3);
       for (const word of words) {
         wordFreq.set(word, (wordFreq.get(word) ?? 0) + 1);
       }

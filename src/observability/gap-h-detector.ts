@@ -136,7 +136,9 @@ export class GapHDetector {
       }),
     );
 
-    return () => unsubs.forEach((fn) => fn());
+    return () => {
+      for (const fn of unsubs) fn();
+    };
   }
 
   /** Get current detector state for debugging */

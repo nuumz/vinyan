@@ -520,13 +520,9 @@ describe('DebateRouterCritic — Wave 5.7a budget guard integration', () => {
 
     // After clearTask, the same task id can fire again without hitting
     // the per-task cap
-    const again = await router.review(
-      proposal,
-      { ...task, id: 'lifetime-test' },
-      perception,
-      undefined,
-      { riskScore: 0.9 },
-    );
+    const again = await router.review(proposal, { ...task, id: 'lifetime-test' }, perception, undefined, {
+      riskScore: 0.9,
+    });
     expect(again.reason).toBe('debate');
   });
 

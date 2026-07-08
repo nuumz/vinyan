@@ -257,9 +257,7 @@ export class DefaultReplanEngine implements ReplanEngine {
 }
 
 /** Collect all ClassifiedFailure entries from failed approaches. */
-function collectClassifiedFailures(
-  failedApproaches: WorkingMemoryState['failedApproaches'],
-): ClassifiedFailure[] {
+function collectClassifiedFailures(failedApproaches: WorkingMemoryState['failedApproaches']): ClassifiedFailure[] {
   const out: ClassifiedFailure[] = [];
   for (const fa of failedApproaches) {
     if (fa.classifiedFailures) {
@@ -270,9 +268,7 @@ function collectClassifiedFailures(
 }
 
 export function computePlanSignature(dag: TaskDAG): string {
-  const parts = dag.nodes
-    .map((n) => `${n.id}::${[...n.targetFiles].sort().join(',')}`)
-    .sort();
+  const parts = dag.nodes.map((n) => `${n.id}::${[...n.targetFiles].sort().join(',')}`).sort();
   return createHash('sha256').update(parts.join('|')).digest('hex');
 }
 

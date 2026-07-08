@@ -87,9 +87,7 @@ export class LocalSubprocBackend implements WorkerBackend {
     this.clock = opts.clock ?? (() => performance.now());
     // Use the provided spawn impl when present; otherwise fall back to Bun.spawn
     // via a narrow cast so the interface stays process-type-agnostic.
-    this.spawnImpl =
-      opts.spawnImpl ??
-      ((cmd, o) => Bun.spawn(cmd, o) as unknown as SpawnedProcess);
+    this.spawnImpl = opts.spawnImpl ?? ((cmd, o) => Bun.spawn(cmd, o) as unknown as SpawnedProcess);
     this.env = opts.env;
   }
 
@@ -140,15 +138,16 @@ export class LocalSubprocBackend implements WorkerBackend {
     const exitPromise = proc.exited;
 
     const collect = Promise.all([stdoutPromise, stderrPromise, exitPromise]);
-    const raced = timeoutMs > 0
-      ? await Promise.race([
-          collect,
-          new Promise<'timeout'>((r) => {
-            const t = setTimeout(() => r('timeout'), timeoutMs);
-            (t as { unref?: () => void }).unref?.();
-          }),
-        ])
-      : await collect;
+    const raced =
+      timeoutMs > 0
+        ? await Promise.race([
+            collect,
+            new Promise<'timeout'>((r) => {
+              const t = setTimeout(() => r('timeout'), timeoutMs);
+              (t as { unref?: () => void }).unref?.();
+            }),
+          ])
+        : await collect;
 
     if (raced === 'timeout') {
       try {
@@ -179,8 +178,11 @@ export class LocalSubprocBackend implements WorkerBackend {
     // streaming chunks — we ignore them here (streaming forwarding is a
     // worker-pool concern and kept there for MVP scope). The last valid
     // JSON object wins, matching dispatchColdSubprocess semantics.
-    const lines = stdout.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-    let parsed: unknown = undefined;
+    const lines = stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    let parsed: unknown;
     let parseError = false;
     for (const line of lines) {
       try {

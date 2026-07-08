@@ -6,8 +6,8 @@
  * hang on `isatty()` checks.
  */
 import { describe, expect, test } from 'bun:test';
-import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
 import { createBus } from '../../../src/core/bus.ts';
+import { ApprovalGate } from '../../../src/orchestrator/approval-gate.ts';
 import {
   CodingCliConfigSchema,
   ExternalCodingCliController,
@@ -67,24 +67,27 @@ describe('routing guard — interactive requires streamProtocol', () => {
     ];
     const c = controller(adapters);
     await c.detectProviders();
-    const session = await c.createSession({
-      taskId: 'tty-only',
-      rootGoal: 'do thing',
-      cwd: '/tmp',
-      mode: 'interactive',
-      timeoutMs: 30_000,
-      idleTimeoutMs: 5_000,
-      maxOutputBytes: 1_000_000,
-      allowedScope: [],
-      forbiddenScope: [],
-      approvalPolicy: {
-        autoApproveReadOnly: false,
-        requireHumanForWrites: true,
-        requireHumanForShell: true,
-        requireHumanForGit: true,
-        allowDangerousSkipPermissions: false,
-      },
-    } as never, 'github-copilot');
+    const session = await c.createSession(
+      {
+        taskId: 'tty-only',
+        rootGoal: 'do thing',
+        cwd: '/tmp',
+        mode: 'interactive',
+        timeoutMs: 30_000,
+        idleTimeoutMs: 5_000,
+        maxOutputBytes: 1_000_000,
+        allowedScope: [],
+        forbiddenScope: [],
+        approvalPolicy: {
+          autoApproveReadOnly: false,
+          requireHumanForWrites: true,
+          requireHumanForShell: true,
+          requireHumanForGit: true,
+          allowDangerousSkipPermissions: false,
+        },
+      } as never,
+      'github-copilot',
+    );
     expect(session.state()).toBe('unsupported-capability');
   });
 

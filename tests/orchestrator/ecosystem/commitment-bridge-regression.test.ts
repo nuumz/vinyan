@@ -1,4 +1,4 @@
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
+import { Database } from 'bun:sqlite';
 /**
  * Regression tests for commitment-bridge bugs that slipped past the
  * original ecosystem suite.
@@ -16,12 +16,11 @@ import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
  *    has passed (crash without `trace:record` arrival).
  */
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
-
 import { createBus } from '../../../src/core/bus.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
+import type { TaskFacts } from '../../../src/orchestrator/ecosystem/commitment-bridge.ts';
 import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
 import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
-import type { TaskFacts } from '../../../src/orchestrator/ecosystem/commitment-bridge.ts';
 
 function makeDb(): Database {
   const db = new Database(':memory:');
@@ -49,9 +48,7 @@ describe('CommitmentBridge regression — auctionId vs taskId', () => {
   it('keys commitment by taskId (not auctionId) when market emits production-shaped payload', () => {
     const db = makeDb();
     const bus = createBus();
-    const tasks = new Map<string, TaskFacts>([
-      ['t-42', { goal: 'refactor', targetFiles: [], deadlineAt: 9e12 }],
-    ]);
+    const tasks = new Map<string, TaskFacts>([['t-42', { goal: 'refactor', targetFiles: [], deadlineAt: 9e12 }]]);
     const { coordinator, commitments } = buildEcosystem({
       db,
       bus,
@@ -84,9 +81,7 @@ describe('CommitmentBridge regression — auctionId vs taskId', () => {
   it('does NOT open a second commitment when the same task re-auctions (idempotency)', () => {
     const db = makeDb();
     const bus = createBus();
-    const tasks = new Map<string, TaskFacts>([
-      ['t-retry', { goal: 'flaky task', targetFiles: [], deadlineAt: 9e12 }],
-    ]);
+    const tasks = new Map<string, TaskFacts>([['t-retry', { goal: 'flaky task', targetFiles: [], deadlineAt: 9e12 }]]);
     const { coordinator, commitments } = buildEcosystem({
       db,
       bus,
@@ -221,7 +216,11 @@ describe('CommitmentBridge — production resolver via TaskFactsRegistry', () =>
 
   it('drops the commitment cleanly after unregister (post-task cleanup)', () => {
     const { TaskFactsRegistry } = require('../../../src/orchestrator/ecosystem/task-facts-registry.ts') as {
-      TaskFactsRegistry: new () => { register: (id: string, f: TaskFacts) => void; resolve: (id: string) => TaskFacts | null; unregister: (id: string) => void };
+      TaskFactsRegistry: new () => {
+        register: (id: string, f: TaskFacts) => void;
+        resolve: (id: string) => TaskFacts | null;
+        unregister: (id: string) => void;
+      };
     };
     const db = makeDb();
     const bus = createBus();

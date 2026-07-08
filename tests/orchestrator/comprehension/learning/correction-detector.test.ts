@@ -3,8 +3,8 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { detectCorrection } from '../../../../src/orchestrator/comprehension/learning/correction-detector.ts';
 import type { ComprehensionRecordRow } from '../../../../src/db/comprehension-store.ts';
+import { detectCorrection } from '../../../../src/orchestrator/comprehension/learning/correction-detector.ts';
 
 function priorRecord(overrides: Partial<ComprehensionRecordRow> = {}): ComprehensionRecordRow {
   return {
@@ -83,13 +83,7 @@ describe('CorrectionDetector', () => {
   });
 
   test('Thai opening correction tokens → corrected', () => {
-    for (const msg of [
-      'ไม่ใช่ ฉันหมายถึงอีกอันหนึ่ง',
-      'ผิด ต้องเปลี่ยนใหม่',
-      'ไม่ได้ ลองอีกที',
-      'แก้เป็น x แทน',
-      'เปลี่ยนให้เป็น y',
-    ]) {
+    for (const msg of ['ไม่ใช่ ฉันหมายถึงอีกอันหนึ่ง', 'ผิด ต้องเปลี่ยนใหม่', 'ไม่ได้ ลองอีกที', 'แก้เป็น x แทน', 'เปลี่ยนให้เป็น y']) {
       const v = detectCorrection({
         priorRecord: priorRecord(),
         currentUserMessage: msg,

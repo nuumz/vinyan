@@ -324,16 +324,18 @@ export class ApprovalGate {
    * separately via `getOrphanedPending`.
    */
   getPending(): PendingApprovalInfo[] {
-    return [...this.pending.values()].map(({ taskId, riskScore, reason, requestedAt, approvalKey, approvalId, profile, sessionId }) => ({
-      taskId,
-      riskScore,
-      reason,
-      requestedAt,
-      ...(approvalKey ? { approvalKey } : {}),
-      ...(approvalId ? { approvalId } : {}),
-      ...(profile ? { profile } : {}),
-      ...(sessionId ? { sessionId } : {}),
-    }));
+    return [...this.pending.values()].map(
+      ({ taskId, riskScore, reason, requestedAt, approvalKey, approvalId, profile, sessionId }) => ({
+        taskId,
+        riskScore,
+        reason,
+        requestedAt,
+        ...(approvalKey ? { approvalKey } : {}),
+        ...(approvalId ? { approvalId } : {}),
+        ...(profile ? { profile } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      }),
+    );
   }
 
   /**
@@ -345,10 +347,26 @@ export class ApprovalGate {
    *
    * Returns `null` when no ledger is wired.
    */
-  getOrphanedPending(): readonly { taskId: string; approvalId: string; approvalKey: string; riskScore: number; reason: string; requestedAt: number }[] | null {
+  getOrphanedPending():
+    | readonly {
+        taskId: string;
+        approvalId: string;
+        approvalKey: string;
+        riskScore: number;
+        reason: string;
+        requestedAt: number;
+      }[]
+    | null {
     if (!this.ledger) return null;
     const all = this.ledger.listPending();
-    const out: { taskId: string; approvalId: string; approvalKey: string; riskScore: number; reason: string; requestedAt: number }[] = [];
+    const out: {
+      taskId: string;
+      approvalId: string;
+      approvalKey: string;
+      riskScore: number;
+      reason: string;
+      requestedAt: number;
+    }[] = [];
     for (const row of all) {
       const slotKey = makeSlotKey(row.taskId, row.approvalKey);
       if (this.pending.has(slotKey)) continue;

@@ -8,7 +8,7 @@
  * A6 compliant: zero-trust — human explicitly authorizes actions.
  */
 import type { VinyanBus } from '../../core/bus.ts';
-import type { ReasoningEngine, RERequest, REResponse } from '../types.ts';
+import type { RERequest, REResponse, ReasoningEngine } from '../types.ts';
 
 export interface HumanBridgeConfig {
   bus: VinyanBus;

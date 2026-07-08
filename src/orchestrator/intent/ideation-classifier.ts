@@ -25,8 +25,7 @@ const QUESTION_TRIGGER_TH = /(จะ|ทำยังไง|ควร|วิธ�
 
 const IDEATION_VERB_TRIGGER_EN =
   /\b(brainstorm|ideate|explore options|consider approaches|propose options|come up with|generate ideas)\b/iu;
-const IDEATION_VERB_TRIGGER_TH =
-  /(ระดมความคิด|ระดมไอเดีย|เสนอแนวทาง|เสนอไอเดีย|คิดทางเลือก)/u;
+const IDEATION_VERB_TRIGGER_TH = /(ระดมความคิด|ระดมไอเดีย|เสนอแนวทาง|เสนอไอเดีย|คิดทางเลือก)/u;
 
 const OPEN_ENDED_TRIGGER_EN =
   /\b(design|propose|compare approaches?|evaluate options?|recommend|advise|trade-?offs?)\b/iu;

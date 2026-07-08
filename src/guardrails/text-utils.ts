@@ -6,8 +6,11 @@
  * common bypass techniques (homoglyphs, invisible chars, encoding).
  */
 
-// Zero-width and invisible characters used to break regex patterns
-const ZERO_WIDTH_RE = /[\u200B\u200C\u200D\uFEFF\u2060\u200E\u200F\u00AD]/g;
+// Zero-width and invisible characters used to break regex patterns.
+// Written as an alternation (not a character class) because U+200D ZWJ
+// inside a class trips noMisleadingCharacterClass; each branch matches
+// exactly one invisible code point, so behavior is identical.
+const ZERO_WIDTH_RE = /\u200B|\u200C|\u200D|\uFEFF|\u2060|\u200E|\u200F|\u00AD/g;
 
 // Percent-encoded sequences (e.g., %69%67%6E%6F%72%65 → ignore)
 const PERCENT_ENCODED_RE = /(%[0-9A-Fa-f]{2})+/g;

@@ -14,12 +14,12 @@ import { ORACLE_ACCURACY_SCHEMA_SQL } from './oracle-accuracy-schema.ts';
 // ── Types ──────────────────────────────────────────────────────────────
 
 export type VerdictOutcome =
-  | 'confirmed_correct'   // No negative signal after commit (test pass, no revert)
-  | 'confirmed_wrong'     // Negative signal (test fail, revert, error report)
-  | 'correctly_rejected'  // Oracle blocked and rejection was not overridden
-  | 'false_alarm'         // Oracle blocked but override succeeded
-  | 'pending'             // Awaiting outcome
-  | 'indeterminate';      // Cannot determine (e.g., task abandoned)
+  | 'confirmed_correct' // No negative signal after commit (test pass, no revert)
+  | 'confirmed_wrong' // Negative signal (test fail, revert, error report)
+  | 'correctly_rejected' // Oracle blocked and rejection was not overridden
+  | 'false_alarm' // Oracle blocked but override succeeded
+  | 'pending' // Awaiting outcome
+  | 'indeterminate'; // Cannot determine (e.g., task abandoned)
 
 export interface OracleAccuracyRecord {
   id: string;
@@ -36,10 +36,10 @@ export interface OracleAccuracyRecord {
 
 export interface OracleAccuracyStats {
   total: number;
-  correct: number;       // confirmed_correct + correctly_rejected
-  wrong: number;         // confirmed_wrong + false_alarm
+  correct: number; // confirmed_correct + correctly_rejected
+  wrong: number; // confirmed_wrong + false_alarm
   pending: number;
-  accuracy: number | null;  // correct / (correct + wrong), null if < 10 resolved
+  accuracy: number | null; // correct / (correct + wrong), null if < 10 resolved
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
@@ -99,16 +99,16 @@ export class OracleAccuracyStore {
     const now = Date.now();
     // Fetch all pending records and check file overlap in application code
     // (SQLite JSON functions vary by build; this approach is portable)
-    const pendingRows = this.db.prepare(
-      `SELECT id, affected_files FROM oracle_accuracy WHERE outcome = 'pending'`,
-    ).all() as Array<{ id: string; affected_files: string }>;
+    const pendingRows = this.db
+      .prepare(`SELECT id, affected_files FROM oracle_accuracy WHERE outcome = 'pending'`)
+      .all() as Array<{ id: string; affected_files: string }>;
 
     const fileSet = new Set(filePaths);
     const idsToResolve: string[] = [];
 
     for (const row of pendingRows) {
       const storedFiles: string[] = JSON.parse(row.affected_files);
-      if (storedFiles.some(f => fileSet.has(f))) {
+      if (storedFiles.some((f) => fileSet.has(f))) {
         idsToResolve.push(row.id);
       }
     }
@@ -151,7 +151,8 @@ export class OracleAccuracyStore {
       params.push(cutoff);
     }
 
-    const row = this.db.prepare(`
+    const row = this.db
+      .prepare(`
       SELECT
         COUNT(*) as total,
         COALESCE(SUM(CASE WHEN outcome IN ('confirmed_correct', 'correctly_rejected') THEN 1 ELSE 0 END), 0) as correct,
@@ -159,7 +160,8 @@ export class OracleAccuracyStore {
         COALESCE(SUM(CASE WHEN outcome = 'pending' THEN 1 ELSE 0 END), 0) as pending
       FROM oracle_accuracy
       WHERE oracle_name = ?${timeFilter}
-    `).get(...params) as { total: number; correct: number; wrong: number; pending: number };
+    `)
+      .get(...params) as { total: number; correct: number; wrong: number; pending: number };
 
     const resolved = row.correct + row.wrong;
 

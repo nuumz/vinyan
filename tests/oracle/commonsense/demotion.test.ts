@@ -12,12 +12,9 @@
  * Demotion criterion: firing_count ≥ 100 AND override_rate > 0.5.
  */
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { beforeEach, describe, expect, test } from 'bun:test';
-import {
-  CommonSenseRegistry,
-  DEFAULT_DEMOTION_CONFIG,
-} from '../../../src/oracle/commonsense/registry.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
+import { CommonSenseRegistry, DEFAULT_DEMOTION_CONFIG } from '../../../src/oracle/commonsense/registry.ts';
 import type { CommonSenseRuleInput } from '../../../src/oracle/commonsense/types.ts';
 
 let db: Database;
@@ -189,15 +186,9 @@ describe('retire + isRetired', () => {
 
   test('retired rules excluded from findApplicable', () => {
     const r = registry.insertRule(makeRule());
-    expect(
-      registry.findApplicable({ language: 'universal', domain: 'universal', action: 'universal' })
-        .length,
-    ).toBe(1);
+    expect(registry.findApplicable({ language: 'universal', domain: 'universal', action: 'universal' }).length).toBe(1);
     registry.retire(r.id);
-    expect(
-      registry.findApplicable({ language: 'universal', domain: 'universal', action: 'universal' })
-        .length,
-    ).toBe(0);
+    expect(registry.findApplicable({ language: 'universal', domain: 'universal', action: 'universal' }).length).toBe(0);
   });
 
   test('retired rules excluded from findActive', () => {
@@ -228,10 +219,7 @@ describe('end-to-end demotion lifecycle', () => {
     expect(demoted).toBe(1);
     expect(registry.isRetired(r.id)).toBe(true);
     // Subsequent activation queries skip the retired rule
-    expect(
-      registry.findApplicable({ language: 'universal', domain: 'universal', action: 'universal' })
-        .length,
-    ).toBe(0);
+    expect(registry.findApplicable({ language: 'universal', domain: 'universal', action: 'universal' }).length).toBe(0);
   });
 
   test('rule not yet at sample threshold survives sweep', () => {

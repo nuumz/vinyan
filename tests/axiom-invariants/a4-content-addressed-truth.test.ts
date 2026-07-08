@@ -5,10 +5,11 @@
  * dependent facts auto-invalidate at read time via the file-hash join in
  * `world-graph.queryFacts`.
  */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { WorldGraph } from '../../src/world-graph/world-graph.ts';
 
 let tmp: string;

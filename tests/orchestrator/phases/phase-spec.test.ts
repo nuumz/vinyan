@@ -24,11 +24,7 @@ import {
   type SpecArtifact,
   type SpecArtifactCode,
 } from '../../../src/orchestrator/spec/spec-artifact.ts';
-import type {
-  RoutingDecision,
-  SemanticTaskUnderstanding,
-  TaskInput,
-} from '../../../src/orchestrator/types.ts';
+import type { RoutingDecision, SemanticTaskUnderstanding, TaskInput } from '../../../src/orchestrator/types.ts';
 
 function makeSpec(overrides: Partial<SpecArtifactCode> = {}): SpecArtifactCode {
   return {
@@ -41,9 +37,7 @@ function makeSpec(overrides: Partial<SpecArtifactCode> = {}): SpecArtifactCode {
     ],
     apiShape: [],
     dataContracts: [],
-    edgeCases: [
-      { id: 'ec-1', scenario: 'Budget is zero', expected: 'reject task', severity: 'blocker' },
-    ],
+    edgeCases: [{ id: 'ec-1', scenario: 'Budget is zero', expected: 'reject task', severity: 'blocker' }],
     openQuestions: [],
     ...overrides,
   };
@@ -92,7 +86,11 @@ function makeRouting(level: 0 | 1 | 2 | 3 = 1): RoutingDecision {
   } as unknown as RoutingDecision;
 }
 
-function makeContext(input: TaskInput, drafter?: SpecDrafter, withApprovalGate = false): {
+function makeContext(
+  input: TaskInput,
+  drafter?: SpecDrafter,
+  withApprovalGate = false,
+): {
   ctx: PhaseContext;
   bus: ReturnType<typeof createBus>;
   approvalGate?: ApprovalGate;
@@ -128,15 +126,15 @@ describe('shouldRunSpecPhase — gating rules', () => {
   });
 
   test('enabled by default for code-mutation domain at L1+', () => {
-    expect(
-      shouldRunSpecPhase(makeInput(), makeUnderstanding({ taskDomain: 'code-mutation' }), makeRouting(2)),
-    ).toBe(true);
+    expect(shouldRunSpecPhase(makeInput(), makeUnderstanding({ taskDomain: 'code-mutation' }), makeRouting(2))).toBe(
+      true,
+    );
   });
 
   test('disabled by default for conversational domain at all levels', () => {
-    expect(
-      shouldRunSpecPhase(makeInput(), makeUnderstanding({ taskDomain: 'conversational' }), makeRouting(2)),
-    ).toBe(false);
+    expect(shouldRunSpecPhase(makeInput(), makeUnderstanding({ taskDomain: 'conversational' }), makeRouting(2))).toBe(
+      false,
+    );
   });
 
   test('disabled by default for reasoning domains below L2', () => {
@@ -189,9 +187,7 @@ describe('projectSpecIntoInput', () => {
       acceptanceCriteria: ['Ledger writes a row per task'],
     });
     const enhanced = projectSpecIntoInput(input, makeSpec());
-    const occurrences = enhanced.acceptanceCriteria!.filter(
-      (c) => c === 'Ledger writes a row per task',
-    ).length;
+    const occurrences = enhanced.acceptanceCriteria!.filter((c) => c === 'Ledger writes a row per task').length;
     expect(occurrences).toBe(1);
   });
 });
@@ -375,9 +371,7 @@ describe('Gap C — reasoning variant', () => {
         { id: 'ac-1', description: 'Each strategy listed with pros/cons', testable: true, oracle: 'goal-alignment' },
         { id: 'ac-2', description: 'Final recommendation is justified', testable: true, oracle: 'critic' },
       ],
-      expectedDeliverables: [
-        { kind: 'comparison', audience: 'platform engineer', format: 'table' },
-      ],
+      expectedDeliverables: [{ kind: 'comparison', audience: 'platform engineer', format: 'table' }],
       scopeBoundaries: {
         outOfScope: ['client-side caching', 'database replication'],
         assumptions: ['p95 read latency target is 50ms'],
@@ -404,16 +398,10 @@ describe('Gap C — reasoning variant', () => {
       expect(outcome.value.skipped).toBe(false);
       expect(outcome.value.spec?.variant).toBe('reasoning');
       // Acceptance criteria projected to enhancedInput
-      expect(outcome.value.enhancedInput?.acceptanceCriteria).toContain(
-        'Each strategy listed with pros/cons',
-      );
+      expect(outcome.value.enhancedInput?.acceptanceCriteria).toContain('Each strategy listed with pros/cons');
       // Scope-boundary projection — the topical guardrail from §5 of the design doc
-      expect(outcome.value.enhancedInput?.constraints).toContain(
-        'MUST: out-of-scope: client-side caching',
-      );
-      expect(outcome.value.enhancedInput?.constraints).toContain(
-        'ASSUME: p95 read latency target is 50ms',
-      );
+      expect(outcome.value.enhancedInput?.constraints).toContain('MUST: out-of-scope: client-side caching');
+      expect(outcome.value.enhancedInput?.constraints).toContain('ASSUME: p95 read latency target is 50ms');
     }
   });
 });

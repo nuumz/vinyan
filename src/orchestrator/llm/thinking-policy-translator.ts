@@ -8,8 +8,9 @@
  *
  * Source of truth: docs/design/extensible-thinking-system-design.md §4.2
  */
-import type { ThinkingConfig } from '../types.ts';
+
 import type { ThinkingPolicy } from '../thinking/thinking-policy.ts';
+import type { ThinkingConfig } from '../types.ts';
 
 export interface ProviderThinkingParams {
   /** Provider-specific thinking configuration (pass-through to API). */
@@ -27,9 +28,7 @@ export interface ProviderThinkingParams {
  * OpenAI reasoning_effort). Currently the worker pool uses
  * routing.thinkingConfig directly.
  */
-export function translatePolicyToProvider(
-  policy: ThinkingPolicy,
-): ProviderThinkingParams {
+export function translatePolicyToProvider(policy: ThinkingPolicy): ProviderThinkingParams {
   const ceiling = policy.thinkingCeiling;
 
   if (policy.thinking.type === 'disabled') {

@@ -56,7 +56,14 @@ export function findFailureCorrelations(
   }));
 
   // Generate all 2-attribute combination groups (Gap 8B: expanded with actionVerb + frameworkMarker)
-  const attrKeys = ['model', 'routingLevel', 'blastRadiusBucket', 'oracleVerdictPattern', 'actionVerb', 'frameworkMarker'] as const;
+  const attrKeys = [
+    'model',
+    'routingLevel',
+    'blastRadiusBucket',
+    'oracleVerdictPattern',
+    'actionVerb',
+    'frameworkMarker',
+  ] as const;
   const results: CorrelationResult[] = [];
 
   for (let i = 0; i < attrKeys.length; i++) {

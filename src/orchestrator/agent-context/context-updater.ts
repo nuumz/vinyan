@@ -126,7 +126,8 @@ export class AgentContextUpdater {
     const existing = context.skills.proficiencies[sig];
 
     const totalAttempts = (existing?.totalAttempts ?? 0) + 1;
-    const successes = (existing?.totalAttempts ?? 0) * (existing?.successRate ?? 0) + (trace.outcome === 'success' ? 1 : 0);
+    const successes =
+      (existing?.totalAttempts ?? 0) * (existing?.successRate ?? 0) + (trace.outcome === 'success' ? 1 : 0);
     const successRate = totalAttempts > 0 ? successes / totalAttempts : 0;
 
     // Derive level from success rate and attempts

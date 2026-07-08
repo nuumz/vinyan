@@ -8,8 +8,9 @@
  * When no trust data exists (cold start), falls back to the default provider
  * from the routing decision.
  */
-import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
+
 import type { ProviderTrustStore } from '../db/provider-trust-store.ts';
+import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
 
 export interface ProviderSelection {
   provider: string;
@@ -30,9 +31,7 @@ export function selectProvider(
   capability?: string,
 ): ProviderSelection {
   // When capability provided, try capability-specific records first
-  const providers = capability
-    ? trustStore.getProvidersByCapability(capability)
-    : trustStore.getAllProviders();
+  const providers = capability ? trustStore.getProvidersByCapability(capability) : trustStore.getAllProviders();
 
   // Cold start: no data → use default
   if (providers.length === 0 || !defaultProvider) {

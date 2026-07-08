@@ -221,8 +221,9 @@ describe('WorkingMemory', () => {
 
   test('eviction picks correct minimum when confidences are mixed', () => {
     const wm = new WorkingMemory();
-    const confidences = [0.5, 0.3, 0.8, 0.1, 0.6, 0.9, 0.4, 0.7, 0.2, 0.95,
-      0.55, 0.35, 0.85, 0.15, 0.65, 0.88, 0.45, 0.75, 0.25, 0.92];
+    const confidences = [
+      0.5, 0.3, 0.8, 0.1, 0.6, 0.9, 0.4, 0.7, 0.2, 0.95, 0.55, 0.35, 0.85, 0.15, 0.65, 0.88, 0.45, 0.75, 0.25, 0.92,
+    ];
     for (let i = 0; i < MAX_FAILED_APPROACHES; i++) {
       wm.recordFailedApproach(`approach-${i}`, `verdict-${i}`, confidences[i]);
     }
@@ -281,21 +282,15 @@ describe('WorkingMemory', () => {
     // entry and hand its COMPLETE payload (including classifiedFailures)
     // to the archiver — no silent loss of the forensic trail.
     for (let i = 0; i < MAX_FAILED_APPROACHES; i++) {
-      wm.recordFailedApproach(
-        `approach-${i}`,
-        `verdict-${i}`,
-        0.5,
-        'type',
-        [
-          {
-            category: 'type-error',
-            file: `src/f${i}.ts`,
-            line: i + 1,
-            message: `msg-${i}`,
-            severity: 'error',
-          },
-        ],
-      );
+      wm.recordFailedApproach(`approach-${i}`, `verdict-${i}`, 0.5, 'type', [
+        {
+          category: 'type-error',
+          file: `src/f${i}.ts`,
+          line: i + 1,
+          message: `msg-${i}`,
+          severity: 'error',
+        },
+      ]);
     }
     // Insert one more with lower confidence — the EVICTED entry is NOT
     // this new one (it has min-confidence amongst pre-existing = the

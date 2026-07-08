@@ -58,7 +58,13 @@ describe('transcript-compactor — preserve channel (Strategy a)', () => {
 
   it('partitionTranscript counts a preserve-flagged turn as evidence (skips it from narrative tally)', () => {
     const partition = partitionTranscript([
-      { type: 'cot_inject_marker', turnId: 'a', content: 'inject A', [COMPACTION_PRESERVE_FLAG]: true, tokensConsumed: 50 },
+      {
+        type: 'cot_inject_marker',
+        turnId: 'a',
+        content: 'inject A',
+        [COMPACTION_PRESERVE_FLAG]: true,
+        tokensConsumed: 50,
+      },
       { type: 'done', turnId: 'b', tokensConsumed: 30 },
     ]);
     expect(partition.compactedNarrativeTurns).toBe(1);
@@ -134,7 +140,12 @@ function makePerception(): PerceptualHierarchy {
 }
 
 function makeMemory(): WorkingMemoryState {
-  return { failedApproaches: [], activeHypotheses: [], unresolvedUncertainties: [], scopedFacts: [] } as unknown as WorkingMemoryState;
+  return {
+    failedApproaches: [],
+    activeHypotheses: [],
+    unresolvedUncertainties: [],
+    scopedFacts: [],
+  } as unknown as WorkingMemoryState;
 }
 
 function makeRouting(opts?: { budgetTokens?: number }): RoutingDecision {
@@ -188,9 +199,7 @@ afterEach(() => {
 
 describe('runAgentLoop — cotInjectionPayload pushes preserve-flagged transcript turn', () => {
   it('pushes a cot_inject_marker turn (preserve-flagged) when input.cotInjectionPayload is set', async () => {
-    const turns: WorkerTurn[] = [
-      { type: 'done', turnId: 't1', proposedContent: 'ok', tokensConsumed: 10 },
-    ];
+    const turns: WorkerTurn[] = [{ type: 'done', turnId: 't1', proposedContent: 'ok', tokensConsumed: 10 }];
     const bus = createBus();
     const deps = makeDeps(new MockAgentSession(turns), bus);
 
@@ -216,9 +225,7 @@ describe('runAgentLoop — cotInjectionPayload pushes preserve-flagged transcrip
   });
 
   it('does NOT push a cot_inject_marker when input.cotInjectionPayload is absent (negative test)', async () => {
-    const turns: WorkerTurn[] = [
-      { type: 'done', turnId: 't1', proposedContent: 'ok', tokensConsumed: 10 },
-    ];
+    const turns: WorkerTurn[] = [{ type: 'done', turnId: 't1', proposedContent: 'ok', tokensConsumed: 10 }];
     const bus = createBus();
     const deps = makeDeps(new MockAgentSession(turns), bus);
     const result = await runAgentLoop(
@@ -250,12 +257,48 @@ describe('runAgentLoop — cotInjectionPayload pushes preserve-flagged transcrip
     // 6 tool_calls turns × 100 tokens = 600 / 1000 = 0.6 > 0.5; the
     // 6th tool_call boundary is where the partition+compact path runs.
     const turns: WorkerTurn[] = [
-      { type: 'tool_calls', turnId: 't1', rationale: 'a', calls: [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/a.ts' } }], tokensConsumed: 100 },
-      { type: 'tool_calls', turnId: 't2', rationale: 'b', calls: [{ id: 'c2', tool: 'file_read', parameters: { path: 'src/b.ts' } }], tokensConsumed: 100 },
-      { type: 'tool_calls', turnId: 't3', rationale: 'c', calls: [{ id: 'c3', tool: 'file_read', parameters: { path: 'src/c.ts' } }], tokensConsumed: 100 },
-      { type: 'tool_calls', turnId: 't4', rationale: 'd', calls: [{ id: 'c4', tool: 'file_read', parameters: { path: 'src/d.ts' } }], tokensConsumed: 100 },
-      { type: 'tool_calls', turnId: 't5', rationale: 'e', calls: [{ id: 'c5', tool: 'file_read', parameters: { path: 'src/e.ts' } }], tokensConsumed: 100 },
-      { type: 'tool_calls', turnId: 't6', rationale: 'compaction-trigger', calls: [{ id: 'c6', tool: 'file_read', parameters: { path: 'src/f.ts' } }], tokensConsumed: 100 },
+      {
+        type: 'tool_calls',
+        turnId: 't1',
+        rationale: 'a',
+        calls: [{ id: 'c1', tool: 'file_read', parameters: { path: 'src/a.ts' } }],
+        tokensConsumed: 100,
+      },
+      {
+        type: 'tool_calls',
+        turnId: 't2',
+        rationale: 'b',
+        calls: [{ id: 'c2', tool: 'file_read', parameters: { path: 'src/b.ts' } }],
+        tokensConsumed: 100,
+      },
+      {
+        type: 'tool_calls',
+        turnId: 't3',
+        rationale: 'c',
+        calls: [{ id: 'c3', tool: 'file_read', parameters: { path: 'src/c.ts' } }],
+        tokensConsumed: 100,
+      },
+      {
+        type: 'tool_calls',
+        turnId: 't4',
+        rationale: 'd',
+        calls: [{ id: 'c4', tool: 'file_read', parameters: { path: 'src/d.ts' } }],
+        tokensConsumed: 100,
+      },
+      {
+        type: 'tool_calls',
+        turnId: 't5',
+        rationale: 'e',
+        calls: [{ id: 'c5', tool: 'file_read', parameters: { path: 'src/e.ts' } }],
+        tokensConsumed: 100,
+      },
+      {
+        type: 'tool_calls',
+        turnId: 't6',
+        rationale: 'compaction-trigger',
+        calls: [{ id: 'c6', tool: 'file_read', parameters: { path: 'src/f.ts' } }],
+        tokensConsumed: 100,
+      },
       { type: 'done', turnId: 't7', proposedContent: 'fix proposed', tokensConsumed: 10 },
     ];
     const bus = createBus();

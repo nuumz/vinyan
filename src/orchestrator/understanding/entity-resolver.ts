@@ -278,9 +278,9 @@ export class EntityResolver {
       const existingPaths = new Set(results.flatMap((e) => e.resolvedPaths));
       for (const token of tokens) {
         try {
-          const facts = this.worldGraph.queryFacts(token).filter(
-            (f) => f.pattern === 'understanding-verified' && !existingPaths.has(f.sourceFile),
-          );
+          const facts = this.worldGraph
+            .queryFacts(token)
+            .filter((f) => f.pattern === 'understanding-verified' && !existingPaths.has(f.sourceFile));
           if (facts.length > 0) {
             const priorPaths = [...new Set(facts.map((f) => f.sourceFile))].slice(0, 5);
             results.push({

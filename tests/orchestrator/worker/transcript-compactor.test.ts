@@ -80,9 +80,7 @@ describe('EO #5: Transcript Compactor', () => {
   });
 
   test('uses estimateTurnTokens when tokensConsumed is missing', () => {
-    const transcript = [
-      { type: 'done', turnId: 't1', proposedContent: 'analysis result here' },
-    ];
+    const transcript = [{ type: 'done', turnId: 't1', proposedContent: 'analysis result here' }];
 
     const partition = partitionTranscript(transcript);
 
@@ -92,10 +90,7 @@ describe('EO #5: Transcript Compactor', () => {
   });
 
   test('generates turnId when missing', () => {
-    const transcript = [
-      { type: 'tool_calls' },
-      { type: 'done' },
-    ];
+    const transcript = [{ type: 'tool_calls' }, { type: 'done' }];
 
     const partition = partitionTranscript(transcript);
 

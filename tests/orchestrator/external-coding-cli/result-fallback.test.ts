@@ -13,10 +13,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { ClaudeCodeAdapter } from '../../../src/orchestrator/external-coding-cli/providers/claude-code-adapter.ts';
-import {
-  RESULT_CLOSE_TAG,
-  RESULT_OPEN_TAG,
-} from '../../../src/orchestrator/external-coding-cli/types.ts';
+import { RESULT_CLOSE_TAG, RESULT_OPEN_TAG } from '../../../src/orchestrator/external-coding-cli/types.ts';
 
 function block(json: object): string {
   return `${RESULT_OPEN_TAG}\n${JSON.stringify(json)}\n${RESULT_CLOSE_TAG}`;

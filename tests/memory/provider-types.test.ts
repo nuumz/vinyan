@@ -11,9 +11,9 @@
  */
 
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { describe, expect, it } from 'bun:test';
 import type { ConfidenceTier } from '../../src/core/confidence-tier.ts';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
 import { MemoryRecordInputSchema, MemoryRecordSchema, SearchOptsSchema } from '../../src/memory/provider/types.ts';
 

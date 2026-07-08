@@ -13,11 +13,11 @@
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { loadConfig } from '../config/loader.ts';
-import { CostLedger } from '../economy/cost-ledger.ts';
-import { BudgetEnforcer } from '../economy/budget-enforcer.ts';
-import { CostPredictor } from '../economy/cost-predictor.ts';
 import { ProviderTrustStore } from '../db/provider-trust-store.ts';
 import { VinyanDB } from '../db/vinyan-db.ts';
+import { BudgetEnforcer } from '../economy/budget-enforcer.ts';
+import { CostLedger } from '../economy/cost-ledger.ts';
+import { CostPredictor } from '../economy/cost-predictor.ts';
 import { wilsonLowerBound } from '../sleep-cycle/wilson.ts';
 
 function openDB(workspace: string): VinyanDB | null {
@@ -32,7 +32,7 @@ function openDB(workspace: string): VinyanDB | null {
 export async function runEconomyCommand(args: string[]): Promise<void> {
   const subcommand = args[0] ?? '';
   const workspace = args.includes('--workspace')
-    ? args[args.indexOf('--workspace') + 1] ?? process.cwd()
+    ? (args[args.indexOf('--workspace') + 1] ?? process.cwd())
     : process.cwd();
 
   const db = openDB(workspace);
@@ -93,7 +93,9 @@ function printSummary(workspace: string, ledger: CostLedger, raw: import('bun:sq
       if (budgets.daily_usd) console.log(`  Daily:   $${budgets.daily_usd}`);
       if (budgets.monthly_usd) console.log(`  Monthly: $${budgets.monthly_usd}`);
     }
-  } catch { /* config not available */ }
+  } catch {
+    /* config not available */
+  }
 
   // Market phase
   try {
@@ -105,7 +107,9 @@ function printSummary(workspace: string, ledger: CostLedger, raw: import('bun:sq
     } else {
       console.log('\nMarket: disabled');
     }
-  } catch { /* config not available */ }
+  } catch {
+    /* config not available */
+  }
 
   // Trust summary
   try {
@@ -122,7 +126,9 @@ function printSummary(workspace: string, ledger: CostLedger, raw: import('bun:sq
         console.log(`  ... and ${providers.length - 5} more`);
       }
     }
-  } catch { /* trust store not available */ }
+  } catch {
+    /* trust store not available */
+  }
 }
 
 function printBudget(workspace: string, ledger: CostLedger): void {
@@ -146,9 +152,11 @@ function printBudget(workspace: string, ledger: CostLedger): void {
     for (const w of windows) {
       const entries = ledger.queryByTimeRange(w.fromMs, now);
       const spent = entries.reduce((sum, e) => sum + e.computed_usd, 0);
-      const pct = w.limit ? (spent / w.limit * 100) : 0;
+      const pct = w.limit ? (spent / w.limit) * 100 : 0;
       const bar = w.limit ? `[${progressBar(pct, 20)}]` : '';
-      console.log(`${w.label.padEnd(12)} $${spent.toFixed(4)} / $${(w.limit ?? 0).toFixed(2)} ${bar} ${pct.toFixed(1)}%`);
+      console.log(
+        `${w.label.padEnd(12)} $${spent.toFixed(4)} / $${(w.limit ?? 0).toFixed(2)} ${bar} ${pct.toFixed(1)}%`,
+      );
     }
   } catch {
     console.log('Budget config not available.');
@@ -209,7 +217,9 @@ function printMarket(workspace: string): void {
     console.log(`Min bidders:     ${market.min_bidders}`);
     console.log(`Min cost records: ${market.min_cost_records}`);
     console.log(`Bid TTL:         ${market.bid_ttl_ms}ms`);
-    console.log(`Weights:         cost=${market.weights.cost} quality=${market.weights.quality} duration=${market.weights.duration} accuracy=${market.weights.accuracy}`);
+    console.log(
+      `Weights:         cost=${market.weights.cost} quality=${market.weights.quality} duration=${market.weights.duration} accuracy=${market.weights.accuracy}`,
+    );
     console.log(`\nNote: Phase state is in-memory. Use the TUI for live market status.`);
   } catch {
     console.log('Market config not available.');
@@ -274,7 +284,7 @@ function printFederation(workspace: string): void {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function progressBar(pct: number, width: number): string {
-  const filled = Math.round(Math.min(100, Math.max(0, pct)) / 100 * width);
+  const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * width);
   return '█'.repeat(filled) + '░'.repeat(width - filled);
 }
 
@@ -284,9 +294,13 @@ function parseDuration(s: string): number {
   const [, num, unit] = match;
   const n = parseInt(num!, 10);
   switch (unit) {
-    case 'h': return n * 3_600_000;
-    case 'd': return n * 86_400_000;
-    case 'm': return n * 60_000;
-    default: return 86_400_000;
+    case 'h':
+      return n * 3_600_000;
+    case 'd':
+      return n * 86_400_000;
+    case 'm':
+      return n * 60_000;
+    default:
+      return 86_400_000;
   }
 }

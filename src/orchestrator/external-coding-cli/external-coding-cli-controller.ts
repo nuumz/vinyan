@@ -139,8 +139,8 @@ export class ExternalCodingCliController {
     const filtered = requirements.needsInteractive
       ? eligible.filter((d) => d.capabilities.interactive && d.capabilities.streamProtocol)
       : requirements.needsHeadless
-      ? eligible.filter((d) => d.capabilities.headless)
-      : eligible;
+        ? eligible.filter((d) => d.capabilities.headless)
+        : eligible;
     const ranked = filtered.sort((a, b) => this.score(b, requirements) - this.score(a, requirements));
     if (preferred) {
       const explicit = ranked.find((d) => d.providerId === preferred);
@@ -153,7 +153,10 @@ export class ExternalCodingCliController {
     return { providerId: top.providerId, reason: this.explainScore(top, requirements) };
   }
 
-  private score(d: CodingCliDetectionResult, req: { needsHeadless?: boolean; needsInteractive?: boolean; needsHooks?: boolean }): number {
+  private score(
+    d: CodingCliDetectionResult,
+    req: { needsHeadless?: boolean; needsInteractive?: boolean; needsHooks?: boolean },
+  ): number {
     let s = 0;
     if (req.needsHeadless && d.capabilities.headless) s += 5;
     if (req.needsInteractive && d.capabilities.interactive) s += 5;
@@ -166,7 +169,10 @@ export class ExternalCodingCliController {
     return s;
   }
 
-  private explainScore(d: CodingCliDetectionResult, req: { needsHeadless?: boolean; needsInteractive?: boolean; needsHooks?: boolean }): string {
+  private explainScore(
+    d: CodingCliDetectionResult,
+    req: { needsHeadless?: boolean; needsInteractive?: boolean; needsHooks?: boolean },
+  ): string {
     const parts: string[] = [];
     if (req.needsHeadless && d.capabilities.headless) parts.push('supports headless');
     if (req.needsInteractive && d.capabilities.interactive) parts.push('supports interactive');
@@ -179,7 +185,11 @@ export class ExternalCodingCliController {
 
   async createSession(taskInput: CodingCliTask, providerId?: CodingCliProviderId): Promise<CodingCliSession> {
     const task = CodingCliTaskSchema.parse(taskInput);
-    const targetProvider = providerId ?? task.providerId ?? this.pickProvider({ needsInteractive: task.mode === 'interactive', needsHeadless: task.mode === 'headless' })?.providerId;
+    const targetProvider =
+      providerId ??
+      task.providerId ??
+      this.pickProvider({ needsInteractive: task.mode === 'interactive', needsHeadless: task.mode === 'headless' })
+        ?.providerId;
     if (!targetProvider) {
       throw new Error('no available coding-cli provider for task');
     }
@@ -196,11 +206,7 @@ export class ExternalCodingCliController {
     }
     // Falsifiable trigger guard: interactive requested but provider lacks
     // a stream protocol. Refuse rather than spawn a TTY-only CLI over pipes.
-    if (
-      task.mode === 'interactive' &&
-      detection.capabilities.interactive &&
-      !detection.capabilities.streamProtocol
-    ) {
+    if (task.mode === 'interactive' && detection.capabilities.interactive && !detection.capabilities.streamProtocol) {
       return this.makeUnsupportedSession(
         task,
         adapter,
@@ -214,7 +220,9 @@ export class ExternalCodingCliController {
     const sinkPath = path.join(sessionDir, 'hook-events.jsonl');
     const hookBridge = new HookBridge({
       sinkPath,
-      mode: this.options.config.providers[adapter.id === 'claude-code' ? 'claudeCode' : 'githubCopilot']?.hookBridge.mode ?? 'hybrid',
+      mode:
+        this.options.config.providers[adapter.id === 'claude-code' ? 'claudeCode' : 'githubCopilot']?.hookBridge.mode ??
+        'hybrid',
     });
 
     if (adapter.setupHookBridge) {
@@ -261,14 +269,26 @@ export class ExternalCodingCliController {
 
   // ── Headless run with verification ────────────────────────────────────
 
-  async runHeadless(taskInput: CodingCliTask, providerId?: CodingCliProviderId): Promise<{
+  async runHeadless(
+    taskInput: CodingCliTask,
+    providerId?: CodingCliProviderId,
+  ): Promise<{
     session: CodingCliSession;
     claim: CodingCliResult | null;
     verification: ReturnType<CodingCliVerifier['verify']> extends Promise<infer R> ? R : never;
   }> {
     const session = await this.createSession({ ...taskInput, mode: 'headless' }, providerId);
     if (session.state() === 'unsupported-capability') {
-      return { session, claim: null, verification: { passed: false, oracleVerdicts: [], predictionError: false, reason: 'provider unsupported' } as never };
+      return {
+        session,
+        claim: null,
+        verification: {
+          passed: false,
+          oracleVerdicts: [],
+          predictionError: false,
+          reason: 'provider unsupported',
+        } as never,
+      };
     }
     const headless = await session.runHeadless();
     const verifier = this.options.buildVerifier
@@ -302,7 +322,11 @@ export class ExternalCodingCliController {
     }
     if (!claim) {
       session.finalize('failed', 'no result envelope emitted and no usable session output to synthesize from');
-      return { session, claim, verification: { passed: false, oracleVerdicts: [], predictionError: false, reason: 'no result' } as never };
+      return {
+        session,
+        claim,
+        verification: { passed: false, oracleVerdicts: [], predictionError: false, reason: 'no result' } as never,
+      };
     }
     const baseEvent = {
       taskId: session.task.taskId,
@@ -321,13 +345,19 @@ export class ExternalCodingCliController {
       oracleVerdicts: verification.oracleVerdicts,
       testResults: verification.testResults,
       predictionError: verification.predictionError
-        ? { claimed: claim.verification.claimedPassed, actual: verification.passed, reason: verification.reason ?? 'prediction error' }
+        ? {
+            claimed: claim.verification.claimedPassed,
+            actual: verification.passed,
+            reason: verification.reason ?? 'prediction error',
+          }
         : undefined,
     });
     if (verification.passed) session.finalize('completed', 'verification passed');
     else session.finalize('failed', verification.reason ?? 'verification failed');
     if (this.options.store) {
-      this.options.store.update(this.snapshotRecord(session, this.detection.get(session.adapterId as CodingCliProviderId)));
+      this.options.store.update(
+        this.snapshotRecord(session, this.detection.get(session.adapterId as CodingCliProviderId)),
+      );
     }
     return { session, claim, verification };
   }
@@ -348,7 +378,9 @@ export class ExternalCodingCliController {
     await session.cancel(reason);
     this.approvalBridge.cancelPendingForSession(id);
     if (this.options.store) {
-      this.options.store.update(this.snapshotRecord(session, this.detection.get(session.adapterId as CodingCliProviderId)));
+      this.options.store.update(
+        this.snapshotRecord(session, this.detection.get(session.adapterId as CodingCliProviderId)),
+      );
     }
     return true;
   }

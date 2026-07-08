@@ -83,7 +83,9 @@ describe('buildThoughtEvidenceRefs', () => {
       runtime: { nodeVersion: 'v0', os: 'darwin', availableTools: [] },
     });
     expect(refs).toHaveLength(2);
-    const foo = refs.find((r): r is Extract<EvidenceRef, { type: 'file' }> => r.type === 'file' && r.path === 'src/foo.ts');
+    const foo = refs.find(
+      (r): r is Extract<EvidenceRef, { type: 'file' }> => r.type === 'file' && r.path === 'src/foo.ts',
+    );
     expect(foo).toBeDefined();
     expect(foo!.sha256).toBe(SHA(1));
   });
@@ -95,7 +97,14 @@ describe('buildThoughtEvidenceRefs', () => {
       diagnostics: { lintWarnings: [], typeErrors: [], failingTests: [] },
       verifiedFacts: [
         { target: 'src/foo.ts', pattern: 'fn-exists', verified_at: 1, hash: SHA(1), confidence: 1, oracleName: 'ast' },
-        { target: 'src/foo.ts', pattern: 'import-exists', verified_at: 1, hash: SHA(2), confidence: 1, oracleName: 'ast' },
+        {
+          target: 'src/foo.ts',
+          pattern: 'import-exists',
+          verified_at: 1,
+          hash: SHA(2),
+          confidence: 1,
+          oracleName: 'ast',
+        },
       ],
       runtime: { nodeVersion: 'v0', os: 'darwin', availableTools: [] },
     });
@@ -154,7 +163,7 @@ describe('buildThoughtEvidenceRefs', () => {
       runtime: { nodeVersion: 'v0', os: 'darwin', availableTools: [] },
     } as unknown as PerceptualHierarchy;
     const live = new Map<string, string>([
-      ['src/bar.ts', SHA(2)],  // newly read by worker, NOT in perception
+      ['src/bar.ts', SHA(2)], // newly read by worker, NOT in perception
     ]);
     const refs = buildThoughtEvidenceRefs(perception, live);
     expect(refs).toHaveLength(2);
@@ -173,7 +182,7 @@ describe('buildThoughtEvidenceRefs', () => {
       runtime: { nodeVersion: 'v0', os: 'darwin', availableTools: [] },
     } as unknown as PerceptualHierarchy;
     const live = new Map<string, string>([
-      ['src/foo.ts', SHA(9)],  // worker re-read after a write; new hash
+      ['src/foo.ts', SHA(9)], // worker re-read after a write; new hash
     ]);
     const refs = buildThoughtEvidenceRefs(perception, live);
     expect(refs).toHaveLength(1);
@@ -252,7 +261,12 @@ function makeRouting(): RoutingDecision {
 }
 
 function makeMemory(): WorkingMemoryState {
-  return { failedApproaches: [], activeHypotheses: [], unresolvedUncertainties: [], scopedFacts: [] } as unknown as WorkingMemoryState;
+  return {
+    failedApproaches: [],
+    activeHypotheses: [],
+    unresolvedUncertainties: [],
+    scopedFacts: [],
+  } as unknown as WorkingMemoryState;
 }
 
 function defaultExecutor() {
@@ -345,10 +359,14 @@ describe('runAgentLoop — A4 evidenceRefs on thought emits', () => {
     expect(thoughts).toHaveLength(1);
     const refs = thoughts[0]!.evidenceRefs ?? [];
     expect(refs).toHaveLength(2);
-    const foo = refs.find((r): r is Extract<EvidenceRef, { type: 'file' }> => r.type === 'file' && r.path === 'src/foo.ts');
+    const foo = refs.find(
+      (r): r is Extract<EvidenceRef, { type: 'file' }> => r.type === 'file' && r.path === 'src/foo.ts',
+    );
     expect(foo).toBeDefined();
     expect(foo!.sha256).toBe(SHA(1));
-    const bar = refs.find((r): r is Extract<EvidenceRef, { type: 'file' }> => r.type === 'file' && r.path === 'src/bar.ts');
+    const bar = refs.find(
+      (r): r is Extract<EvidenceRef, { type: 'file' }> => r.type === 'file' && r.path === 'src/bar.ts',
+    );
     expect(bar).toBeDefined();
     expect(bar!.sha256).toBe(SHA(2));
   });
@@ -435,7 +453,7 @@ describe('runAgentLoop — A4 evidenceRefs on thought emits', () => {
       {
         type: 'uncertain',
         turnId: 't1',
-        reason: "I am uncertain whether to refactor src/foo.ts because callers may rely on the current API",
+        reason: 'I am uncertain whether to refactor src/foo.ts because callers may rely on the current API',
         uncertainties: ['unverified-callers'],
         tokensConsumed: 30,
       },
@@ -452,7 +470,9 @@ describe('runAgentLoop — A4 evidenceRefs on thought emits', () => {
     expect(thoughts[0]!.trigger).toBe('reflect');
     const refs = thoughts[0]!.evidenceRefs ?? [];
     expect(refs.length).toBeGreaterThan(0);
-    const foo = refs.find((r): r is Extract<EvidenceRef, { type: 'file' }> => r.type === 'file' && r.path === 'src/foo.ts');
+    const foo = refs.find(
+      (r): r is Extract<EvidenceRef, { type: 'file' }> => r.type === 'file' && r.path === 'src/foo.ts',
+    );
     expect(foo).toBeDefined();
   });
 });

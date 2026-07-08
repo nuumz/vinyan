@@ -15,6 +15,7 @@ import { createOrchestrator as _createOrchestrator } from '../../src/orchestrato
 // the same pattern.
 const createOrchestrator: typeof _createOrchestrator = (opts) =>
   _createOrchestrator({ workerBootstrapPolicy: 'grandfather', ...opts });
+
 import { createMockProvider } from '../../src/orchestrator/llm/mock-provider.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { TaskInput } from '../../src/orchestrator/types.ts';
@@ -90,7 +91,9 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
-    const trace = orchestrator.traceCollector.getTraces().find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined)!;
+    const trace = orchestrator.traceCollector
+      .getTraces()
+      .find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined)!;
     expect(trace).toBeDefined();
     expect(trace.qualityScore).toBeDefined();
     // C3 fix: types are still 'number' even when NaN; dimensionsAvailable is 0 for zero-oracle
@@ -104,7 +107,9 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
-    const trace = orchestrator.traceCollector.getTraces().find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined)!;
+    const trace = orchestrator.traceCollector
+      .getTraces()
+      .find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined)!;
     expect(trace).toBeDefined();
     expect(trace.qualityScore).toBeDefined();
     // Without complexity context, should be phase0 (2 dims) or phase1 (3 dims if test oracle present)
@@ -128,7 +133,9 @@ describe('Core Loop QualityScore — A7 Gradient Signal', () => {
     const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeRegistry(), useSubprocess: false });
     await orchestrator.executeTask(makeInput());
 
-    const trace = orchestrator.traceCollector.getTraces().find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined);
+    const trace = orchestrator.traceCollector
+      .getTraces()
+      .find((t) => t.taskId === 't-qs' && t.qualityScore !== undefined);
     if (trace?.qualityScore) {
       // Zero-oracle case returns unverified:true with neutral score (no NaN propagation)
       if (trace.qualityScore.unverified) {

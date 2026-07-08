@@ -1,4 +1,4 @@
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
+import { Database } from 'bun:sqlite';
 /**
  * Room ↔ Team blackboard bridge tests.
  *
@@ -9,14 +9,14 @@ import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
  * no-export on non-converged status.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 
 import { TeamStore } from '../../../src/db/team-store.ts';
-import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 import { TeamManager } from '../../../src/orchestrator/ecosystem/team.ts';
+import { TeamBlackboardFs } from '../../../src/orchestrator/ecosystem/team-blackboard-fs.ts';
 import { RoomBlackboard } from '../../../src/orchestrator/room/room-blackboard.ts';
 import type { RoleSpec } from '../../../src/orchestrator/room/types.ts';
 

@@ -26,8 +26,8 @@
  * `agent-discretion` mode only); timeouts are deterministic.
  */
 
-import type { VinyanBus } from '../../core/bus.ts';
 import type { VinyanConfig } from '../../config/schema.ts';
+import type { VinyanBus } from '../../core/bus.ts';
 import type { WorkflowPlan, WorkflowStep } from './types.ts';
 
 export type ApprovalDecision = 'approved' | 'rejected' | 'timeout';
@@ -81,7 +81,13 @@ export type WorkflowConfig = NonNullable<VinyanConfig['workflow']>;
 // Matched as whole-word (\b) against step description + expectedOutput.
 const HUMAN_ONLY_KEYWORDS_EN: string[] = [
   // Simple action verbs
-  'confirm', 'choose', 'select', 'clarify', 'decide', 'approve', 'reject',
+  'confirm',
+  'choose',
+  'select',
+  'clarify',
+  'decide',
+  'approve',
+  'reject',
   // Compound phrases
   'pick(?:\\s+one)?',
   'which\\s+(?:option|one)',
@@ -94,16 +100,16 @@ const HUMAN_ONLY_MARKERS_EN = new RegExp(`\\b(?:${HUMAN_ONLY_KEYWORDS_EN.join('|
 
 // Thai phrases written verbatim — no word-boundary regex semantics in Thai.
 const HUMAN_ONLY_MARKERS_TH = [
-  'ตรงกับที่อยากได้ไหม',   // "Does this match what you wanted?"
-  'ตรงกับที่ต้องการไหม',   // "Does this match what you need?"
-  'ให้เลือก',              // "Please choose / select"
-  'ต้องการแบบไหน',         // "Which style/type do you want?"
-  'ผิดตรงไหน',             // "What part is wrong?"
-  'ตัดสินใจ',              // "Decide / make a decision"
-  'ยืนยัน',               // "Confirm"
-  'อนุมัติ',              // "Approve"
-  'ขอความเห็น',            // "Request / seeking opinion"
-  'ต้องการให้ผู้ใช้',      // "Needs the user to..."
+  'ตรงกับที่อยากได้ไหม', // "Does this match what you wanted?"
+  'ตรงกับที่ต้องการไหม', // "Does this match what you need?"
+  'ให้เลือก', // "Please choose / select"
+  'ต้องการแบบไหน', // "Which style/type do you want?"
+  'ผิดตรงไหน', // "What part is wrong?"
+  'ตัดสินใจ', // "Decide / make a decision"
+  'ยืนยัน', // "Confirm"
+  'อนุมัติ', // "Approve"
+  'ขอความเห็น', // "Request / seeking opinion"
+  'ต้องการให้ผู้ใช้', // "Needs the user to..."
 ];
 
 function looksLikeHumanDecisionStep(step: WorkflowStep): boolean {
@@ -149,9 +155,7 @@ export function classifyApprovalRequirement(
   if (hasHumanOnlyStep) return 'human-required';
   if (setting === true) return 'agent-discretion';
   // 'auto' — short goals skip; long-form goals get a review window.
-  return goal.trim().length >= AUTO_APPROVAL_LENGTH_THRESHOLD
-    ? 'agent-discretion'
-    : 'none';
+  return goal.trim().length >= AUTO_APPROVAL_LENGTH_THRESHOLD ? 'agent-discretion' : 'none';
 }
 
 /**
@@ -164,10 +168,7 @@ export function classifyApprovalRequirement(
  *     (`goal.length >= AUTO_APPROVAL_LENGTH_THRESHOLD`). Short goals skip
  *     the gate so quick tasks don't get blocked.
  */
-export function requiresApproval(
-  config: WorkflowConfig | undefined,
-  goal: string,
-): boolean {
+export function requiresApproval(config: WorkflowConfig | undefined, goal: string): boolean {
   const setting = config?.requireUserApproval ?? 'auto';
   if (setting === true) return true;
   if (setting === false) return false;
@@ -194,11 +195,7 @@ export function approvalTimeoutMs(config: WorkflowConfig | undefined): number {
  * emit. The returned promise settles exactly once — events arriving after
  * settlement are ignored.
  */
-export function awaitApprovalDecision(
-  bus: VinyanBus,
-  taskId: string,
-  timeoutMs: number,
-): Promise<ApprovalDecision> {
+export function awaitApprovalDecision(bus: VinyanBus, taskId: string, timeoutMs: number): Promise<ApprovalDecision> {
   return new Promise((resolve) => {
     let settled = false;
     const settle = (value: ApprovalDecision) => {

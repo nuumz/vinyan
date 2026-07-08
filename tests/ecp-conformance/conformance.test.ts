@@ -6,9 +6,18 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { validateLevel0 } from '../../packages/ecp-conformance/src/level0.ts';
-import { validateLevel1, validateJsonRpcEnvelope } from '../../packages/ecp-conformance/src/level1.ts';
-import { validateLevel2, validateVersionHandshake, validateVersionResponse } from '../../packages/ecp-conformance/src/level2.ts';
-import { validateLevel3, validateKnowledgeOffer, validateKnowledgeAcceptance, validateKnowledgeTransfer } from '../../packages/ecp-conformance/src/level3.ts';
+import { validateJsonRpcEnvelope, validateLevel1 } from '../../packages/ecp-conformance/src/level1.ts';
+import {
+  validateLevel2,
+  validateVersionHandshake,
+  validateVersionResponse,
+} from '../../packages/ecp-conformance/src/level2.ts';
+import {
+  validateKnowledgeAcceptance,
+  validateKnowledgeOffer,
+  validateKnowledgeTransfer,
+  validateLevel3,
+} from '../../packages/ecp-conformance/src/level3.ts';
 import { runConformanceSuite } from '../../packages/ecp-conformance/src/suite.ts';
 
 // ── Fixtures ─────────────────────────────────────────────────────────
@@ -448,9 +457,7 @@ describe('Knowledge Sharing Protocol', () => {
     const transfer = JSON.stringify({
       cycleId: 'cycle-1',
       instanceId: 'inst-1',
-      patterns: [
-        { id: 'p1', type: 'success', confidence: 0.4, fingerprint: 'fp-1', portability: 'universal' },
-      ],
+      patterns: [{ id: 'p1', type: 'success', confidence: 0.4, fingerprint: 'fp-1', portability: 'universal' }],
     });
     const checks = validateKnowledgeTransfer(transfer);
     expect(checks.every((c) => c.passed)).toBe(true);
@@ -460,9 +467,7 @@ describe('Knowledge Sharing Protocol', () => {
     const transfer = JSON.stringify({
       cycleId: 'cycle-1',
       instanceId: 'inst-1',
-      patterns: [
-        { id: 'p1', type: 'success', confidence: 0.98, fingerprint: 'fp-1', portability: 'universal' },
-      ],
+      patterns: [{ id: 'p1', type: 'success', confidence: 0.98, fingerprint: 'fp-1', portability: 'universal' }],
     });
     const checks = validateKnowledgeTransfer(transfer);
     const ceilCheck = checks.find((c) => c.name === 'transfer-confidence-ceiling');

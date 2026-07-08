@@ -18,7 +18,6 @@
  *   - G7: configurable `minPostRestartEvidence` floor (clamped to ≥1)
  */
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -26,6 +25,7 @@ import { join } from 'path';
 import { VinyanAPIServer } from '../../src/api/server.ts';
 import { SessionManager } from '../../src/api/session-manager.ts';
 import { createBus, type VinyanBus } from '../../src/core/bus.ts';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
 import { SessionStore } from '../../src/db/session-store.ts';
 import {
@@ -33,9 +33,9 @@ import {
   MAX_SKILL_MD_BYTES,
   SkillProposalStore,
 } from '../../src/db/skill-proposal-store.ts';
+import type { CachedSkill, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 import { SkillAutogenStateStore } from '../../src/skills/autogen-state-store.ts';
 import { wireSkillProposalAutogen } from '../../src/skills/proposal-autogen.ts';
-import type { TaskInput, TaskResult, CachedSkill } from '../../src/orchestrator/types.ts';
 
 const TEST_DIR = join(tmpdir(), `vinyan-skill-hardening-test-${Date.now()}`);
 const TOKEN_PATH = join(TEST_DIR, 'api-token');
@@ -46,10 +46,7 @@ let db: Database;
 let bus: VinyanBus;
 let store: SkillProposalStore;
 
-function authedReq(
-  path: string,
-  opts: { method?: string; body?: string } = {},
-): Request {
+function authedReq(path: string, opts: { method?: string; body?: string } = {}): Request {
   return new Request(`http://localhost${path}`, {
     method: opts.method ?? 'GET',
     headers: {
@@ -299,9 +296,7 @@ describe('G2-extension — latestRevision on the proposal entity', () => {
     const created = (await create.json()) as { proposal: { id: string; latestRevision: number } };
     expect(created.proposal.latestRevision).toBe(1);
 
-    const detail = await server.handleRequest(
-      authedReq(`/api/v1/skill-proposals/${created.proposal.id}`),
-    );
+    const detail = await server.handleRequest(authedReq(`/api/v1/skill-proposals/${created.proposal.id}`));
     const body = (await detail.json()) as { proposal: { latestRevision: number } };
     expect(body.proposal.latestRevision).toBe(1);
   });
@@ -331,9 +326,7 @@ describe('G2-extension — latestRevision on the proposal entity', () => {
         }),
       );
     }
-    const detail = await server.handleRequest(
-      authedReq(`/api/v1/skill-proposals/${created.proposal.id}`),
-    );
+    const detail = await server.handleRequest(authedReq(`/api/v1/skill-proposals/${created.proposal.id}`));
     const body = (await detail.json()) as { proposal: { latestRevision: number } };
     expect(body.proposal.latestRevision).toBe(4);
   });
@@ -408,9 +401,7 @@ describe('G3 — revision endpoint immediately reflects PATCH (data freshness)',
     // No delay — the GET should see revision 2 immediately. If the
     // PATCH wasn't persisted before the response returned, this would
     // be racy.
-    const list = await server.handleRequest(
-      authedReq(`/api/v1/skill-proposals/${created.proposal.id}/revisions`),
-    );
+    const list = await server.handleRequest(authedReq(`/api/v1/skill-proposals/${created.proposal.id}/revisions`));
     const body = (await list.json()) as {
       revisions: Array<{ revision: number; reason: string | null }>;
     };
@@ -526,9 +517,7 @@ describe('G6 — revision retention cap', () => {
 describe('G4 — autogen event noise reduction', () => {
   test('below-threshold success does NOT emit promotion_blocked', async () => {
     const events: Array<{ reason: string }> = [];
-    const off = bus.on('skill:autogen_promotion_blocked', (p) =>
-      events.push(p as { reason: string }),
-    );
+    const off = bus.on('skill:autogen_promotion_blocked', (p) => events.push(p as { reason: string }));
     const localStore = new SkillProposalStore(db);
     const wired = wireSkillProposalAutogen({
       bus,

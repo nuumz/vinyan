@@ -34,8 +34,8 @@ import type {
   OracleVerdict,
   PriorAssumption,
 } from '../../core/types.ts';
-import { evaluatePattern } from './predicate-eval.ts';
 import { extractApplicationContext, selectMicrotheory } from './microtheory-selector.ts';
+import { evaluatePattern } from './predicate-eval.ts';
 import { CommonSenseRegistry } from './registry.ts';
 import type { CommonSenseRule } from './types.ts';
 
@@ -50,8 +50,7 @@ const ESCALATION_BUDGET_TOKENS = 50_000;
 // The oracle is invoked synchronously from the gate; opening the SQLite DB
 // every call would cost ~ms. Cache one read-only DB per workspace path.
 
-let dbPathResolver: (workspace: string) => string = (workspace) =>
-  join(workspace, '.vinyan', 'vinyan.db');
+let dbPathResolver: (workspace: string) => string = (workspace) => join(workspace, '.vinyan', 'vinyan.db');
 
 const registryCache = new Map<string, { db: Database; registry: CommonSenseRegistry }>();
 
@@ -140,9 +139,7 @@ function buildPriorAssumption(rule: CommonSenseRule): PriorAssumption {
       domain: rule.microtheory.domain,
       action: rule.microtheory.action,
     },
-    abnormalityPredicate: rule.abnormality_predicate
-      ? JSON.stringify(rule.abnormality_predicate)
-      : undefined,
+    abnormalityPredicate: rule.abnormality_predicate ? JSON.stringify(rule.abnormality_predicate) : undefined,
     source: rule.source,
     priority: rule.priority,
     confidence: rule.confidence,
@@ -185,11 +182,7 @@ function makeAbstention(
   };
 }
 
-function makeUnknownVerdict(
-  evidence: Evidence[],
-  reason: string,
-  durationMs: number,
-): OracleVerdict {
+function makeUnknownVerdict(evidence: Evidence[], reason: string, durationMs: number): OracleVerdict {
   return buildVerdict({
     verified: true,
     type: 'unknown',
@@ -283,14 +276,10 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
 
   const registry = getRegistry(hypothesis.workspace);
   if (!registry) {
-    return makeAbstention(
-      'insufficient_data',
-      performance.now() - start,
-      [
-        'Run migration 010 (commonsense_rules)',
-        'Seed innate rules via loadInnateSeed()',
-      ],
-    );
+    return makeAbstention('insufficient_data', performance.now() - start, [
+      'Run migration 010 (commonsense_rules)',
+      'Seed innate rules via loadInnateSeed()',
+    ]);
   }
 
   const candidates = registry.findApplicable(microtheory);
@@ -312,10 +301,7 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
     firing.push(rule);
   }
 
-  const allEvidence: Evidence[] = [
-    ...firing.map(buildFiringEvidence),
-    ...suppressed.map(buildSuppressionEvidence),
-  ];
+  const allEvidence: Evidence[] = [...firing.map(buildFiringEvidence), ...suppressed.map(buildSuppressionEvidence)];
 
   const durationMs = performance.now() - start;
 

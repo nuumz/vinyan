@@ -10,8 +10,8 @@
  * name is validated against a conservative ref regex before dispatch.
  */
 
-import { makeResult } from './tool-helpers.ts';
 import { approvePush } from './ship-policy.ts';
+import { makeResult } from './tool-helpers.ts';
 import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 export const gitPush: Tool = {

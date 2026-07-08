@@ -8,6 +8,9 @@
  * Axioms: A3 (deterministic governance), A6 (zero-trust execution)
  */
 
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
 import type { AgentContract } from '../../core/agent-contract.ts';
 import { emitAuditEntry, previewString, sha256OfJson } from '../../core/audit-emit.ts';
 import type { VinyanBus } from '../../core/bus.ts';
@@ -49,9 +52,6 @@ import { AgentSession, type SubprocessHandle } from './agent-session.ts';
 import { type ProposedMutation, SessionOverlay } from './session-overlay.ts';
 import { buildThoughtEvidenceRefs, READ_FILE_TOOL_IDS } from './thought-evidence-refs.ts';
 import { buildCompactedTranscript, partitionTranscript } from './transcript-compactor.ts';
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
 
 // ── Exported interfaces ──────────────────────────────────────────────
 
@@ -1266,9 +1266,9 @@ export async function runAgentLoop(
       // debate) are orchestrated above the subprocess and never reach
       // this turn loop directly.
       ...(routing.thinkingConfig &&
-      (routing.thinkingConfig.type === 'disabled'
-        || routing.thinkingConfig.type === 'adaptive'
-        || routing.thinkingConfig.type === 'enabled')
+      (routing.thinkingConfig.type === 'disabled' ||
+        routing.thinkingConfig.type === 'adaptive' ||
+        routing.thinkingConfig.type === 'enabled')
         ? { thinkingConfig: routing.thinkingConfig }
         : {}),
       // Phase 2: realtime streaming opt-in (config-gated).
@@ -1291,13 +1291,16 @@ export async function runAgentLoop(
     // (round 0, non-collaboration tasks), no marker is pushed and the
     // existing compaction behavior is unchanged.
     if (input.cotInjectionPayload) {
-      (transcript as Array<
-        WorkerTurn
-        | { type: 'cot_inject_marker'; turnId: string; content: string; __preserveOnCompaction: true }
-      >).push({
+      (
+        transcript as Array<
+          // biome-ignore lint/style/useNamingConvention: key must equal transcript-compactor.ts COMPACTION_PRESERVE_FLAG ('__preserveOnCompaction')
+          WorkerTurn | { type: 'cot_inject_marker'; turnId: string; content: string; __preserveOnCompaction: true }
+        >
+      ).push({
         type: 'cot_inject_marker',
         turnId: '__cot_inject_marker',
         content: input.cotInjectionPayload,
+        // biome-ignore lint/style/useNamingConvention: key must equal transcript-compactor.ts COMPACTION_PRESERVE_FLAG ('__preserveOnCompaction')
         __preserveOnCompaction: true,
       });
     }

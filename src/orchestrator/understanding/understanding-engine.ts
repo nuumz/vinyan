@@ -51,8 +51,8 @@ export function levenshtein(a: string, b: string): number {
     for (let j = 1; j <= b.length; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
       matrix[i]![j] = Math.min(
-        matrix[i - 1]![j]! + 1,       // deletion
-        matrix[i]![j - 1]! + 1,       // insertion
+        matrix[i - 1]![j]! + 1, // deletion
+        matrix[i]![j - 1]! + 1, // insertion
         matrix[i - 1]![j - 1]! + cost, // substitution
       );
     }
@@ -93,7 +93,10 @@ export function canonicalizePrimaryAction(raw: string): PrimaryAction {
 export function parseSemanticIntent(raw: string): SemanticIntent | null {
   try {
     // Strip markdown fences if present
-    const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```\s*$/m, '').trim();
+    const cleaned = raw
+      .replace(/^```(?:json)?\n?/m, '')
+      .replace(/\n?```\s*$/m, '')
+      .trim();
     const parsed = JSON.parse(cleaned);
 
     // Validate required fields
@@ -115,12 +118,19 @@ export function parseSemanticIntent(raw: string): SemanticIntent | null {
     const ambiguities: SemanticIntent['ambiguities'] = Array.isArray(parsed.ambiguities)
       ? parsed.ambiguities
           .filter((a: unknown) => a && typeof a === 'object' && 'aspect' in a)
-          .map((a: { aspect: string; interpretations?: string[]; selectedInterpretation?: string; confidence?: number }) => ({
-            aspect: String(a.aspect),
-            interpretations: Array.isArray(a.interpretations) ? a.interpretations.map(String) : [],
-            selectedInterpretation: a.selectedInterpretation ? String(a.selectedInterpretation) : undefined,
-            confidence: typeof a.confidence === 'number' ? a.confidence : 0.5,
-          }))
+          .map(
+            (a: {
+              aspect: string;
+              interpretations?: string[];
+              selectedInterpretation?: string;
+              confidence?: number;
+            }) => ({
+              aspect: String(a.aspect),
+              interpretations: Array.isArray(a.interpretations) ? a.interpretations.map(String) : [],
+              selectedInterpretation: a.selectedInterpretation ? String(a.selectedInterpretation) : undefined,
+              confidence: typeof a.confidence === 'number' ? a.confidence : 0.5,
+            }),
+          )
       : [];
 
     // Parse new optional fields — graceful degradation: undefined if missing/invalid
@@ -241,7 +251,10 @@ const FEW_SHOT_EXAMPLES = [
       secondaryActions: ['add-timeout-handling'],
       scope: 'Authentication/login service timeout logic',
       goalSummary: 'Fix the timeout bug in the login service that causes authentication failures.',
-      steps: ['Identify the timeout handling code in the login service', 'Fix the timeout logic to handle slow responses gracefully'],
+      steps: [
+        'Identify the timeout handling code in the login service',
+        'Fix the timeout logic to handle slow responses gracefully',
+      ],
       successCriteria: ['Authentication succeeds even with slow network responses', 'Existing auth tests pass'],
       affectedComponents: ['src/services/auth', 'src/routes/login'],
       rootCause: 'Login service does not handle slow network responses, causing premature timeout.',
@@ -259,7 +272,12 @@ const FEW_SHOT_EXAMPLES = [
       secondaryActions: ['update-types', 'update-tests'],
       scope: 'Payment module Stripe integration',
       goalSummary: 'Migrate the payment module from Stripe API v2 to v3.',
-      steps: ['Update Stripe SDK dependency to v3', 'Refactor payment module API calls', 'Update TypeScript types for new response shapes', 'Update integration tests'],
+      steps: [
+        'Update Stripe SDK dependency to v3',
+        'Refactor payment module API calls',
+        'Update TypeScript types for new response shapes',
+        'Update integration tests',
+      ],
       successCriteria: ['All payment flows work with Stripe API v3', 'No v2 API calls remain'],
       affectedComponents: ['src/payment', 'src/types/stripe'],
       implicitConstraints: [{ text: 'use stripe', polarity: 'must' }],
@@ -278,7 +296,8 @@ const FEW_SHOT_EXAMPLES = [
       primaryAction: 'bug-fix',
       secondaryActions: ['configuration', 'add-feature', 'test-improvement'],
       scope: 'User registration database connection management',
-      goalSummary: 'Fix intermittent 500 errors in user registration caused by database connection pool exhaustion during peak load.',
+      goalSummary:
+        'Fix intermittent 500 errors in user registration caused by database connection pool exhaustion during peak load.',
       steps: [
         'Identify and fix the connection leak in the registration handler',
         'Configure proper connection pooling limits',
@@ -291,7 +310,8 @@ const FEW_SHOT_EXAMPLES = [
         'Integration tests pass for concurrent registration',
       ],
       affectedComponents: ['src/routes/registration', 'src/db/pool', 'src/health'],
-      rootCause: 'Database connections not returned to pool after registration handler errors, causing pool exhaustion under load.',
+      rootCause:
+        'Database connections not returned to pool after registration handler errors, causing pool exhaustion under load.',
       implicitConstraints: [
         { text: 'preserve existing registration API contract', polarity: 'must' },
         { text: 'introduce breaking changes to health check response format', polarity: 'must-not' },
@@ -322,7 +342,12 @@ export function buildUnderstandingPrompt(understanding: SemanticTaskUnderstandin
 
   const contextLines = [
     `Goal: "${understanding.rawGoal}"`,
-    `Target files: ${understanding.resolvedEntities.filter((e) => e.resolution === 'exact').flatMap((e) => e.resolvedPaths).join(', ') || 'none'}`,
+    `Target files: ${
+      understanding.resolvedEntities
+        .filter((e) => e.resolution === 'exact')
+        .flatMap((e) => e.resolvedPaths)
+        .join(', ') || 'none'
+    }`,
     `Frameworks: ${understanding.frameworkContext.join(', ') || 'none'}`,
     `Action verb (rule-based): ${understanding.actionVerb}`,
     `Category (rule-based): ${understanding.actionCategory}`,
@@ -388,8 +413,8 @@ export class UnderstandingEngine implements ReasoningEngine {
       toolCalls: res.toolCalls,
       tokensUsed: res.tokensUsed,
       engineId: this.id,
-      terminationReason: res.stopReason === 'tool_use' ? 'tool_use'
-        : res.stopReason === 'max_tokens' ? 'limit_reached' : 'completed',
+      terminationReason:
+        res.stopReason === 'tool_use' ? 'tool_use' : res.stopReason === 'max_tokens' ? 'limit_reached' : 'completed',
       thinking: res.thinking,
     };
   }

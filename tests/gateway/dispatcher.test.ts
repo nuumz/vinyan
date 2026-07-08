@@ -4,16 +4,12 @@
 
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { GatewayDispatcher } from '../../src/gateway/dispatcher.ts';
-import { GatewayRateLimiter } from '../../src/gateway/security/rate-limiter.ts';
-import {
-  buildInboundEnvelope,
-  type InboundEnvelope,
-  type OutboundEnvelope,
-} from '../../src/gateway/envelope.ts';
 import { GatewayIdentityStore } from '../../src/db/gateway-identity-store.ts';
 import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { MigrationRunner } from '../../src/db/migrations/migration-runner.ts';
+import { GatewayDispatcher } from '../../src/gateway/dispatcher.ts';
+import { buildInboundEnvelope, type InboundEnvelope, type OutboundEnvelope } from '../../src/gateway/envelope.ts';
+import { GatewayRateLimiter } from '../../src/gateway/security/rate-limiter.ts';
 import type { TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 
 // ── Harness ───────────────────────────────────────────────────────────
@@ -186,10 +182,7 @@ describe('GatewayDispatcher.handle', () => {
   test('rate-limit denial suppresses executeTask AND the reply', async () => {
     // Clock-controlled limiter so we can exhaust the bucket deterministically.
     const clock = { now: 0 };
-    const rl = new GatewayRateLimiter(
-      { pairedBucket: { capacity: 1, refillPerSec: 0 } },
-      () => clock.now,
-    );
+    const rl = new GatewayRateLimiter({ pairedBucket: { capacity: 1, refillPerSec: 0 } }, () => clock.now);
     h.rateLimiter.resetAll();
     (h as unknown as { rateLimiter: GatewayRateLimiter }).rateLimiter = rl;
     const dispatcher = new GatewayDispatcher({

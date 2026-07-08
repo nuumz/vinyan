@@ -15,9 +15,10 @@
  * recorded explicitly when the CLI claimed pass but the deterministic
  * verdict is fail (A7: prediction error as learning signal).
  */
-import { spawn } from 'bun';
-import * as path from 'node:path';
+
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { spawn } from 'bun';
 import type { CodingCliResult, CodingCliVerificationOutcome } from './types.ts';
 
 export interface VerifierOptions {
@@ -87,7 +88,9 @@ export class CodingCliVerifier {
       .filter(Boolean)
       .map((line) => line.replace(/^.{1,2}\s+/, ''))
       .map((line) => line.split(' -> ').pop() ?? line);
-    const claimed = new Set(claim.changedFiles.map((p) => path.relative(this.opts.cwd, path.resolve(this.opts.cwd, p))));
+    const claimed = new Set(
+      claim.changedFiles.map((p) => path.relative(this.opts.cwd, path.resolve(this.opts.cwd, p))),
+    );
     const actual = new Set(actualPaths);
 
     // Liar detection: claimed change that is not in `git status` AND does
@@ -143,9 +146,14 @@ export class CodingCliVerifier {
         stdout: 'pipe',
         stderr: 'pipe',
       });
-      const timer = setTimeout(() => {
-        try { proc?.kill('SIGTERM'); } catch {}
-      }, timeoutMs ?? 5 * 60 * 1000);
+      const timer = setTimeout(
+        () => {
+          try {
+            proc?.kill('SIGTERM');
+          } catch {}
+        },
+        timeoutMs ?? 5 * 60 * 1000,
+      );
       const [stdout, stderr] = await Promise.all([
         new Response(proc.stdout as unknown as ReadableStream).text(),
         new Response(proc.stderr as unknown as ReadableStream).text(),

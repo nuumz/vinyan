@@ -39,7 +39,7 @@ export class FileStatsCache {
       else if (testResult === 'fail') entry.failCount++;
       else entry.partialCount++;
 
-      entry.avgQuality = ((entry.avgQuality * (entry.samples - 1)) + quality) / entry.samples;
+      entry.avgQuality = (entry.avgQuality * (entry.samples - 1) + quality) / entry.samples;
     }
   }
 

@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-
+import { describe, expect, it } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import { ProviderTrustStore } from '../../../src/db/provider-trust-store.ts';
-import { DefaultEngineSelector } from '../../../src/orchestrator/engine-selector.ts';
 import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
+import { DefaultEngineSelector } from '../../../src/orchestrator/engine-selector.ts';
+
 function makeDb(): Database {
   const db = new Database(':memory:');
   // We need provider_trust_records from migration 013 + its dependencies.
@@ -62,9 +62,7 @@ describe('EngineSelector — runtime-state gate', () => {
     const { runtime, departments } = buildEcosystem({
       db,
       bus,
-      departments: [
-        { id: 'code', anchorCapabilities: ['code-generation'], minMatchCount: 1 },
-      ],
+      departments: [{ id: 'code', anchorCapabilities: ['code-generation'], minMatchCount: 1 }],
       taskResolver: () => null,
       engineRoster: () => [
         { id: 'coder', capabilities: ['code-generation', 'tool-use'] },

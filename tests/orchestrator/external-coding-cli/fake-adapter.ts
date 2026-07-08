@@ -4,6 +4,8 @@
  * verification tests where the goal is to exercise the control plane,
  * not the process layer.
  */
+
+import { parseFinalResult } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-result-parser.ts';
 import {
   type ApprovalDecision,
   type CodingCliApprovalRequest,
@@ -18,11 +20,10 @@ import {
   type CodingCliSessionConfig,
   type CodingCliTask,
   type ParseContext,
-  ZERO_CAPABILITIES,
   RESULT_CLOSE_TAG,
   RESULT_OPEN_TAG,
+  ZERO_CAPABILITIES,
 } from '../../../src/orchestrator/external-coding-cli/types.ts';
-import { parseFinalResult } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-result-parser.ts';
 
 export interface FakeAdapterOptions {
   id: CodingCliProviderId;

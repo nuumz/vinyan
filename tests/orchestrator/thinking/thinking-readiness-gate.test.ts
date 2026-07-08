@@ -18,13 +18,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
 import { TRACE_SCHEMA_SQL } from '../../../src/db/trace-schema.ts';
 import { TraceStore } from '../../../src/db/trace-store.ts';
-import { TraceCollectorImpl } from '../../../src/orchestrator/trace-collector.ts';
 import {
   evaluateThinkingReadiness,
   THINKING_READINESS_MIN_TRACES,
   THINKING_READINESS_NONE_BUCKET,
   type ThinkingModeStats,
 } from '../../../src/orchestrator/thinking/thinking-readiness-gate.ts';
+import { TraceCollectorImpl } from '../../../src/orchestrator/trace-collector.ts';
 import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
 
 function makeTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
@@ -60,7 +60,13 @@ function statsRow(overrides: Partial<ThinkingModeStats> & { thinkingMode: string
 describe('evaluateThinkingReadiness (pure)', () => {
   test('blocks below volume threshold', () => {
     const verdict = evaluateThinkingReadiness([
-      statsRow({ thinkingMode: THINKING_READINESS_NONE_BUCKET, total: 30, successes: 15, failures: 15, successRate: 0.5 }),
+      statsRow({
+        thinkingMode: THINKING_READINESS_NONE_BUCKET,
+        total: 30,
+        successes: 15,
+        failures: 15,
+        successRate: 0.5,
+      }),
       statsRow({ thinkingMode: 'adaptive:medium', total: 30, successes: 22, failures: 8, successRate: 22 / 30 }),
     ]);
     expect(verdict.status).toBe('blocked');
@@ -72,7 +78,13 @@ describe('evaluateThinkingReadiness (pure)', () => {
 
   test('blocks when no thinking modes have been measured', () => {
     const verdict = evaluateThinkingReadiness([
-      statsRow({ thinkingMode: THINKING_READINESS_NONE_BUCKET, total: 150, successes: 100, failures: 50, successRate: 100 / 150 }),
+      statsRow({
+        thinkingMode: THINKING_READINESS_NONE_BUCKET,
+        total: 150,
+        successes: 100,
+        failures: 50,
+        successRate: 100 / 150,
+      }),
     ]);
     expect(verdict.status).toBe('blocked');
     if (verdict.status === 'blocked') {
@@ -92,7 +104,13 @@ describe('evaluateThinkingReadiness (pure)', () => {
 
   test('blocks when delta is below the 5% threshold', () => {
     const verdict = evaluateThinkingReadiness([
-      statsRow({ thinkingMode: THINKING_READINESS_NONE_BUCKET, total: 60, successes: 36, failures: 24, successRate: 0.6 }),
+      statsRow({
+        thinkingMode: THINKING_READINESS_NONE_BUCKET,
+        total: 60,
+        successes: 36,
+        failures: 24,
+        successRate: 0.6,
+      }),
       statsRow({ thinkingMode: 'adaptive:medium', total: 60, successes: 38, failures: 22, successRate: 38 / 60 }),
     ]);
     expect(verdict.status).toBe('blocked');

@@ -9,6 +9,8 @@
 
 export { AgentskillsIoAdapter, type AgentskillsIoAdapterOptions } from './adapters/agentskills-io.ts';
 export { GitHubAdapter, type GitHubAdapterOptions, parseGithubSkillId } from './adapters/github.ts';
+export { buildImporterCriticFn, type CriticAdapterDeps } from './critic-adapter.ts';
+export { buildImporterGateFn, type GateAdapterDeps, type RunGateFn } from './gate-adapter.ts';
 export {
   DEFAULT_IMPORTER_GUARDRAILS,
   type ImporterCriticFn,
@@ -48,11 +50,9 @@ export {
   type SkillTrustLedgerOptions,
   StoreBackedSkillTrustLedger,
 } from './trust-ledger.ts';
-export { buildImporterGateFn, type GateAdapterDeps, type RunGateFn } from './gate-adapter.ts';
-export { buildImporterCriticFn, type CriticAdapterDeps } from './critic-adapter.ts';
 export {
-  setupSkillImporter,
   type SetupGuardrails,
   type SetupSkillImporterOptions,
   type SkillImporterHandle,
+  setupSkillImporter,
 } from './wiring.ts';

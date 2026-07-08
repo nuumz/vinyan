@@ -5,7 +5,7 @@
  * snapshot-style assertions on buildContinuationPrompt output structure.
  */
 import { describe, expect, test } from 'bun:test';
-import { decideCompletion, type CompletionGateInputs } from '../../../src/orchestrator/agent/completion-gate.ts';
+import { type CompletionGateInputs, decideCompletion } from '../../../src/orchestrator/agent/completion-gate.ts';
 import { buildContinuationPrompt } from '../../../src/orchestrator/agent/continuation-prompt.ts';
 
 const baseInputs: CompletionGateInputs = {

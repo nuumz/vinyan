@@ -2,7 +2,7 @@
  * Tests for AgentEvolution — sleep cycle agent identity refinement.
  */
 import { Database } from 'bun:sqlite';
-import { describe, expect, test, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import { AgentContextStore } from '../../../src/db/agent-context-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../../src/db/migrations/index.ts';
 import { AgentEvolution } from '../../../src/orchestrator/agent-context/agent-evolution.ts';

@@ -14,11 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  DESCRIPTION_CHAR_CAP,
-  loadSimpleSkills,
-  parseFrontmatter,
-} from '../../../src/skills/simple/loader.ts';
+import { DESCRIPTION_CHAR_CAP, loadSimpleSkills, parseFrontmatter } from '../../../src/skills/simple/loader.ts';
 
 let userDir: string;
 let projectDir: string;
@@ -95,9 +91,7 @@ describe('loadSimpleSkills — basic', () => {
     expect(result.skills.length).toBe(1);
     expect(result.skills[0]?.name).toBe('code-review');
     expect(result.skills[0]?.scope).toBe('project');
-    expect(result.skills[0]?.description).toBe(
-      'Review code for bugs and style. Use when reviewing PRs.',
-    );
+    expect(result.skills[0]?.description).toBe('Review code for bugs and style. Use when reviewing PRs.');
   });
 
   test('loads skill from user-global scope', () => {

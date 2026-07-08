@@ -37,9 +37,15 @@ const AGENT_IMPERATIVE_PATTERNS: ReadonlyArray<{ pattern: RegExp; severity: 'war
   // Soft imperatives — common in legitimate preferences, but still worth flagging.
   { pattern: /\b(?:always|never|must|shall)\b/i, severity: 'warn' },
   // Suspicious role-reversal phrases.
-  { pattern: /\byou\s+(?:must|shall|should)\s+(?:not\s+)?(?:run|execute|call|invoke|verify|check|ask)\b/i, severity: 'strong' },
+  {
+    pattern: /\byou\s+(?:must|shall|should)\s+(?:not\s+)?(?:run|execute|call|invoke|verify|check|ask)\b/i,
+    severity: 'strong',
+  },
   // Instructions about tool gating — red-flag for oracle bypass.
-  { pattern: /\b(?:without|avoid|skip)\s+(?:verification|the\s+oracle|tests?|review|lint|typecheck)\b/i, severity: 'strong' },
+  {
+    pattern: /\b(?:without|avoid|skip)\s+(?:verification|the\s+oracle|tests?|review|lint|typecheck)\b/i,
+    severity: 'strong',
+  },
 ];
 
 export interface LinterWarning {

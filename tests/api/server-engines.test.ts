@@ -67,7 +67,9 @@ function makeServer(opts: { withRegistry: boolean; workerStore?: WorkerStore }) 
 
   const engineRegistry = opts.withRegistry ? new ReasoningEngineRegistry() : undefined;
   if (engineRegistry) {
-    engineRegistry.register(new LLMReasoningEngine(makeProvider('openrouter/balanced/anthropic/claude-sonnet-4.6', 'balanced')));
+    engineRegistry.register(
+      new LLMReasoningEngine(makeProvider('openrouter/balanced/anthropic/claude-sonnet-4.6', 'balanced')),
+    );
     engineRegistry.register(new LLMReasoningEngine(makeProvider('openrouter/fast/google/gemma-4-31b-it', 'fast')));
   }
 
@@ -220,7 +222,13 @@ describe('GET /api/v1/engines — new list endpoint', () => {
     const data = (await res.json()) as {
       engines: Array<{
         id: string;
-        stats?: { totalTasks: number; successRate: number; avgQualityScore: number; avgTokenCost: number; avgDurationMs: number };
+        stats?: {
+          totalTasks: number;
+          successRate: number;
+          avgQualityScore: number;
+          avgTokenCost: number;
+          avgDurationMs: number;
+        };
       }>;
     };
     const row = data.engines.find((e) => e.id === worker.id);
@@ -326,9 +334,7 @@ describe('GET /api/v1/engines/:id — registry fallback', () => {
     // route regex (which forbids slashes inside the id position) still
     // matches. Mirror that here.
     const id = encodeURIComponent('openrouter/balanced/anthropic/claude-sonnet-4.6');
-    const res = await server.handleRequest(
-      new Request(`http://localhost/api/v1/engines/${id}`),
-    );
+    const res = await server.handleRequest(new Request(`http://localhost/api/v1/engines/${id}`));
     expect(res.status).toBe(200);
     const data = (await res.json()) as { worker: { id: string; status: string; config: { modelId: string } } };
     // Detail endpoint surfaces the canonical (prefixed) id; modelId carries
@@ -364,9 +370,7 @@ describe('GET /api/v1/engines/:id — registry fallback', () => {
 
   test('returns 404 for an unknown engine id', async () => {
     const server = makeServer({ withRegistry: true });
-    const res = await server.handleRequest(
-      new Request('http://localhost/api/v1/engines/does-not-exist'),
-    );
+    const res = await server.handleRequest(new Request('http://localhost/api/v1/engines/does-not-exist'));
     expect(res.status).toBe(404);
   });
 });

@@ -13,16 +13,15 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
+import { SkillOutcomeStore } from '../../../src/db/skill-outcome-store.ts';
+import { SkillTrustLedgerStore } from '../../../src/db/skill-trust-ledger-store.ts';
+import { SkillArtifactStore } from '../../../src/skills/artifact-store.ts';
 import {
   MIN_PROMOTION_SUCCESS_RATE,
   MIN_PROMOTION_TRIALS,
   runSimpleSkillPromoter,
 } from '../../../src/skills/simple/promoter.ts';
 import { createSimpleSkillRegistry } from '../../../src/skills/simple/registry.ts';
-import { SkillArtifactStore } from '../../../src/skills/artifact-store.ts';
-import { SkillOutcomeStore } from '../../../src/db/skill-outcome-store.ts';
-import { SkillTrustLedgerStore } from '../../../src/db/skill-trust-ledger-store.ts';
 
 let workspace: string;
 let userDir: string;
@@ -85,10 +84,7 @@ afterEach(() => {
 function plantSimple(name: string, description: string, body: string): void {
   const dir = join(projectDir, name);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(dir, 'SKILL.md'),
-    `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`,
-  );
+  writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`);
 }
 
 function buildRegistry() {
@@ -248,7 +244,7 @@ describe('runSimpleSkillPromoter — round-trip', () => {
       expect(history[0]?.toTier).toBe('pragmatic');
       expect(history[0]?.toStatus).toBe('active');
       expect(history[0]?.evidence.trials).toBe(20);
-      expect((history[0]?.evidence.newHash as string)).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(history[0]?.evidence.newHash as string).toMatch(/^sha256:[a-f0-9]{64}$/);
     } finally {
       registry.close();
     }

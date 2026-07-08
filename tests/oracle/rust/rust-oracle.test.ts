@@ -4,12 +4,9 @@
  * Tests the Cargo output mapper and registration.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import {
-  parseCargoCheckOutput,
-  parseCargoOutput,
-} from '../../../src/oracle/rust/cargo-output-mapper.ts';
-import { registerRustOracle } from '../../../src/oracle/rust/register.ts';
 import { clearDynamicOracles, getOracleEntry, listOraclesForLanguage } from '../../../src/oracle/registry.ts';
+import { parseCargoCheckOutput, parseCargoOutput } from '../../../src/oracle/rust/cargo-output-mapper.ts';
+import { registerRustOracle } from '../../../src/oracle/rust/register.ts';
 
 afterEach(() => {
   clearDynamicOracles();
@@ -76,13 +73,7 @@ describe('cargo-output-mapper — parseCargoOutput', () => {
   });
 
   test('borrow checker error -> BORROW_CHECK', () => {
-    const stdout = cargoMsg(
-      'error',
-      'use of moved value: `x`',
-      'E0382',
-      'src/lib.rs',
-      42,
-    );
+    const stdout = cargoMsg('error', 'use of moved value: `x`', 'E0382', 'src/lib.rs', 42);
     const verdict = parseCargoOutput(stdout, 101, 250);
 
     expect(verdict.verified).toBe(false);
@@ -91,13 +82,7 @@ describe('cargo-output-mapper — parseCargoOutput', () => {
   });
 
   test('lifetime error -> LIFETIME_ERROR', () => {
-    const stdout = cargoMsg(
-      'error',
-      'missing lifetime specifier',
-      'E0106',
-      'src/types.rs',
-      8,
-    );
+    const stdout = cargoMsg('error', 'missing lifetime specifier', 'E0106', 'src/types.rs', 8);
     const verdict = parseCargoOutput(stdout, 101, 200);
 
     expect(verdict.verified).toBe(false);
@@ -105,13 +90,7 @@ describe('cargo-output-mapper — parseCargoOutput', () => {
   });
 
   test('trait not satisfied -> TRAIT_NOT_SATISFIED', () => {
-    const stdout = cargoMsg(
-      'error',
-      'the trait bound `Foo: Display` is not satisfied',
-      'E0277',
-      'src/display.rs',
-      20,
-    );
+    const stdout = cargoMsg('error', 'the trait bound `Foo: Display` is not satisfied', 'E0277', 'src/display.rs', 20);
     const verdict = parseCargoOutput(stdout, 101, 180);
 
     expect(verdict.verified).toBe(false);
@@ -156,13 +135,7 @@ describe('cargo-output-mapper — parseCargoOutput', () => {
   });
 
   test('error without code -> heuristic classification via message', () => {
-    const stdout = cargoMsg(
-      'error',
-      'value moved here after borrow',
-      undefined,
-      'src/main.rs',
-      30,
-    );
+    const stdout = cargoMsg('error', 'value moved here after borrow', undefined, 'src/main.rs', 30);
     const verdict = parseCargoOutput(stdout, 101, 200);
 
     expect(verdict.verified).toBe(false);
@@ -170,13 +143,7 @@ describe('cargo-output-mapper — parseCargoOutput', () => {
   });
 
   test('heuristic: lifetime in message -> LIFETIME_ERROR', () => {
-    const stdout = cargoMsg(
-      'error',
-      "borrowed value doesn't live long enough",
-      undefined,
-      'src/ref.rs',
-      15,
-    );
+    const stdout = cargoMsg('error', "borrowed value doesn't live long enough", undefined, 'src/ref.rs', 15);
     const verdict = parseCargoOutput(stdout, 101, 200);
 
     expect(verdict.verified).toBe(false);
@@ -198,11 +165,9 @@ describe('cargo-output-mapper — parseCargoOutput', () => {
   });
 
   test('malformed JSON lines are skipped', () => {
-    const stdout = [
-      'not json at all',
-      cargoMsg('error', 'actual error', 'E0308', 'src/main.rs', 10),
-      '{bad json',
-    ].join('\n');
+    const stdout = ['not json at all', cargoMsg('error', 'actual error', 'E0308', 'src/main.rs', 10), '{bad json'].join(
+      '\n',
+    );
     const verdict = parseCargoOutput(stdout, 101, 300);
 
     expect(verdict.verified).toBe(false);

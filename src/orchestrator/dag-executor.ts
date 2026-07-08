@@ -133,7 +133,14 @@ export async function executeDAG(dag: TaskDAG, dispatcher: NodeDispatcher): Prom
       const levelResults = await Promise.all(
         level.map((nodeId) => {
           const node = dag.nodes.find((n) => n.id === nodeId);
-          if (!node) return Promise.resolve({ nodeId, mutations: [], tokensConsumed: 0, durationMs: 0, error: 'Node not found' });
+          if (!node)
+            return Promise.resolve({
+              nodeId,
+              mutations: [],
+              tokensConsumed: 0,
+              durationMs: 0,
+              error: 'Node not found',
+            });
           return dispatcher(nodeId, node);
         }),
       );
@@ -143,8 +150,8 @@ export async function executeDAG(dag: TaskDAG, dispatcher: NodeDispatcher): Prom
     // Sequential fallback: one node at a time in topological order
     for (const level of levels) {
       for (const nodeId of level) {
-          const node = dag.nodes.find((n) => n.id === nodeId);
-          if (!node) continue;
+        const node = dag.nodes.find((n) => n.id === nodeId);
+        if (!node) continue;
         const result = await dispatcher(nodeId, node);
         results.push(result);
       }

@@ -172,62 +172,46 @@ export class SkillAutogenStateStore {
     // increments to a read-modify-write race. SQLite serialises
     // transactions on a single DB; the tx body is the only writer
     // for this signature_key.
-    this.recordSuccessTx = db.transaction((args: {
-      profile: string;
-      signatureKey: string;
-      bootId: string;
-      taskId: string;
-    }): AutogenStateRecord => {
-      const now = this.clock();
-      const existing = this.get(args.profile, args.signatureKey);
-      const taskIds = existing
-        ? appendBoundedTaskId(existing.taskIds, args.taskId)
-        : [args.taskId];
-      if (existing) {
-        this.bumpStmt.run(
-          existing.successes + 1,
-          now,
-          JSON.stringify(taskIds),
+    this.recordSuccessTx = db.transaction(
+      (args: { profile: string; signatureKey: string; bootId: string; taskId: string }): AutogenStateRecord => {
+        const now = this.clock();
+        const existing = this.get(args.profile, args.signatureKey);
+        const taskIds = existing ? appendBoundedTaskId(existing.taskIds, args.taskId) : [args.taskId];
+        if (existing) {
+          this.bumpStmt.run(existing.successes + 1, now, JSON.stringify(taskIds), args.profile, args.signatureKey);
+          return {
+            ...existing,
+            successes: existing.successes + 1,
+            lastSeen: now,
+            taskIds,
+          };
+        }
+        this.upsertStmt.run(
           args.profile,
           args.signatureKey,
+          1,
+          1,
+          now,
+          args.bootId,
+          0,
+          JSON.stringify(taskIds),
+          STATE_VERSION,
+          null,
         );
         return {
-          ...existing,
-          successes: existing.successes + 1,
+          profile: args.profile,
+          signatureKey: args.signatureKey,
+          successes: 1,
+          successesAtBoot: 1,
           lastSeen: now,
+          bootId: args.bootId,
+          cooldownUntil: 0,
           taskIds,
+          stateVersion: STATE_VERSION,
+          lastEmittedAt: null,
         };
-      }
-      this.upsertStmt.run(
-        args.profile,
-        args.signatureKey,
-        1,
-        1,
-        now,
-        args.bootId,
-        0,
-        JSON.stringify(taskIds),
-        STATE_VERSION,
-        null,
-      );
-      return {
-        profile: args.profile,
-        signatureKey: args.signatureKey,
-        successes: 1,
-        successesAtBoot: 1,
-        lastSeen: now,
-        bootId: args.bootId,
-        cooldownUntil: 0,
-        taskIds,
-        stateVersion: STATE_VERSION,
-        lastEmittedAt: null,
-      };
-    }) as (args: {
-      profile: string;
-      signatureKey: string;
-      bootId: string;
-      taskId: string;
-    }) => AutogenStateRecord;
+      },
+    ) as (args: { profile: string; signatureKey: string; bootId: string; taskId: string }) => AutogenStateRecord;
   }
 
   /**
@@ -256,22 +240,14 @@ export class SkillAutogenStateStore {
 
     // Schema invalidation. SQLite has no parameterized DROP, but
     // here we DELETE rows that fail validation in a single statement.
-    const schemaPrune = this.db.run(
-      `DELETE FROM skill_autogen_state WHERE state_version <> ?`,
-      [STATE_VERSION],
-    );
+    const schemaPrune = this.db.run(`DELETE FROM skill_autogen_state WHERE state_version <> ?`, [STATE_VERSION]);
 
     // TTL prune.
-    const ttlPrune = this.db.run(
-      `DELETE FROM skill_autogen_state WHERE last_seen < ?`,
-      [cutoff],
-    );
+    const ttlPrune = this.db.run(`DELETE FROM skill_autogen_state WHERE last_seen < ?`, [cutoff]);
 
     // Capacity cap — keep newest `maxRows`. Rare in practice; the TTL
     // already trims most of the tail.
-    const total = this.db
-      .query('SELECT COUNT(*) AS c FROM skill_autogen_state')
-      .get() as { c: number };
+    const total = this.db.query('SELECT COUNT(*) AS c FROM skill_autogen_state').get() as { c: number };
     let capPrune = 0;
     if (total.c > this.maxRows) {
       const overflow = total.c - this.maxRows;
@@ -298,10 +274,10 @@ export class SkillAutogenStateStore {
         const parsed = JSON.parse(r.task_ids_json);
         if (!Array.isArray(parsed)) throw new Error('not-array');
       } catch {
-        this.db.run(
-          `DELETE FROM skill_autogen_state WHERE profile = ? AND signature_key = ?`,
-          [r.profile, r.signature_key],
-        );
+        this.db.run(`DELETE FROM skill_autogen_state WHERE profile = ? AND signature_key = ?`, [
+          r.profile,
+          r.signature_key,
+        ]);
         corruptPrune += 1;
       }
     }
@@ -344,12 +320,7 @@ export class SkillAutogenStateStore {
    * diff reaches the fresh-evidence floor. A brand-new row alone
    * never promotes on the same emit that created it (R3 invariant).
    */
-  recordSuccess(args: {
-    profile: string;
-    signatureKey: string;
-    bootId: string;
-    taskId: string;
-  }): AutogenStateRecord {
+  recordSuccess(args: { profile: string; signatureKey: string; bootId: string; taskId: string }): AutogenStateRecord {
     return this.recordSuccessTx(args);
   }
 
@@ -377,7 +348,10 @@ export class SkillAutogenStateStore {
    * The threshold check itself is the autogenerator's responsibility;
    * this gate is the zero-trust hardening on top.
    */
-  canPromote(record: AutogenStateRecord, threshold: number): {
+  canPromote(
+    record: AutogenStateRecord,
+    threshold: number,
+  ): {
     ok: boolean;
     reason?: 'cooldown' | 'fresh-evidence' | 'below-threshold';
   } {

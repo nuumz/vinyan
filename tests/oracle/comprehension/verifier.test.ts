@@ -4,13 +4,10 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { newRuleComprehender } from '../../../src/orchestrator/comprehension/rule-comprehender.ts';
-import type {
-  ComprehendedTaskMessage,
-  ComprehensionInput,
-} from '../../../src/orchestrator/comprehension/types.ts';
 import { verifyComprehension } from '../../../src/oracle/comprehension/index.ts';
-import type { Turn, TaskInput } from '../../../src/orchestrator/types.ts';
+import { newRuleComprehender } from '../../../src/orchestrator/comprehension/rule-comprehender.ts';
+import type { ComprehendedTaskMessage, ComprehensionInput } from '../../../src/orchestrator/comprehension/types.ts';
+import type { TaskInput, Turn } from '../../../src/orchestrator/types.ts';
 
 function makeInput(overrides: {
   goal: string;
@@ -46,9 +43,7 @@ async function comprehendAndVerify(args: ComprehensionInput) {
 
 describe('ComprehensionOracle', () => {
   test('accepts a well-formed deterministic comprehension', async () => {
-    const { verdict } = await comprehendAndVerify(
-      makeInput({ goal: 'write a short poem about a river' }),
-    );
+    const { verdict } = await comprehendAndVerify(makeInput({ goal: 'write a short poem about a river' }));
     expect(verdict.verified).toBe(true);
     expect(verdict.type).toBe('known');
     expect(verdict.tier).toBe('deterministic');
@@ -64,8 +59,24 @@ describe('ComprehensionOracle', () => {
 
   test('accepts a clarification answer with root-goal anchoring', async () => {
     const history: Turn[] = [
-      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a poem' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- what style?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+      {
+        id: 't-0-1',
+        sessionId: 's',
+        seq: 0,
+        role: 'user',
+        blocks: [{ type: 'text', text: 'write a poem' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 1,
+      },
+      {
+        id: 't-0-2',
+        sessionId: 's',
+        seq: 0,
+        role: 'assistant',
+        blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- what style?' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 2,
+      },
     ];
     const { verdict } = await comprehendAndVerify(
       makeInput({
@@ -85,7 +96,15 @@ describe('ComprehensionOracle', () => {
     const args = makeInput({
       goal: 'simple task',
       history: [
-        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'simple task' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+        {
+          id: 't-0-1',
+          sessionId: 's',
+          seq: 0,
+          role: 'user',
+          blocks: [{ type: 'text', text: 'simple task' }],
+          tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+          createdAt: 1,
+        },
       ],
     });
     const good = await eng.comprehend(args);

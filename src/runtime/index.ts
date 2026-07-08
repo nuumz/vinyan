@@ -14,16 +14,13 @@ export type {
   WorkerInput,
   WorkerOutput,
 } from './backend.ts';
-
-export { BackendSelector } from './backend-selector.ts';
 export type { BackendSelectorOptions } from './backend-selector.ts';
-
-export { LocalInprocBackend } from './backends/local-inproc.ts';
+export { BackendSelector } from './backend-selector.ts';
 export type { LocalInprocBackendOptions } from './backends/local-inproc.ts';
-
-export { LocalSubprocBackend } from './backends/local-subproc.ts';
+export { LocalInprocBackend } from './backends/local-inproc.ts';
 export type {
   LocalSubprocBackendOptions,
   SpawnedProcess,
   SpawnImpl,
 } from './backends/local-subproc.ts';
+export { LocalSubprocBackend } from './backends/local-subproc.ts';

@@ -23,12 +23,11 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-import { renderInstructionHierarchy } from '../../../src/orchestrator/llm/shared-prompt-sections.ts';
 import {
   clearInstructionCache,
   loadInstructionMemoryForTask,
 } from '../../../src/orchestrator/llm/instruction-loader.ts';
+import { renderInstructionHierarchy } from '../../../src/orchestrator/llm/shared-prompt-sections.ts';
 
 let workspace: string;
 
@@ -81,10 +80,7 @@ describe('VINYAN.md mechanism reaches the LLM prompt', () => {
   test('scoped rules from .vinyan/rules/ surface in rendered hierarchy', () => {
     mkdirSync(join(workspace, '.vinyan', 'rules'), { recursive: true });
     const ruleMarker = `SCOPED-${crypto.randomUUID()}`;
-    writeFileSync(
-      join(workspace, '.vinyan', 'rules', 'security.md'),
-      `# Security rules\n\n${ruleMarker}\n`,
-    );
+    writeFileSync(join(workspace, '.vinyan', 'rules', 'security.md'), `# Security rules\n\n${ruleMarker}\n`);
 
     const mem = loadInstructionMemoryForTask({ workspace });
     const rendered = renderInstructionHierarchy(mem);

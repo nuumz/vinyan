@@ -25,10 +25,7 @@
  * Best-effort: errors swallowed via `onError`.
  */
 import type { VinyanBus } from '../../core/bus.ts';
-import type {
-  CodingCliCompletedEvent,
-  CodingCliFailedEvent,
-} from '../../orchestrator/external-coding-cli/types.ts';
+import type { CodingCliCompletedEvent, CodingCliFailedEvent } from '../../orchestrator/external-coding-cli/types.ts';
 import type { MemoryWikiIngestor } from './ingest.ts';
 
 export interface CodingCliBridgeOptions {
@@ -37,11 +34,7 @@ export interface CodingCliBridgeOptions {
   readonly defaultProfile: string;
   readonly clock?: () => number;
   readonly dispatcher?: (fn: () => void) => void;
-  readonly onError?: (
-    trigger: 'coding-cli:completed' | 'coding-cli:failed',
-    taskId: string,
-    err: unknown,
-  ) => void;
+  readonly onError?: (trigger: 'coding-cli:completed' | 'coding-cli:failed', taskId: string, err: unknown) => void;
 }
 
 export interface CodingCliBridge {
@@ -52,11 +45,7 @@ const defaultDispatcher = (fn: () => void): void => {
   queueMicrotask(fn);
 };
 
-const defaultOnError = (
-  trigger: 'coding-cli:completed' | 'coding-cli:failed',
-  taskId: string,
-  err: unknown,
-): void => {
+const defaultOnError = (trigger: 'coding-cli:completed' | 'coding-cli:failed', taskId: string, err: unknown): void => {
   console.warn(
     `[vinyan-wiki] ${trigger} ingestion failed for task ${taskId}:`,
     err instanceof Error ? err.message : err,

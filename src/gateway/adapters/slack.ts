@@ -11,6 +11,8 @@
  *   stop()    → sets running=false; acknowledges any pending envelope ids;
  *               closes the WebSocket (no-op if already closed).
  */
+
+import { buildInboundEnvelope, toMinimalInbound } from '../envelope.ts';
 import type {
   GatewayAdapter,
   GatewayAdapterContext,
@@ -18,11 +20,10 @@ import type {
   GatewayDeliveryReceipt,
   GatewayOutboundEnvelope,
 } from '../types.ts';
-import { buildInboundEnvelope, toMinimalInbound } from '../envelope.ts';
 import {
+  mapSlackChannelKind,
   SlackApi,
   SlackApiError,
-  mapSlackChannelKind,
   type SlackSocketEnvelope,
   type SlackWebSocketCtor,
   type SlackWebSocketLike,
@@ -73,9 +74,7 @@ export class SlackAdapter implements GatewayAdapter {
         wsImpl: opts.wsImpl,
       });
     this.allowedChannels =
-      opts.allowedChannels && opts.allowedChannels.length > 0
-        ? new Set(opts.allowedChannels)
-        : null;
+      opts.allowedChannels && opts.allowedChannels.length > 0 ? new Set(opts.allowedChannels) : null;
   }
 
   async start(ctx: GatewayAdapterContext): Promise<void> {
@@ -88,11 +87,7 @@ export class SlackAdapter implements GatewayAdapter {
       this.connectSocket(ctx, url);
     } catch (err) {
       const msg =
-        err instanceof SlackApiError
-          ? `${err.kind}: ${err.message}`
-          : err instanceof Error
-            ? err.message
-            : String(err);
+        err instanceof SlackApiError ? `${err.kind}: ${err.message}` : err instanceof Error ? err.message : String(err);
       this.lastError = msg;
       this.running = false;
       ctx.log('error', 'gateway.slack.open_failed', { error: msg });

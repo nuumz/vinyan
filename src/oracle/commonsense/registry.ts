@@ -174,6 +174,7 @@ export class CommonSenseRegistry {
     // outrank curated innate rules.
     const cappedPriority = clampPriority(validated.priority, validated.source);
 
+    // biome-ignore-start lint/style/useNamingConvention: bun:sqlite named-parameter keys must match the $-prefixed SQL placeholders
     this.insertStmt.run({
       $id: id,
       $lang: validated.microtheory.language,
@@ -190,6 +191,7 @@ export class CommonSenseRegistry {
       $created_at: createdAt,
       $rationale: validated.rationale,
     });
+    // biome-ignore-end lint/style/useNamingConvention: bun:sqlite named-parameter keys must match the $-prefixed SQL placeholders
 
     // Telemetry fields default to zeroed/null on insert — registry maintains them.
     return {

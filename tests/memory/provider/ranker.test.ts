@@ -12,12 +12,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { TIER_WEIGHT } from '../../../src/core/confidence-tier.ts';
-import {
-  computeScore,
-  DEFAULT_WEIGHTS,
-  normalizeBm25,
-  recencyScore,
-} from '../../../src/memory/provider/ranker.ts';
+import { computeScore, DEFAULT_WEIGHTS, normalizeBm25, recencyScore } from '../../../src/memory/provider/ranker.ts';
 
 const NOW = 1_700_000_000_000;
 const HALF_LIFE = 14 * 24 * 60 * 60 * 1000;

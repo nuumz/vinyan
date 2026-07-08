@@ -15,7 +15,7 @@ import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Evidence } from '../../core/types.ts';
 import type { WorkerProposal } from '../critic/critic-engine.ts';
-import type { LLMProvider, LLMRequest, PerceptualHierarchy } from '../types.ts';
+import type { LLMProvider, LLMRequest, LLMResponse, PerceptualHierarchy } from '../types.ts';
 import type { TestGenerator, TestGenResult } from './test-generator.ts';
 
 interface GeneratedTest {
@@ -40,7 +40,7 @@ export class LLMTestGeneratorImpl implements TestGenerator {
       temperature: 0.2,
     };
 
-    let response;
+    let response: LLMResponse;
     try {
       response = await this.provider.generate(request);
     } catch {

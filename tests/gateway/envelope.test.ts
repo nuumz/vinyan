@@ -9,12 +9,12 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
+  type Attachment,
   buildInboundEnvelope,
   InboundEnvelopeSchema,
-  OutboundEnvelopeSchema,
   MAX_ENVELOPE_ATTACHMENTS,
   MAX_ENVELOPE_TEXT_LEN,
-  type Attachment,
+  OutboundEnvelopeSchema,
 } from '../../src/gateway/envelope.ts';
 
 describe('buildInboundEnvelope', () => {

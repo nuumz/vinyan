@@ -7,8 +7,8 @@ import { describe, expect, test } from 'bun:test';
 import type { BackendSpawnSpec, WorkerInput } from '../../../src/runtime/backend.ts';
 import {
   LocalSubprocBackend,
-  type SpawnImpl,
   type SpawnedProcess,
+  type SpawnImpl,
 } from '../../../src/runtime/backends/local-subproc.ts';
 
 interface FakeProcessOptions {
@@ -110,9 +110,7 @@ describe('LocalSubprocBackend', () => {
       workerEntryPath: '/w.ts',
       spawnImpl,
     });
-    await backend.spawn(
-      makeSpec({ credentials: { llmProxySocket: '/tmp/proxy.sock' } }),
-    );
+    await backend.spawn(makeSpec({ credentials: { llmProxySocket: '/tmp/proxy.sock' } }));
     expect(calls[0]!.env?.VINYAN_LLM_PROXY_SOCKET).toBe('/tmp/proxy.sock');
   });
 
@@ -162,10 +160,11 @@ describe('LocalSubprocBackend', () => {
   });
 
   test('execute ignores delta lines and returns last JSON object', async () => {
-    const stdout = [
-      JSON.stringify({ type: 'delta', taskId: 't', text: 'streaming' }),
-      JSON.stringify({ taskId: 't', result: 'final' }),
-    ].join('\n') + '\n';
+    const stdout =
+      [
+        JSON.stringify({ type: 'delta', taskId: 't', text: 'streaming' }),
+        JSON.stringify({ taskId: 't', result: 'final' }),
+      ].join('\n') + '\n';
     const fake = makeFakeProcess({ stdout, exitCode: 0 });
     const backend = new LocalSubprocBackend({
       workerEntryPath: '/w.ts',

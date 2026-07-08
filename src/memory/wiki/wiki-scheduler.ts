@@ -66,9 +66,7 @@ export interface WikiSchedulerOptions {
    * Hook run on every consolidation tick after success. Used by
    * doctor / tests to observe activity. Receives the report.
    */
-  readonly onConsolidation?: (
-    report: Awaited<ReturnType<MemoryWikiConsolidation['run']>>,
-  ) => void;
+  readonly onConsolidation?: (report: Awaited<ReturnType<MemoryWikiConsolidation['run']>>) => void;
   readonly onLint?: (result: ReturnType<MemoryWikiLint['run']>) => void;
 }
 
@@ -91,10 +89,7 @@ export interface WikiSchedulerStats {
 }
 
 const defaultOnError = (op: string, err: unknown): void => {
-  console.warn(
-    `[vinyan-wiki] scheduler ${op} tick failed:`,
-    err instanceof Error ? err.message : err,
-  );
+  console.warn(`[vinyan-wiki] scheduler ${op} tick failed:`, err instanceof Error ? err.message : err);
 };
 
 export function startWikiScheduler(opts: WikiSchedulerOptions): WikiScheduler {

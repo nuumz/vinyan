@@ -14,23 +14,20 @@
  */
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { ALL_MIGRATIONS, MigrationRunner } from '../../../src/db/migrations/index.ts';
 import { createBus } from '../../../src/core/bus.ts';
+import { ALL_MIGRATIONS, MigrationRunner } from '../../../src/db/migrations/index.ts';
 import { TaskEventStore } from '../../../src/db/task-event-store.ts';
+import { ParameterLedger, ParameterStore } from '../../../src/orchestrator/adaptive-params/index.ts';
 import {
-  ParameterLedger,
-  ParameterStore,
-} from '../../../src/orchestrator/adaptive-params/index.ts';
+  createInjectDependencyRegistry,
+  type InjectDependencyRegistry,
+} from '../../../src/orchestrator/phases/inject-dependency-registry.ts';
 import {
   applyInjectedPriorDiscount,
   COT_INJECT_RULE_ID,
   DEFAULT_INJECT_DISCOUNT,
   lookupInjectedPriorMultiplier,
 } from '../../../src/orchestrator/phases/injected-prior-discount.ts';
-import {
-  createInjectDependencyRegistry,
-  type InjectDependencyRegistry,
-} from '../../../src/orchestrator/phases/inject-dependency-registry.ts';
 
 let db: Database;
 let store: TaskEventStore;
@@ -170,7 +167,9 @@ describe('lookupInjectedPriorMultiplier — durable-log fallback path', () => {
 
 describe('applyInjectedPriorDiscount', () => {
   test('returns confidence unchanged when no inject was found', () => {
-    expect(applyInjectedPriorDiscount(0.92, { multiplier: 1, injectFound: false, injectCount: 0, depth: 0 })).toBe(0.92);
+    expect(applyInjectedPriorDiscount(0.92, { multiplier: 1, injectFound: false, injectCount: 0, depth: 0 })).toBe(
+      0.92,
+    );
   });
 
   test('returns multiplied confidence at depth=1 (single inject layer)', () => {
@@ -184,15 +183,21 @@ describe('applyInjectedPriorDiscount', () => {
   });
 
   test('depth=0 with injectFound=true is a no-op (defensive — shouldnʼt happen)', () => {
-    expect(applyInjectedPriorDiscount(0.92, { multiplier: 0.85, injectFound: true, injectCount: 1, depth: 0 })).toBe(0.92);
+    expect(applyInjectedPriorDiscount(0.92, { multiplier: 0.85, injectFound: true, injectCount: 1, depth: 0 })).toBe(
+      0.92,
+    );
   });
 
   test('preserves undefined input as undefined', () => {
-    expect(applyInjectedPriorDiscount(undefined, { multiplier: 0.85, injectFound: true, injectCount: 1, depth: 1 })).toBeUndefined();
+    expect(
+      applyInjectedPriorDiscount(undefined, { multiplier: 0.85, injectFound: true, injectCount: 1, depth: 1 }),
+    ).toBeUndefined();
   });
 
   test('passes through non-finite confidence (sanitization is callerʼs job)', () => {
-    expect(applyInjectedPriorDiscount(Number.NaN, { multiplier: 0.85, injectFound: true, injectCount: 1, depth: 1 })).toBeNaN();
+    expect(
+      applyInjectedPriorDiscount(Number.NaN, { multiplier: 0.85, injectFound: true, injectCount: 1, depth: 1 }),
+    ).toBeNaN();
   });
 });
 
@@ -216,12 +221,15 @@ describe('lookupInjectedPriorMultiplier — registry path (race-free)', () => {
   });
 
   test('emitting a cot-inject decision row populates the registry by subTaskId', () => {
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd1',
-      subTaskId: 'sub-1',
-      injectCount: 2,
-      thoughtIds: ['t-100', 't-200'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd1',
+        subTaskId: 'sub-1',
+        injectCount: 2,
+        thoughtIds: ['t-100', 't-200'],
+      }) as never,
+    );
     const entries = registry.lookup('sub-1');
     expect(entries).toHaveLength(1);
     expect(entries[0]!.injectCount).toBe(2);
@@ -230,11 +238,14 @@ describe('lookupInjectedPriorMultiplier — registry path (race-free)', () => {
   });
 
   test('lookupInjectedPriorMultiplier reads the registry first; durable log is not consulted when registry has the entry', () => {
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd1',
-      subTaskId: 'sub-1',
-      injectCount: 1,
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd1',
+        subTaskId: 'sub-1',
+        injectCount: 1,
+      }) as never,
+    );
     // Sabotage the durable store; if the registry is consulted first
     // the lookup must return the registry's verdict and never call
     // listForTask.
@@ -307,30 +318,39 @@ describe('InjectDependencyRegistry.computeDepth — A5 chain depth', () => {
 
   test('depth=1 for a single-link chain (round 0 → round 1)', () => {
     emitThought({ id: 't0', taskId: 'parent-delegate-step-r0' });
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd1',
-      subTaskId: 'parent-delegate-step-r1',
-      injectCount: 1,
-      thoughtIds: ['t0'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd1',
+        subTaskId: 'parent-delegate-step-r1',
+        injectCount: 1,
+        thoughtIds: ['t0'],
+      }) as never,
+    );
     expect(registry.computeDepth('parent-delegate-step-r1')).toBe(1);
   });
 
   test('depth=2 for round 2 ← round 1 ← round 0 (compounding)', () => {
     emitThought({ id: 't0', taskId: 'parent-delegate-step-r0' });
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd1',
-      subTaskId: 'parent-delegate-step-r1',
-      injectCount: 1,
-      thoughtIds: ['t0'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd1',
+        subTaskId: 'parent-delegate-step-r1',
+        injectCount: 1,
+        thoughtIds: ['t0'],
+      }) as never,
+    );
     emitThought({ id: 't1', taskId: 'parent-delegate-step-r1' });
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd2',
-      subTaskId: 'parent-delegate-step-r2',
-      injectCount: 1,
-      thoughtIds: ['t1'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd2',
+        subTaskId: 'parent-delegate-step-r2',
+        injectCount: 1,
+        thoughtIds: ['t1'],
+      }) as never,
+    );
     expect(registry.computeDepth('parent-delegate-step-r2')).toBe(2);
   });
 
@@ -338,12 +358,15 @@ describe('InjectDependencyRegistry.computeDepth — A5 chain depth', () => {
     // Inject row references a thought id we never saw (e.g., emitted
     // before the registry attached). sourceTaskId resolves to undefined,
     // walking stops at this entry → depth = 1 from the immediate target.
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd1',
-      subTaskId: 'sub-1',
-      injectCount: 1,
-      thoughtIds: ['unknown-thought-id'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd1',
+        subTaskId: 'sub-1',
+        injectCount: 1,
+        thoughtIds: ['unknown-thought-id'],
+      }) as never,
+    );
     expect(registry.computeDepth('sub-1')).toBe(1);
   });
 
@@ -352,18 +375,24 @@ describe('InjectDependencyRegistry.computeDepth — A5 chain depth', () => {
     // points to thoughts on A. Pathological but not impossible.
     emitThought({ id: 't-a', taskId: 'A' });
     emitThought({ id: 't-b', taskId: 'B' });
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd-A',
-      subTaskId: 'A',
-      injectCount: 1,
-      thoughtIds: ['t-b'],
-    }) as never);
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd-B',
-      subTaskId: 'B',
-      injectCount: 1,
-      thoughtIds: ['t-a'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd-A',
+        subTaskId: 'A',
+        injectCount: 1,
+        thoughtIds: ['t-b'],
+      }) as never,
+    );
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd-B',
+        subTaskId: 'B',
+        injectCount: 1,
+        thoughtIds: ['t-a'],
+      }) as never,
+    );
     // Should terminate without throwing; depth ≤ MAX_INJECT_CHAIN_DEPTH.
     const depthA = registry.computeDepth('A');
     expect(Number.isFinite(depthA)).toBe(true);
@@ -373,19 +402,25 @@ describe('InjectDependencyRegistry.computeDepth — A5 chain depth', () => {
 
   test('lookupInjectedPriorMultiplier returns depth from registry path', () => {
     emitThought({ id: 't0', taskId: 'parent-delegate-step-r0' });
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd1',
-      subTaskId: 'parent-delegate-step-r1',
-      injectCount: 1,
-      thoughtIds: ['t0'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd1',
+        subTaskId: 'parent-delegate-step-r1',
+        injectCount: 1,
+        thoughtIds: ['t0'],
+      }) as never,
+    );
     emitThought({ id: 't1', taskId: 'parent-delegate-step-r1' });
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd2',
-      subTaskId: 'parent-delegate-step-r2',
-      injectCount: 1,
-      thoughtIds: ['t1'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd2',
+        subTaskId: 'parent-delegate-step-r2',
+        injectCount: 1,
+        thoughtIds: ['t1'],
+      }) as never,
+    );
     const result = lookupInjectedPriorMultiplier({
       taskId: 'parent-delegate-step-r2',
       injectDependencyRegistry: registry,
@@ -396,18 +431,32 @@ describe('InjectDependencyRegistry.computeDepth — A5 chain depth', () => {
 
   test('end-to-end: applyInjectedPriorDiscount compounds across chain depth', () => {
     emitThought({ id: 't0', taskId: 'r0' });
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd1', subTaskId: 'r1', injectCount: 1, thoughtIds: ['t0'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd1',
+        subTaskId: 'r1',
+        injectCount: 1,
+        thoughtIds: ['t0'],
+      }) as never,
+    );
     emitThought({ id: 't1', taskId: 'r1' });
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd2', subTaskId: 'r2', injectCount: 1, thoughtIds: ['t1'],
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd2',
+        subTaskId: 'r2',
+        injectCount: 1,
+        thoughtIds: ['t1'],
+      }) as never,
+    );
     const r1Result = lookupInjectedPriorMultiplier({
-      taskId: 'r1', injectDependencyRegistry: registry,
+      taskId: 'r1',
+      injectDependencyRegistry: registry,
     });
     const r2Result = lookupInjectedPriorMultiplier({
-      taskId: 'r2', injectDependencyRegistry: registry,
+      taskId: 'r2',
+      injectDependencyRegistry: registry,
     });
     const c0 = 0.9;
     const r1Confidence = applyInjectedPriorDiscount(c0, r1Result);
@@ -423,9 +472,7 @@ describe('InjectDependencyRegistry.computeDepth — A5 chain depth', () => {
 
 describe('lookupInjectedPriorMultiplier — cross-restart durable-log path', () => {
   test('after registry detach + recorder flush, the durable taskEventStore lookup still finds the inject decision', async () => {
-    const { attachTaskEventRecorder } = await import(
-      '../../../src/orchestrator/observability/task-event-recorder.ts'
-    );
+    const { attachTaskEventRecorder } = await import('../../../src/orchestrator/observability/task-event-recorder.ts');
     const bus = createBus();
     const recorder = attachTaskEventRecorder(bus, store, { flushIntervalMs: 50 });
     const registry = createInjectDependencyRegistry(bus);
@@ -445,13 +492,16 @@ describe('lookupInjectedPriorMultiplier — cross-restart durable-log path', () 
       content: 'reasoning',
       trigger: 'pre-tool',
     } as never);
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd-cross-restart',
-      subTaskId: 'parent-delegate-step-r1',
-      injectCount: 1,
-      thoughtIds: ['thought-1'],
-      ts: 1000,
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd-cross-restart',
+        subTaskId: 'parent-delegate-step-r1',
+        injectCount: 1,
+        thoughtIds: ['thought-1'],
+        ts: 1000,
+      }) as never,
+    );
 
     // Flush recorder to disk synchronously (simulate "shutdown"
     // where buffer drains before close).
@@ -485,11 +535,14 @@ describe('phase-verify — A5 discount applied to emitted verdict audit row', ()
 
     // Pre-emit a cot-inject decision row that targets the sub-task we
     // are about to executeTask. Registry sees it synchronously.
-    bus.emit('audit:entry', injectDecisionPayload({
-      decisionId: 'd-inject',
-      subTaskId: 't-discounted',
-      injectCount: 1,
-    }) as never);
+    bus.emit(
+      'audit:entry',
+      injectDecisionPayload({
+        decisionId: 'd-inject',
+        subTaskId: 't-discounted',
+        injectCount: 1,
+      }) as never,
+    );
 
     // Capture the verdict audit row emitted by phase-verify.
     const verdictEntries: Array<{ kind: string; confidence?: number; oracleId?: string }> = [];
@@ -548,9 +601,7 @@ describe('phase-verify — A5 discount applied to emitted verdict audit row', ()
       decomposer: { decompose: async () => ({ nodes: [] }) },
       workerPool: {
         dispatch: async () => ({
-          mutations: [
-            { file: 'src/foo.ts', content: 'x', diff: 'x', explanation: 'x' },
-          ],
+          mutations: [{ file: 'src/foo.ts', content: 'x', diff: 'x', explanation: 'x' }],
           proposedToolCalls: [],
           tokensConsumed: 100,
           durationMs: 50,

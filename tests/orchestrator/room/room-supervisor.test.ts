@@ -5,6 +5,7 @@
  * drive transitions directly. No agent-loop, no DB, no bus.
  */
 import { describe, expect, it } from 'bun:test';
+import type { ProposedMutation } from '../../../src/orchestrator/agent/session-overlay.ts';
 import { RoomBlackboard } from '../../../src/orchestrator/room/room-blackboard.ts';
 import { RoomLedger } from '../../../src/orchestrator/room/room-ledger.ts';
 import {
@@ -13,7 +14,6 @@ import {
   RoomSupervisor,
 } from '../../../src/orchestrator/room/room-supervisor.ts';
 import type { RoleSpec, RoomContract, RoomParticipant, RoomStatus } from '../../../src/orchestrator/room/types.ts';
-import type { ProposedMutation } from '../../../src/orchestrator/agent/session-overlay.ts';
 
 const drafter0: RoleSpec = {
   name: 'drafter-0',

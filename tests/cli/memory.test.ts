@@ -12,11 +12,11 @@ import { join } from 'path';
 import { runMemoryCommand } from '../../src/cli/memory.ts';
 import {
   LEARNED_FILE_REL,
+  type MemoryProposal,
   PENDING_DIR_REL,
   REJECTED_DIR_REL,
   serializeProposal,
   writeProposal,
-  type MemoryProposal,
 } from '../../src/orchestrator/memory/memory-proposals.ts';
 
 // ── Fixtures ────────────────────────────────────────────────────────
@@ -32,9 +32,7 @@ function makeValidProposal(overrides: Partial<MemoryProposal> = {}): MemoryPropo
     applyTo: ['tests/**/*.test.ts'],
     description: 'Use bun:test for all test files.',
     body: '## Rule\n\nUse bun:test.',
-    evidence: [
-      { filePath: 'tests/foo.test.ts', note: 'existing test uses bun:test' },
-    ],
+    evidence: [{ filePath: 'tests/foo.test.ts', note: 'existing test uses bun:test' }],
     ...overrides,
   };
 }
@@ -154,9 +152,7 @@ describe('vinyan memory list', () => {
 describe('vinyan memory show', () => {
   test('prints the full proposal content', async () => {
     writeProposal(workspace, makeValidProposal({ slug: 'show-me' }));
-    const r = await capture(() =>
-      runMemoryCommand(['show', 'show-me', '--workspace', workspace]),
-    );
+    const r = await capture(() => runMemoryCommand(['show', 'show-me', '--workspace', workspace]));
     expect(r.exitCode).toBeNull();
     expect(r.stdout).toContain('show-me');
     expect(r.stdout).toContain('category: convention');
@@ -171,9 +167,7 @@ describe('vinyan memory show', () => {
 
   test('exits 2 when handle does not match any pending file', async () => {
     writeProposal(workspace, makeValidProposal({ slug: 'exists' }));
-    const r = await capture(() =>
-      runMemoryCommand(['show', 'ghost', '--workspace', workspace]),
-    );
+    const r = await capture(() => runMemoryCommand(['show', 'ghost', '--workspace', workspace]));
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toContain('no pending proposal matching');
   });
@@ -199,9 +193,7 @@ describe('vinyan memory approve', () => {
 
   test('exits 2 if --reviewer is missing', async () => {
     writeProposal(workspace, makeValidProposal({ slug: 'need-reviewer' }));
-    const r = await capture(() =>
-      runMemoryCommand(['approve', 'need-reviewer', '--workspace', workspace]),
-    );
+    const r = await capture(() => runMemoryCommand(['approve', 'need-reviewer', '--workspace', workspace]));
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toContain('--reviewer');
     // Audit trail note should hint at A1 compliance.
@@ -213,9 +205,7 @@ describe('vinyan memory approve', () => {
   });
 
   test('exits 2 if handle is missing', async () => {
-    const r = await capture(() =>
-      runMemoryCommand(['approve', '--workspace', workspace, '--reviewer', 'alice']),
-    );
+    const r = await capture(() => runMemoryCommand(['approve', '--workspace', workspace, '--reviewer', 'alice']));
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toContain('requires a slug');
   });
@@ -229,14 +219,8 @@ describe('vinyan memory approve', () => {
     const pendingDir = join(workspace, PENDING_DIR_REL);
     mkdirSync(pendingDir, { recursive: true });
     const proposal = makeValidProposal({ slug: 'twin' });
-    writeFileSync(
-      join(pendingDir, '2026-01-01_00-00-00-000Z__twin.md'),
-      serializeProposal(proposal),
-    );
-    writeFileSync(
-      join(pendingDir, '2026-01-01_00-00-00-001Z__twin.md'),
-      serializeProposal(proposal),
-    );
+    writeFileSync(join(pendingDir, '2026-01-01_00-00-00-000Z__twin.md'), serializeProposal(proposal));
+    writeFileSync(join(pendingDir, '2026-01-01_00-00-00-001Z__twin.md'), serializeProposal(proposal));
 
     const r = await capture(() =>
       runMemoryCommand(['approve', 'twin', '--workspace', workspace, '--reviewer', 'alice']),
@@ -285,14 +269,7 @@ describe('vinyan memory reject', () => {
   test('exits 2 if --reviewer is missing', async () => {
     writeProposal(workspace, makeValidProposal({ slug: 'need-reviewer' }));
     const r = await capture(() =>
-      runMemoryCommand([
-        'reject',
-        'need-reviewer',
-        '--workspace',
-        workspace,
-        '--reason',
-        'no',
-      ]),
+      runMemoryCommand(['reject', 'need-reviewer', '--workspace', workspace, '--reason', 'no']),
     );
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toContain('--reviewer');
@@ -301,14 +278,7 @@ describe('vinyan memory reject', () => {
   test('exits 2 if --reason is missing', async () => {
     writeProposal(workspace, makeValidProposal({ slug: 'need-reason' }));
     const r = await capture(() =>
-      runMemoryCommand([
-        'reject',
-        'need-reason',
-        '--workspace',
-        workspace,
-        '--reviewer',
-        'alice',
-      ]),
+      runMemoryCommand(['reject', 'need-reason', '--workspace', workspace, '--reviewer', 'alice']),
     );
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toContain('--reason');

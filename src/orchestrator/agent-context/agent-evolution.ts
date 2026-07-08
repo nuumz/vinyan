@@ -14,12 +14,12 @@
 import type { Database } from 'bun:sqlite';
 import type { AgentContextStore } from '../../db/agent-context-store.ts';
 import type { CapabilityModel } from '../fleet/capability-model.ts';
+import { analyzeAntiPatterns, type TraceForAntiPattern } from './anti-pattern-analyzer.ts';
+import { extractDomainKnowledge, type TraceForDomain } from './domain-knowledge-extractor.ts';
 import type { SoulReflector } from './soul-reflector.ts';
 import { buildStatisticalSoul } from './soul-reflector.ts';
-import { SoulStore } from './soul-store.ts';
-import { extractDomainKnowledge, type TraceForDomain } from './domain-knowledge-extractor.ts';
+import type { SoulStore } from './soul-store.ts';
 import { mineStrategies, type TraceForStrategy } from './strategy-miner.ts';
-import { analyzeAntiPatterns, type TraceForAntiPattern } from './anti-pattern-analyzer.ts';
 import type { AgentContext, SkillLevel } from './types.ts';
 
 export interface AgentEvolutionDeps {
@@ -101,7 +101,8 @@ export class AgentEvolution {
       const domainKnowledge = traces.length > 0 ? extractDomainKnowledge(traces) : undefined;
       // Trace projections share common fields; the miners handle missing fields gracefully
       const strategies = traces.length > 0 ? mineStrategies(traces as unknown as TraceForStrategy[]) : undefined;
-      const antiPatterns = traces.length > 0 ? analyzeAntiPatterns(traces as unknown as TraceForAntiPattern[]) : undefined;
+      const antiPatterns =
+        traces.length > 0 ? analyzeAntiPatterns(traces as unknown as TraceForAntiPattern[]) : undefined;
 
       const minedData = { domainKnowledge, strategies, antiPatterns };
 
@@ -115,9 +116,13 @@ export class AgentEvolution {
         // Merge mined data
         if (domainKnowledge) soul.domainExpertise = domainKnowledge;
         if (strategies) soul.winningStrategies = strategies;
-        if (antiPatterns) soul.antiPatterns = antiPatterns.map((a) => ({
-          pattern: a.pattern, cause: a.cause, evidenceCount: a.evidenceCount, oracleInvolved: a.oracleInvolved,
-        }));
+        if (antiPatterns)
+          soul.antiPatterns = antiPatterns.map((a) => ({
+            pattern: a.pattern,
+            cause: a.cause,
+            evidenceCount: a.evidenceCount,
+            oracleInvolved: a.oracleInvolved,
+          }));
         this.soulStore.saveSoul(soul);
         this.store.clearPendingInsights(agentId);
         return true;
@@ -236,9 +241,7 @@ export class AgentEvolution {
     context.memory.lessonsSummary = newSummary;
 
     // Evict low-signal episodes — keep failures and recent successes
-    const highSignal = episodes.filter(
-      (e, i) => e.outcome === 'failed' || e.outcome === 'partial' || i < 10,
-    );
+    const highSignal = episodes.filter((e, i) => e.outcome === 'failed' || e.outcome === 'partial' || i < 10);
     const evicted = episodes.length - highSignal.length;
     if (evicted > 0) {
       context.memory.episodes = highSignal;

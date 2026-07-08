@@ -16,9 +16,9 @@
  */
 import { z } from 'zod';
 import type {
-  GatewayPlatform,
   GatewayInboundEnvelopeMinimal,
   GatewayOutboundEnvelope as GatewayOutboundEnvelopeMinimal,
+  GatewayPlatform,
 } from './types.ts';
 
 // ── Constants ─────────────────────────────────────────────────────────

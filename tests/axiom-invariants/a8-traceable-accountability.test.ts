@@ -25,9 +25,7 @@ describe('A8 — Traceable Accountability', () => {
       attributedTo: 'intentResolver',
       wasGeneratedBy: 'test',
       reason: 'unit-test',
-      evidence: [
-        { kind: 'routing-factor', source: 'intent-strategy', summary: 'demo' },
-      ],
+      evidence: [{ kind: 'routing-factor', source: 'intent-strategy', summary: 'demo' }],
     });
     expect(prov.decisionId).toContain('demo-decision');
     expect(prov.attributedTo).toBe('intentResolver');

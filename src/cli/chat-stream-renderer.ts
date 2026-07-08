@@ -79,10 +79,7 @@ interface InternalState {
   streamedAnswer: boolean;
 }
 
-export function attachChatStreamRenderer(
-  bus: VinyanBus,
-  options: ChatStreamRendererOptions,
-): ChatStreamRendererHandle {
+export function attachChatStreamRenderer(bus: VinyanBus, options: ChatStreamRendererOptions): ChatStreamRendererHandle {
   const out = options.out ?? process.stdout;
   const useColor = options.color ?? (out as NodeJS.WriteStream).isTTY === true;
   let showThinking = options.showThinking ?? false;
@@ -116,9 +113,8 @@ export function attachChatStreamRenderer(
   const writeInline = (kind: 'thinking' | 'answer', text: string) => {
     if (state.active !== kind) {
       closeInlineBlock();
-      const header = kind === 'thinking'
-        ? `${ICONS.thinking} ${dimS('thinking')}`
-        : `${c('vinyan:', ANSI.green + ANSI.bold)}`;
+      const header =
+        kind === 'thinking' ? `${ICONS.thinking} ${dimS('thinking')}` : `${c('vinyan:', ANSI.green + ANSI.bold)}`;
       out.write(`${header} `);
       state.active = kind;
       state.lineLen = kind === 'thinking' ? 10 : 8; // "thinking " / "vinyan: "
@@ -161,9 +157,7 @@ export function attachChatStreamRenderer(
           handler(payload);
         } catch (err) {
           // Renderer must never kill the task.
-          out.write(
-            `${dimS(`[chat-stream-renderer error: ${err instanceof Error ? err.message : String(err)}]`)}\n`,
-          );
+          out.write(`${dimS(`[chat-stream-renderer error: ${err instanceof Error ? err.message : String(err)}]`)}\n`);
         }
       }),
     );
@@ -193,9 +187,7 @@ export function attachChatStreamRenderer(
       isRecurring: boolean;
     };
     if (entitiesResolved > 0 || isRecurring) {
-      write(
-        `${ICONS.understood} ${dimS(`entities=${entitiesResolved}${isRecurring ? ' · recurring' : ''}`)}`,
-      );
+      write(`${ICONS.understood} ${dimS(`entities=${entitiesResolved}${isRecurring ? ' · recurring' : ''}`)}`);
     }
   });
 
@@ -284,9 +276,7 @@ export function attachChatStreamRenderer(
       case 'tool_use_start':
         if (d.tool) {
           closeInlineBlock();
-          out.write(
-            `  ${c(ICONS.toolRunning, ANSI.yellow)} ${dimS('preparing')} ${d.tool}(…)\n`,
-          );
+          out.write(`  ${c(ICONS.toolRunning, ANSI.yellow)} ${dimS('preparing')} ${d.tool}(…)\n`);
         }
         break;
       default:
@@ -350,8 +340,7 @@ export function attachChatStreamRenderer(
       durationMs: number;
     };
     closeInlineBlock();
-    const color =
-      outcome === 'completed' ? ANSI.green : outcome === 'input_required' ? ANSI.yellow : ANSI.red;
+    const color = outcome === 'completed' ? ANSI.green : outcome === 'input_required' ? ANSI.yellow : ANSI.red;
     write(
       `${c(ICONS.ok, color)} agent ${outcome} ${dimS(
         `· ${turnsUsed} turns · ${tokensConsumed} tokens · ${Math.round(durationMs)}ms`,
@@ -363,16 +352,10 @@ export function attachChatStreamRenderer(
     const { result } = p as { result: { status: string; mutations: unknown[] } };
     closeInlineBlock();
     const statusColor =
-      result.status === 'completed'
-        ? ANSI.green
-        : result.status === 'input-required'
-          ? ANSI.yellow
-          : ANSI.red;
+      result.status === 'completed' ? ANSI.green : result.status === 'input-required' ? ANSI.yellow : ANSI.red;
     const elapsed = Date.now() - taskStartedAt;
     write(
-      `${c(ICONS.ok, statusColor)} ${result.status} ${dimS(
-        `· ${result.mutations.length} mutation(s) · ${elapsed}ms`,
-      )}`,
+      `${c(ICONS.ok, statusColor)} ${result.status} ${dimS(`· ${result.mutations.length} mutation(s) · ${elapsed}ms`)}`,
     );
   });
 

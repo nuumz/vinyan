@@ -25,13 +25,7 @@ import {
   ideationToConstraint,
 } from '../intent/ideation-types.ts';
 import { resolvePhaseConfig } from '../llm/per-phase-config.ts';
-import type {
-  ExecutionTrace,
-  RoutingDecision,
-  SemanticTaskUnderstanding,
-  TaskInput,
-  TaskResult,
-} from '../types.ts';
+import type { ExecutionTrace, RoutingDecision, SemanticTaskUnderstanding, TaskInput, TaskResult } from '../types.ts';
 import type { PhaseContext, PhaseContinue, PhaseReturn } from './types.ts';
 import { Phase } from './types.ts';
 
@@ -81,10 +75,7 @@ function isForceDisabled(constraints?: readonly string[]): boolean {
  * Keeping the `understanding` parameter here so that flip is a
  * one-line change inside this function.
  */
-export function shouldRunBrainstormPhase(
-  input: TaskInput,
-  _understanding: SemanticTaskUnderstanding,
-): boolean {
+export function shouldRunBrainstormPhase(input: TaskInput, _understanding: SemanticTaskUnderstanding): boolean {
   if (isForceDisabled(input.constraints)) return false;
   if (isForceEnabled(input.constraints)) return true;
   return false;
@@ -141,7 +132,7 @@ function buildBrainstormSystemPrompt(): string {
     '- Output ONLY the JSON object — no prose, no markdown fences.',
     '- Candidates must be substantively different (different technology, different trade-offs, different scope).',
     '- Flag riskNotes honestly — a candidate with no risks is almost certainly mis-analyzed.',
-    "- Use estComplexity=\"unknown\" when you cannot estimate; do NOT guess.",
+    '- Use estComplexity="unknown" when you cannot estimate; do NOT guess.',
     '- Do NOT populate `approvedCandidateId`; the user picks later.',
   ].join('\n');
 }
@@ -273,22 +264,25 @@ function buildRejectedResult(
   routing: RoutingDecision,
   startedAt: number,
 ): TaskResult {
-  const trace: ExecutionTrace = applyRoutingGovernance({
-    id: `trace-${input.id}-brainstorm-rejected-${randomUUID().slice(0, 8)}`,
-    taskId: input.id,
-    sessionId: input.sessionId,
-    workerId: 'orchestrator',
-    timestamp: Date.now(),
-    routingLevel: routing.level,
-    approach: 'brainstorm-rejected',
-    approachDescription: `Human rejected all ${ideation.candidates.length} drafted candidates`,
-    oracleVerdicts: { brainstorm: false },
-    modelUsed: 'orchestrator',
-    tokensConsumed: 0,
-    durationMs: Date.now() - startedAt,
-    outcome: 'success',
-    affectedFiles: [],
-  }, routing);
+  const trace: ExecutionTrace = applyRoutingGovernance(
+    {
+      id: `trace-${input.id}-brainstorm-rejected-${randomUUID().slice(0, 8)}`,
+      taskId: input.id,
+      sessionId: input.sessionId,
+      workerId: 'orchestrator',
+      timestamp: Date.now(),
+      routingLevel: routing.level,
+      approach: 'brainstorm-rejected',
+      approachDescription: `Human rejected all ${ideation.candidates.length} drafted candidates`,
+      oracleVerdicts: { brainstorm: false },
+      modelUsed: 'orchestrator',
+      tokensConsumed: 0,
+      durationMs: Date.now() - startedAt,
+      outcome: 'success',
+      affectedFiles: [],
+    },
+    routing,
+  );
   return {
     id: input.id,
     status: 'input-required',

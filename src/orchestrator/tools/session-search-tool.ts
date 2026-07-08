@@ -18,11 +18,11 @@ import { MEMORY_KINDS, type MemoryKind } from '../../memory/provider/types.ts';
 import type { ToolResult } from '../types.ts';
 import {
   renderTopHits,
-  searchSessions,
   type SessionScope,
   type SessionSearchDeps,
   type SessionSearchInput,
   type SessionSearchResult,
+  searchSessions,
 } from './session-search-impl.ts';
 import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
@@ -51,7 +51,9 @@ function isMemoryKind(value: unknown): value is MemoryKind {
  * `Error` string when required fields are missing/invalid so the caller can
  * return a 'error' ToolResult instead of throwing.
  */
-function parseParams(params: Record<string, unknown>): { ok: true; input: SessionSearchInput } | { ok: false; error: string } {
+function parseParams(
+  params: Record<string, unknown>,
+): { ok: true; input: SessionSearchInput } | { ok: false; error: string } {
   const query = typeof params.query === 'string' ? params.query : '';
   if (query.length === 0) {
     return { ok: false, error: 'Parameter `query` is required and must be a non-empty string' };

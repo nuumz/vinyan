@@ -1,8 +1,9 @@
 /**
  * Tests for K2.1 Provider Trust Store — per-capability trust tracking.
  */
-import { describe, expect, test } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
+import { describe, expect, test } from 'bun:test';
 import { ProviderTrustStore } from '../../src/db/provider-trust-store.ts';
 
 function makeTrustStore(): ProviderTrustStore {

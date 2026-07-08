@@ -39,9 +39,7 @@ export function loadSqliteVec(db: Database): SqliteVecLoadResult {
 
   // Already loaded? Probe vec_version().
   try {
-    const row = db.query('SELECT vec_version() AS version').get() as
-      | { version: string }
-      | undefined;
+    const row = db.query('SELECT vec_version() AS version').get() as { version: string } | undefined;
     if (row?.version) {
       return { loaded: true, version: row.version };
     }
@@ -72,9 +70,7 @@ export function loadSqliteVec(db: Database): SqliteVecLoadResult {
   }
 
   try {
-    const row = db.query('SELECT vec_version() AS version').get() as
-      | { version: string }
-      | undefined;
+    const row = db.query('SELECT vec_version() AS version').get() as { version: string } | undefined;
     return { loaded: true, version: row?.version ?? 'unknown' };
   } catch (err) {
     return { loaded: false, reason: `post-load-probe-failed: ${String(err).slice(0, 120)}` };
@@ -88,9 +84,7 @@ export function loadSqliteVec(db: Database): SqliteVecLoadResult {
 export function loadSqliteVecWithWarn(db: Database, context = 'vinyan'): SqliteVecLoadResult {
   const result = loadSqliteVec(db);
   if (!result.loaded && result.reason !== 'disabled-by-env') {
-    console.warn(
-      `[${context}] sqlite-vec unavailable — semantic retrieval disabled (${result.reason})`,
-    );
+    console.warn(`[${context}] sqlite-vec unavailable — semantic retrieval disabled (${result.reason})`);
   }
   return result;
 }

@@ -24,19 +24,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createBus, type VinyanBus } from '../../../src/core/bus.ts';
-import {
-  runAgentLoop,
-  type AgentLoopDeps,
-} from '../../../src/orchestrator/agent/agent-loop.ts';
-import type {
-  IAgentSession,
-  SessionState,
-} from '../../../src/orchestrator/agent/agent-session.ts';
-import type {
-  OrchestratorTurn,
-  TerminateReason,
-  WorkerTurn,
-} from '../../../src/orchestrator/protocol.ts';
+import { type AgentLoopDeps, runAgentLoop } from '../../../src/orchestrator/agent/agent-loop.ts';
+import type { IAgentSession, SessionState } from '../../../src/orchestrator/agent/agent-session.ts';
+import type { OrchestratorTurn, TerminateReason, WorkerTurn } from '../../../src/orchestrator/protocol.ts';
 import type { ToolContext } from '../../../src/orchestrator/tools/tool-interface.ts';
 import type {
   PerceptualHierarchy,
@@ -177,10 +167,7 @@ function makeDeps(session: MockAgentSession, bus: VinyanBus): AgentLoopDeps {
 }
 
 beforeEach(() => {
-  testWorkspace = join(
-    tmpdir(),
-    `vinyan-plan-emit-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-  );
+  testWorkspace = join(tmpdir(), `vinyan-plan-emit-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
   mkdirSync(testWorkspace, { recursive: true });
 });
 
@@ -221,14 +208,7 @@ describe("agent-loop emits 'agent:plan_update' after a successful plan_update to
     bus.on('agent:plan_update', (payload) => captured.push(payload));
 
     const session = new MockAgentSession(workerTurns);
-    await runAgentLoop(
-      makeInput(),
-      makePerception(),
-      makeMemory(),
-      undefined,
-      makeRouting(),
-      makeDeps(session, bus),
-    );
+    await runAgentLoop(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(), makeDeps(session, bus));
 
     expect(captured.length).toBeGreaterThanOrEqual(1);
     const last = captured[captured.length - 1]!;
@@ -272,14 +252,7 @@ describe("agent-loop emits 'agent:plan_update' after a successful plan_update to
     bus.on('agent:plan_update', (payload) => captured.push(payload));
 
     const session = new MockAgentSession(workerTurns);
-    await runAgentLoop(
-      makeInput(),
-      makePerception(),
-      makeMemory(),
-      undefined,
-      makeRouting(),
-      makeDeps(session, bus),
-    );
+    await runAgentLoop(makeInput(), makePerception(), makeMemory(), undefined, makeRouting(), makeDeps(session, bus));
 
     expect(captured).toHaveLength(0);
   });

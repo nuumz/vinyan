@@ -51,13 +51,7 @@ export interface PipeProcessEvents {
   onTimeout?(): void;
 }
 
-export type PipeProcessLifecycle =
-  | 'pending'
-  | 'running'
-  | 'exited'
-  | 'killed'
-  | 'stalled'
-  | 'timed-out';
+export type PipeProcessLifecycle = 'pending' | 'running' | 'exited' | 'killed' | 'stalled' | 'timed-out';
 
 export class PipeProcess {
   private subprocess: Subprocess | null = null;
@@ -70,7 +64,10 @@ export class PipeProcess {
   private readonly timeoutMs: number;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private wallTimer: ReturnType<typeof setTimeout> | null = null;
-  private exitDeferred: { promise: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; resolve: (v: { code: number | null; signal: NodeJS.Signals | null }) => void };
+  private exitDeferred: {
+    promise: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+    resolve: (v: { code: number | null; signal: NodeJS.Signals | null }) => void;
+  };
   private stdinClosed = false;
 
   constructor(
@@ -98,7 +95,10 @@ export class PipeProcess {
       stdout: 'pipe',
       stderr: 'pipe',
       onExit: (_proc, exitCode, signalCode) =>
-        this.handleExit(exitCode, signalCode === null ? null : (typeof signalCode === 'number' ? null : (signalCode as NodeJS.Signals))),
+        this.handleExit(
+          exitCode,
+          signalCode === null ? null : typeof signalCode === 'number' ? null : (signalCode as NodeJS.Signals),
+        ),
     });
     this.lifecycle = 'running';
     this.startReaders();
@@ -126,7 +126,9 @@ export class PipeProcess {
   async write(bytes: string): Promise<boolean> {
     if (!this.subprocess || this.lifecycle !== 'running') return false;
     if (this.stdinClosed) return false;
-    const stdin = this.subprocess.stdin as { write?: (data: string) => unknown; flush?: () => Promise<void> } | undefined;
+    const stdin = this.subprocess.stdin as
+      | { write?: (data: string) => unknown; flush?: () => Promise<void> }
+      | undefined;
     if (!stdin || typeof stdin.write !== 'function') return false;
     try {
       stdin.write(bytes);
@@ -205,7 +207,9 @@ export class PipeProcess {
     } catch {
       // Stream torn down — exit handler will fire shortly.
     } finally {
-      try { reader.releaseLock(); } catch {}
+      try {
+        reader.releaseLock();
+      } catch {}
     }
   }
 

@@ -77,9 +77,11 @@ describe('attachCodingCliBridge', () => {
       dispatcher: (fn) => fn(),
     });
     fx.bus.emit('coding-cli:completed', makeCompleted());
-    const c = (fx.db
-      .query("SELECT COUNT(*) as c FROM memory_wiki_sources WHERE kind = 'coding-cli-run'")
-      .get() as { c: number } | null)?.c;
+    const c = (
+      fx.db.query("SELECT COUNT(*) as c FROM memory_wiki_sources WHERE kind = 'coding-cli-run'").get() as {
+        c: number;
+      } | null
+    )?.c;
     expect(c).toBe(1);
     bridge.off();
   });
@@ -114,9 +116,7 @@ describe('attachCodingCliBridge', () => {
     bridge.off();
     fx.bus.emit('coding-cli:completed', makeCompleted());
     fx.bus.emit('coding-cli:failed', makeFailed());
-    const c = (fx.db
-      .query("SELECT COUNT(*) as c FROM memory_wiki_sources")
-      .get() as { c: number } | null)?.c;
+    const c = (fx.db.query('SELECT COUNT(*) as c FROM memory_wiki_sources').get() as { c: number } | null)?.c;
     expect(c).toBe(0);
   });
 });

@@ -24,7 +24,7 @@ describe('executeWorkflow', () => {
 
   test('with mock LLM → planner + executor + synthesizer work end-to-end', async () => {
     let plannerCalled = false;
-    let stepLLMCalled = false;
+    let stepLlmCalled = false;
     let synthesizerCalled = false;
     const deltas: Array<{ event: string; payload: unknown }> = [];
     const streamTimeouts: number[] = [];
@@ -33,7 +33,14 @@ describe('executeWorkflow', () => {
       goal: 'analyze code',
       steps: [
         { id: 'step1', description: 'gather info', strategy: 'llm-reasoning', budgetFraction: 0.5 },
-        { id: 'step2', description: 'summarize', strategy: 'llm-reasoning', dependencies: ['step1'], inputs: { data: '$step1.result' }, budgetFraction: 0.5 },
+        {
+          id: 'step2',
+          description: 'summarize',
+          strategy: 'llm-reasoning',
+          dependencies: ['step1'],
+          inputs: { data: '$step1.result' },
+          budgetFraction: 0.5,
+        },
       ],
       synthesisPrompt: 'Combine step1 and step2.',
     });
@@ -53,7 +60,7 @@ describe('executeWorkflow', () => {
           synthesizerCalled = true;
           return { content: 'Final synthesis', tokensUsed: { input: 30, output: 30 } };
         }
-        stepLLMCalled = true;
+        stepLlmCalled = true;
         return { content: `Result for: ${req.userPrompt.slice(0, 50)}`, tokensUsed: { input: 20, output: 40 } };
       },
       generateStream: async (
@@ -95,7 +102,7 @@ describe('executeWorkflow', () => {
     expect(result.synthesizedOutput).toContain('Result for:'); // step2's output
     expect(result.totalTokensConsumed).toBeGreaterThan(0);
     expect(plannerCalled).toBe(true);
-    expect(stepLLMCalled).toBe(true);
+    expect(stepLlmCalled).toBe(true);
     // Synthesizer LLM is NOT called — short-circuit returned step2's output.
     expect(synthesizerCalled).toBe(false);
     expect(deltas.some((d) => d.event === 'llm:stream_delta')).toBe(true);
@@ -186,9 +193,7 @@ describe('executeWorkflow', () => {
     // rather than starting fresh.
     const validPlan = JSON.stringify({
       goal: 'continue chapter 2',
-      steps: [
-        { id: 'step1', description: 'draft chapter 2', strategy: 'llm-reasoning', budgetFraction: 1.0 },
-      ],
+      steps: [{ id: 'step1', description: 'draft chapter 2', strategy: 'llm-reasoning', budgetFraction: 1.0 }],
       synthesisPrompt: 'Return step1.',
     });
     let stepUserPromptCaptured = '';
@@ -248,13 +253,15 @@ describe('executeWorkflow', () => {
   test('step with fallback strategy retries on failure', async () => {
     const plan = JSON.stringify({
       goal: 'test fallback',
-      steps: [{
-        id: 'step1',
-        description: 'try tool then reason',
-        strategy: 'direct-tool',
-        fallbackStrategy: 'llm-reasoning',
-        budgetFraction: 1.0,
-      }],
+      steps: [
+        {
+          id: 'step1',
+          description: 'try tool then reason',
+          strategy: 'direct-tool',
+          fallbackStrategy: 'llm-reasoning',
+          budgetFraction: 1.0,
+        },
+      ],
       synthesisPrompt: 'Return step1.',
     });
 
@@ -323,7 +330,19 @@ describe('executeWorkflow', () => {
           id: subInput.id,
           status: 'completed',
           mutations: [],
-          trace: { id: 'tr', taskId: subInput.id, timestamp: 0, routingLevel: 2, approach: 'sub', oracleVerdicts: {}, modelUsed: 'x', tokensConsumed: 50, durationMs: 10, outcome: 'success', affectedFiles: [] },
+          trace: {
+            id: 'tr',
+            taskId: subInput.id,
+            timestamp: 0,
+            routingLevel: 2,
+            approach: 'sub',
+            oracleVerdicts: {},
+            modelUsed: 'x',
+            tokensConsumed: 50,
+            durationMs: 10,
+            outcome: 'success',
+            affectedFiles: [],
+          },
           answer: 'Sub-agent result',
         };
       },
@@ -401,9 +420,7 @@ describe('executeWorkflow', () => {
     // description (which would error as a shell command).
     let capturedCommand: string | null = null as string | null;
     const toolExecutor = {
-      executeProposedTools: async (
-        calls: Array<{ id: string; tool: string; parameters: { command: string } }>,
-      ) => {
+      executeProposedTools: async (calls: Array<{ id: string; tool: string; parameters: { command: string } }>) => {
         capturedCommand = calls[0]!.parameters.command;
         return [{ id: calls[0]!.id, status: 'success' as const, output: 'a.txt\nb.txt\n' }];
       },
@@ -442,9 +459,7 @@ describe('executeWorkflow', () => {
   test('direct-tool falls back to `description` when `command` is absent (legacy plans)', async () => {
     let capturedCommand: string | null = null as string | null;
     const toolExecutor = {
-      executeProposedTools: async (
-        calls: Array<{ id: string; tool: string; parameters: { command: string } }>,
-      ) => {
+      executeProposedTools: async (calls: Array<{ id: string; tool: string; parameters: { command: string } }>) => {
         capturedCommand = calls[0]!.parameters.command;
         return [{ id: calls[0]!.id, status: 'success' as const, output: 'ok' }];
       },
@@ -474,7 +489,13 @@ describe('executeWorkflow', () => {
     const plan = JSON.stringify({
       goal: 'inspect and analyze',
       steps: [
-        { id: 'step1', description: 'inspect tmp', command: 'ls -la /tmp', strategy: 'direct-tool', budgetFraction: 0.5 },
+        {
+          id: 'step1',
+          description: 'inspect tmp',
+          command: 'ls -la /tmp',
+          strategy: 'direct-tool',
+          budgetFraction: 0.5,
+        },
         {
           id: 'step2',
           description: 'analyze',
@@ -625,9 +646,7 @@ describe('executeWorkflow', () => {
     });
 
     expect(result.status).toBe('partial');
-    expect(result.stepResults.every((r) => r.status === 'failed' || r.status === 'skipped')).toBe(
-      true,
-    );
+    expect(result.stepResults.every((r) => r.status === 'failed' || r.status === 'skipped')).toBe(true);
     // The honesty fast-path must not call the synthesizer.
     expect(synthesizerCalled).toBe(false);
     expect(result.synthesizedOutput).not.toContain('fabricated success');
@@ -953,13 +972,10 @@ describe('executeWorkflow', () => {
         trace: { tokensConsumed: 10 },
       } as any;
     };
-    const result = await executeWorkflow(
-      makeInput('have developer and architect debate microservices'),
-      {
-        llmRegistry: { selectByTier: () => mockProvider } as any,
-        executeTask,
-      },
-    );
+    const result = await executeWorkflow(makeInput('have developer and architect debate microservices'), {
+      llmRegistry: { selectByTier: () => mockProvider } as any,
+      executeTask,
+    });
     expect(result.status).toBe('completed');
     expect(dispatchedAgentIds).toContain('developer');
     expect(dispatchedAgentIds).toContain('architect');
@@ -1318,8 +1334,20 @@ describe('executeWorkflow', () => {
     const plan = JSON.stringify({
       goal: 'multi-agent with hallucinated id',
       steps: [
-        { id: 'step1', description: 'researcher answers', strategy: 'delegate-sub-agent', agentId: 'researcher', budgetFraction: 0.5 },
-        { id: 'step2', description: 'philosopher answers', strategy: 'delegate-sub-agent', agentId: 'philosopher', budgetFraction: 0.5 },
+        {
+          id: 'step1',
+          description: 'researcher answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          budgetFraction: 0.5,
+        },
+        {
+          id: 'step2',
+          description: 'philosopher answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'philosopher',
+          budgetFraction: 0.5,
+        },
       ],
       synthesisPrompt: 'Combine.',
     });
@@ -1373,8 +1401,20 @@ describe('executeWorkflow', () => {
     const plan = JSON.stringify({
       goal: 'multi-agent with duplicate id',
       steps: [
-        { id: 'step1', description: 'researcher angle 1', strategy: 'delegate-sub-agent', agentId: 'researcher', budgetFraction: 0.5 },
-        { id: 'step2', description: 'researcher angle 2', strategy: 'delegate-sub-agent', agentId: 'researcher', budgetFraction: 0.5 },
+        {
+          id: 'step1',
+          description: 'researcher angle 1',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          budgetFraction: 0.5,
+        },
+        {
+          id: 'step2',
+          description: 'researcher angle 2',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          budgetFraction: 0.5,
+        },
       ],
       synthesisPrompt: 'Combine.',
     });
@@ -1423,8 +1463,20 @@ describe('executeWorkflow', () => {
     const plan = JSON.stringify({
       goal: 'two delegates with huge outputs',
       steps: [
-        { id: 'step1', description: 'researcher answers', strategy: 'delegate-sub-agent', agentId: 'researcher', budgetFraction: 0.5 },
-        { id: 'step2', description: 'author answers', strategy: 'delegate-sub-agent', agentId: 'author', budgetFraction: 0.5 },
+        {
+          id: 'step1',
+          description: 'researcher answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          budgetFraction: 0.5,
+        },
+        {
+          id: 'step2',
+          description: 'author answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'author',
+          budgetFraction: 0.5,
+        },
       ],
       synthesisPrompt: 'Combine.',
     });
@@ -1445,13 +1497,14 @@ describe('executeWorkflow', () => {
         return r;
       },
     };
-    const executeTask = async (subInput: any) => ({
-      id: subInput.id,
-      status: 'completed',
-      mutations: [],
-      answer: huge,
-      trace: { tokensConsumed: 100 },
-    } as any);
+    const executeTask = async (subInput: any) =>
+      ({
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: huge,
+        trace: { tokensConsumed: 100 },
+      }) as any;
     const result = await executeWorkflow(makeInput('two delegates with huge outputs'), {
       llmRegistry: { selectByTier: () => mockProvider } as any,
       executeTask,
@@ -1466,8 +1519,20 @@ describe('executeWorkflow', () => {
     const plan = JSON.stringify({
       goal: 'two delegates, one returns empty',
       steps: [
-        { id: 'step1', description: 'researcher answers', strategy: 'delegate-sub-agent', agentId: 'researcher', budgetFraction: 0.5 },
-        { id: 'step2', description: 'author answers', strategy: 'delegate-sub-agent', agentId: 'author', budgetFraction: 0.5 },
+        {
+          id: 'step1',
+          description: 'researcher answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'researcher',
+          budgetFraction: 0.5,
+        },
+        {
+          id: 'step2',
+          description: 'author answers',
+          strategy: 'delegate-sub-agent',
+          agentId: 'author',
+          budgetFraction: 0.5,
+        },
       ],
       synthesisPrompt: 'Combine.',
     });
@@ -1488,13 +1553,14 @@ describe('executeWorkflow', () => {
         return r;
       },
     };
-    const executeTask = async (subInput: any) => ({
-      id: subInput.id,
-      status: 'completed',
-      mutations: [],
-      answer: subInput.agentId === 'author' ? '   \n\n  ' : 'researcher real answer',
-      trace: { tokensConsumed: 10 },
-    } as any);
+    const executeTask = async (subInput: any) =>
+      ({
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: subInput.agentId === 'author' ? '   \n\n  ' : 'researcher real answer',
+        trace: { tokensConsumed: 10 },
+      }) as any;
     const result = await executeWorkflow(makeInput('two delegates, one returns empty'), {
       llmRegistry: { selectByTier: () => mockProvider } as any,
       executeTask,
@@ -1514,9 +1580,7 @@ describe('executeWorkflow', () => {
     const planReadyEmissions: any[] = [];
     const plan = JSON.stringify({
       goal: 'sub-task workflow',
-      steps: [
-        { id: 'step1', description: 'one step', strategy: 'llm-reasoning', budgetFraction: 1 },
-      ],
+      steps: [{ id: 'step1', description: 'one step', strategy: 'llm-reasoning', budgetFraction: 1 }],
       synthesisPrompt: 'Combine.',
     });
     const mockProvider = {
@@ -1604,13 +1668,14 @@ describe('executeWorkflow', () => {
         return r;
       },
     };
-    const executeTask = async (subInput: any) => ({
-      id: subInput.id,
-      status: 'completed',
-      mutations: [],
-      answer: 'Researcher delivers a single, focused answer about X.',
-      trace: { tokensConsumed: 10 },
-    } as any);
+    const executeTask = async (subInput: any) =>
+      ({
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: 'Researcher delivers a single, focused answer about X.',
+        trace: { tokensConsumed: 10 },
+      }) as any;
     const result = await executeWorkflow(makeInput('one delegate + setup'), {
       llmRegistry: { selectByTier: () => mockProvider } as any,
       executeTask,
@@ -1819,13 +1884,14 @@ describe('executeWorkflow', () => {
         return r;
       },
     };
-    const executeTask = async (subInput: any) => ({
-      id: subInput.id,
-      status: 'completed',
-      mutations: [],
-      answer: `${subInput.agentId} REAL DELEGATE ANSWER`,
-      trace: { tokensConsumed: 10 },
-    } as any);
+    const executeTask = async (subInput: any) =>
+      ({
+        id: subInput.id,
+        status: 'completed',
+        mutations: [],
+        answer: `${subInput.agentId} REAL DELEGATE ANSWER`,
+        trace: { tokensConsumed: 10 },
+      }) as any;
     const result = await executeWorkflow(makeInput('mid-DAG mixed topology'), {
       llmRegistry: { selectByTier: () => mockProvider } as any,
       executeTask,
@@ -2665,10 +2731,7 @@ describe('executeWorkflow', () => {
     const mockProvider = {
       id: 'mock',
       generate: async () => ({ content: plan, tokensUsed: { input: 10, output: 10 } }),
-      generateStream: async (
-        _req: { systemPrompt: string },
-        onDelta: (d: { text: string }) => void,
-      ) => {
+      generateStream: async (_req: { systemPrompt: string }, onDelta: (d: { text: string }) => void) => {
         onDelta({ text: plan });
         return { content: plan, tokensUsed: { input: 5, output: 5 } };
       },
@@ -2695,17 +2758,13 @@ describe('executeWorkflow', () => {
     });
     // Researcher's delegate_completed event MUST report status=failed.
     const researcherDelegateCompleted = events.find(
-      (e) =>
-        e.event === 'workflow:delegate_completed' && e.payload.agentId === 'researcher',
+      (e) => e.event === 'workflow:delegate_completed' && e.payload.agentId === 'researcher',
     );
     expect(researcherDelegateCompleted).toBeDefined();
     expect(researcherDelegateCompleted!.payload.status).toBe('failed');
     // Subtask manifest mirror MUST carry errorKind='empty_response'.
     const researcherSubtaskUpdate = events
-      .filter(
-        (e) =>
-          e.event === 'workflow:subtask_updated' && e.payload.agentId === 'researcher',
-      )
+      .filter((e) => e.event === 'workflow:subtask_updated' && e.payload.agentId === 'researcher')
       .pop();
     expect(researcherSubtaskUpdate).toBeDefined();
     expect(researcherSubtaskUpdate!.payload.status).toBe('failed');
@@ -2713,9 +2772,7 @@ describe('executeWorkflow', () => {
     expect(researcherSubtaskUpdate!.payload.errorMessage).toContain('empty response');
     // Author with real answer stays completed.
     const authorSubtaskUpdate = events
-      .filter(
-        (e) => e.event === 'workflow:subtask_updated' && e.payload.agentId === 'author',
-      )
+      .filter((e) => e.event === 'workflow:subtask_updated' && e.payload.agentId === 'author')
       .pop();
     expect(authorSubtaskUpdate!.payload.status).toBe('done');
   });

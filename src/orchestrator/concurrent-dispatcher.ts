@@ -20,9 +20,9 @@
  */
 
 import type { VinyanBus } from '../core/bus.ts';
+import { AdvisoryFileLock } from './agent/file-lock.ts';
 import type { TaskQueue } from './task-queue.ts';
 import type { TaskInput, TaskResult } from './types.ts';
-import { AdvisoryFileLock } from './agent/file-lock.ts';
 
 // ── Conflict graph ──────────────────────────────────────────────────
 

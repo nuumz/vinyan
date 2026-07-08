@@ -23,19 +23,20 @@
  * is the right place for that; for this PR we focus on the unit boundaries
  * that carry the new state.
  */
+
+import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Database } from 'bun:sqlite';
+import { join } from 'node:path';
 
 import { parseInputRequiredBlock, SessionManager } from '../../src/api/session-manager.ts';
-import { SessionStore } from '../../src/db/session-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../src/db/migrations/index.ts';
-import { runAgentLoop, type AgentLoopDeps } from '../../src/orchestrator/agent/agent-loop.ts';
-import { buildInitUserMessage, buildSystemPrompt } from '../../src/orchestrator/agent/agent-worker-entry.ts';
-import { DelegationRouter, buildSubTaskInput } from '../../src/orchestrator/delegation-router.ts';
+import { SessionStore } from '../../src/db/session-store.ts';
+import { type AgentLoopDeps, runAgentLoop } from '../../src/orchestrator/agent/agent-loop.ts';
 import type { IAgentSession, SessionState } from '../../src/orchestrator/agent/agent-session.ts';
+import { buildInitUserMessage, buildSystemPrompt } from '../../src/orchestrator/agent/agent-worker-entry.ts';
+import { buildSubTaskInput, DelegationRouter } from '../../src/orchestrator/delegation-router.ts';
 import type {
   AgentBudget,
   DelegationRequest,
@@ -637,14 +638,7 @@ describe('delegate_task — child input-required bubble-up', () => {
       executeTask: executeTaskMock,
     };
 
-    await runAgentLoop(
-      makeTestInput(),
-      makeTestPerception(),
-      makeTestMemory(),
-      undefined,
-      makeTestRouting(),
-      deps,
-    );
+    await runAgentLoop(makeTestInput(), makeTestPerception(), makeTestMemory(), undefined, makeTestRouting(), deps);
 
     const toolResultTurns = session.sent.filter((t) => t.type === 'tool_results') as Array<
       Extract<OrchestratorTurn, { type: 'tool_results' }>
@@ -659,8 +653,7 @@ describe('delegate_task — child input-required bubble-up', () => {
   });
 
   it('treats a completed child as ToolResult.status=success (regression)', async () => {
-    const executeTaskMock = async (_subInput: TaskInput): Promise<TaskResult> =>
-      makeChildResult('completed');
+    const executeTaskMock = async (_subInput: TaskInput): Promise<TaskResult> => makeChildResult('completed');
 
     const workerTurns: WorkerTurn[] = [
       {
@@ -687,14 +680,7 @@ describe('delegate_task — child input-required bubble-up', () => {
       executeTask: executeTaskMock,
     };
 
-    await runAgentLoop(
-      makeTestInput(),
-      makeTestPerception(),
-      makeTestMemory(),
-      undefined,
-      makeTestRouting(),
-      deps,
-    );
+    await runAgentLoop(makeTestInput(), makeTestPerception(), makeTestMemory(), undefined, makeTestRouting(), deps);
 
     const toolResultTurns = session.sent.filter((t) => t.type === 'tool_results') as Array<
       Extract<OrchestratorTurn, { type: 'tool_results' }>
@@ -738,8 +724,7 @@ describe('buildSubTaskInput — context propagation', () => {
     const request: DelegationRequest = {
       goal: 'rename helper to util',
       targetFiles: ['src/foo.ts'],
-      context:
-        "Resolved clarifications: 'Which file?' => src/foo.ts; 'Keep old name as alias?' => no, remove it",
+      context: "Resolved clarifications: 'Which file?' => src/foo.ts; 'Keep old name as alias?' => no, remove it",
     };
     const sub = buildSubTaskInput(request, parent, {} as RoutingDecision, childBudget);
     expect(sub.constraints).toBeDefined();
@@ -866,9 +851,7 @@ describe('buildInitUserMessage — CLARIFIED / CONTEXT constraint rendering', ()
       'apply the rename',
       emptyPerception,
       undefined,
-      makeUnderstanding([
-        "CONTEXT:Resolved clarifications: 'Which file?' => src/auth.ts; 'Alias?' => no",
-      ]),
+      makeUnderstanding(["CONTEXT:Resolved clarifications: 'Which file?' => src/auth.ts; 'Alias?' => no"]),
     );
 
     expect(message).toContain('## Delegation Context (from parent agent)');
@@ -933,12 +916,7 @@ describe('buildInitUserMessage — CLARIFIED / CONTEXT constraint rendering', ()
   });
 
   it('emits no constraint-related section when understanding.constraints is empty', () => {
-    const message = buildInitUserMessage(
-      'simple task',
-      emptyPerception,
-      undefined,
-      makeUnderstanding([]),
-    );
+    const message = buildInitUserMessage('simple task', emptyPerception, undefined, makeUnderstanding([]));
 
     expect(message).not.toContain('## User Clarifications');
     expect(message).not.toContain('## Delegation Context');
@@ -952,12 +930,7 @@ describe('buildInitUserMessage — CLARIFIED / CONTEXT constraint rendering', ()
     // string with no separator has no valid Q/A split and must degrade to
     // a plain user constraint rather than being silently dropped.
     const malformed = 'CLARIFIED:just some prose with no separator';
-    const message = buildInitUserMessage(
-      'test',
-      emptyPerception,
-      undefined,
-      makeUnderstanding([malformed]),
-    );
+    const message = buildInitUserMessage('test', emptyPerception, undefined, makeUnderstanding([malformed]));
 
     expect(message).not.toContain('## User Clarifications');
     expect(message).toContain('## User Constraints');
@@ -966,11 +939,7 @@ describe('buildInitUserMessage — CLARIFIED / CONTEXT constraint rendering', ()
 
   it('renders CLARIFICATION_BATCH as questions + single free-form reply', () => {
     const payload = {
-      questions: [
-        'อยากได้แนวเรื่องแบบไหน?',
-        'กลุ่มผู้อ่านเป็นใคร?',
-        'ความยาวเท่าไหร่?',
-      ],
+      questions: ['อยากได้แนวเรื่องแบบไหน?', 'กลุ่มผู้อ่านเป็นใคร?', 'ความยาวเท่าไหร่?'],
       reply: 'แนวโรแมนติก, วัยรุ่น, สั้นๆ 500 คำ',
     };
     const message = buildInitUserMessage(
@@ -995,12 +964,7 @@ describe('buildInitUserMessage — CLARIFIED / CONTEXT constraint rendering', ()
 
   it('degrades a malformed CLARIFICATION_BATCH (non-JSON) to a plain constraint', () => {
     const malformed = 'CLARIFICATION_BATCH:not-valid-json{';
-    const message = buildInitUserMessage(
-      'test',
-      emptyPerception,
-      undefined,
-      makeUnderstanding([malformed]),
-    );
+    const message = buildInitUserMessage('test', emptyPerception, undefined, makeUnderstanding([malformed]));
 
     expect(message).not.toContain('## User Clarifications');
     expect(message).toContain('## User Constraints');
@@ -1009,12 +973,7 @@ describe('buildInitUserMessage — CLARIFIED / CONTEXT constraint rendering', ()
 
   it('degrades a CLARIFICATION_BATCH with empty questions to a plain constraint', () => {
     const empty = `CLARIFICATION_BATCH:${JSON.stringify({ questions: [], reply: 'ok' })}`;
-    const message = buildInitUserMessage(
-      'test',
-      emptyPerception,
-      undefined,
-      makeUnderstanding([empty]),
-    );
+    const message = buildInitUserMessage('test', emptyPerception, undefined, makeUnderstanding([empty]));
 
     expect(message).not.toContain('## User Clarifications');
     expect(message).toContain('## User Constraints');
@@ -1090,12 +1049,7 @@ describe('buildInitUserMessage — CLARIFIED / CONTEXT constraint rendering', ()
 
   it('degrades a malformed MEMORY_CONTEXT (non-JSON) to a plain constraint', () => {
     const malformed = 'MEMORY_CONTEXT:not-valid{';
-    const message = buildInitUserMessage(
-      'task',
-      emptyPerception,
-      undefined,
-      makeUnderstanding([malformed]),
-    );
+    const message = buildInitUserMessage('task', emptyPerception, undefined, makeUnderstanding([malformed]));
     // No memory section created when payload is malformed.
     expect(message).not.toContain('## Relevant User Memory');
     // Falls through to User Constraints so nothing is silently lost.

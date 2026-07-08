@@ -4,8 +4,15 @@
  * TDD §6: weighted sum with normalization + A6 guardrails.
  * Phase 0 computes and logs; Phase 1 Orchestrator uses for actual routing.
  */
-import type { EpistemicAdjustment, RiskFactors, RoutingDecision, RoutingLevel, ThinkingConfig } from '../orchestrator/types.ts';
+
 import type { OutcomePrediction } from '../orchestrator/forward-predictor-types.ts';
+import type {
+  EpistemicAdjustment,
+  RiskFactors,
+  RoutingDecision,
+  RoutingLevel,
+  ThinkingConfig,
+} from '../orchestrator/types.ts';
 
 // ── Weights per TDD §6 ──────────────────────────────────────────
 
@@ -184,11 +191,24 @@ export function routeByRisk(
  * Exported for adjustment layers (`withLevel`, `applyPredictionEscalation`)
  * that re-seed budgets when the routing level changes.
  */
-export const LEVEL_CONFIG: Record<RoutingLevel, { model: string | null; budgetTokens: number; latencyBudgetMs: number; thinkingConfig: ThinkingConfig }> = {
+export const LEVEL_CONFIG: Record<
+  RoutingLevel,
+  { model: string | null; budgetTokens: number; latencyBudgetMs: number; thinkingConfig: ThinkingConfig }
+> = {
   0: { model: null, budgetTokens: 0, latencyBudgetMs: 100, thinkingConfig: { type: 'disabled' } },
   1: { model: 'claude-haiku', budgetTokens: 10_000, latencyBudgetMs: 15_000, thinkingConfig: { type: 'disabled' } },
-  2: { model: 'claude-sonnet', budgetTokens: 50_000, latencyBudgetMs: 90_000, thinkingConfig: { type: 'adaptive', effort: 'medium', display: 'omitted' } },
-  3: { model: 'claude-opus', budgetTokens: 100_000, latencyBudgetMs: 120_000, thinkingConfig: { type: 'adaptive', effort: 'high', display: 'summarized' } },
+  2: {
+    model: 'claude-sonnet',
+    budgetTokens: 50_000,
+    latencyBudgetMs: 90_000,
+    thinkingConfig: { type: 'adaptive', effort: 'medium', display: 'omitted' },
+  },
+  3: {
+    model: 'claude-opus',
+    budgetTokens: 100_000,
+    latencyBudgetMs: 120_000,
+    thinkingConfig: { type: 'adaptive', effort: 'high', display: 'summarized' },
+  },
 };
 
 /**
@@ -233,9 +253,8 @@ export function applyPredictionEscalation(
 
   // If aggregate risk across all causal files > 0.7 → escalate to L3
   if (forwardPrediction.causalRiskFiles.length > 0) {
-    const aggregateRisk = 1 - forwardPrediction.causalRiskFiles.reduce(
-      (product, r) => product * (1 - r.breakProbability), 1,
-    );
+    const aggregateRisk =
+      1 - forwardPrediction.causalRiskFiles.reduce((product, r) => product * (1 - r.breakProbability), 1);
     if (aggregateRisk > 0.7 && level < 3) {
       level = 3 as RoutingLevel;
     }

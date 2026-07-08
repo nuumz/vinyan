@@ -11,6 +11,8 @@
  *                build InboundEnvelope and publish.
  *   stop()    → clears heartbeat timer; closes the WebSocket gracefully.
  */
+
+import { buildInboundEnvelope, toMinimalInbound } from '../envelope.ts';
 import type {
   GatewayAdapter,
   GatewayAdapterContext,
@@ -18,7 +20,6 @@ import type {
   GatewayDeliveryReceipt,
   GatewayOutboundEnvelope,
 } from '../types.ts';
-import { buildInboundEnvelope, toMinimalInbound } from '../envelope.ts';
 import {
   DiscordApi,
   DiscordApiError,
@@ -29,12 +30,7 @@ import {
 } from './discord-api.ts';
 
 const DISCORD_MAX_CHARS_PER_SEND = 2000;
-const DEFAULT_INTENTS: readonly string[] = [
-  'GUILDS',
-  'GUILD_MESSAGES',
-  'MESSAGE_CONTENT',
-  'DIRECT_MESSAGES',
-];
+const DEFAULT_INTENTS: readonly string[] = ['GUILDS', 'GUILD_MESSAGES', 'MESSAGE_CONTENT', 'DIRECT_MESSAGES'];
 
 export interface DiscordAdapterOptions {
   readonly botToken: string;
@@ -74,10 +70,7 @@ export class DiscordAdapter implements GatewayAdapter {
         wsImpl: opts.wsImpl,
       });
     this.intents = opts.intents ?? DEFAULT_INTENTS;
-    this.allowedGuilds =
-      opts.allowedGuilds && opts.allowedGuilds.length > 0
-        ? new Set(opts.allowedGuilds)
-        : null;
+    this.allowedGuilds = opts.allowedGuilds && opts.allowedGuilds.length > 0 ? new Set(opts.allowedGuilds) : null;
   }
 
   async start(ctx: GatewayAdapterContext): Promise<void> {

@@ -16,13 +16,7 @@
  * represented by HypothesisTuple/OracleVerdict `type: 'unknown'` (A2).
  */
 
-export const CONFIDENCE_TIERS = [
-  'deterministic',
-  'heuristic',
-  'pragmatic',
-  'probabilistic',
-  'speculative',
-] as const;
+export const CONFIDENCE_TIERS = ['deterministic', 'heuristic', 'pragmatic', 'probabilistic', 'speculative'] as const;
 
 export type ConfidenceTier = (typeof CONFIDENCE_TIERS)[number];
 

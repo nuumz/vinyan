@@ -31,14 +31,17 @@ export function analyzeAntiPatterns(traces: TraceForAntiPattern[]): AntiPatternE
   if (failures.length < MIN_FAILURE_COUNT) return [];
 
   // Group failures by (approach + failed oracle) combination
-  const failureGroups = new Map<string, {
-    approach: string;
-    oracle: string;
-    count: number;
-    reasons: string[];
-    surprising: number; // count of high-prediction-error failures
-    files: Set<string>;
-  }>();
+  const failureGroups = new Map<
+    string,
+    {
+      approach: string;
+      oracle: string;
+      count: number;
+      reasons: string[];
+      surprising: number; // count of high-prediction-error failures
+      files: Set<string>;
+    }
+  >();
 
   for (const trace of failures) {
     const failedOracles = Object.entries(trace.oracleVerdicts)
@@ -87,9 +90,7 @@ export function analyzeAntiPatterns(traces: TraceForAntiPattern[]): AntiPatternE
     });
   }
 
-  return entries
-    .sort((a, b) => b.evidenceCount - a.evidenceCount)
-    .slice(0, SOUL_SECTION_LIMITS.antiPatterns);
+  return entries.sort((a, b) => b.evidenceCount - a.evidenceCount).slice(0, SOUL_SECTION_LIMITS.antiPatterns);
 }
 
 function buildCausalExplanation(group: {

@@ -162,7 +162,7 @@ const SINGLE_FILE_EXT = /\.[a-z0-9]{1,8}$/i;
  * marker. Plain nouns like "นิทาน" or "improvements" miss all three.
  */
 function looksLikePath(s: string): boolean {
-  return /^[\/~.]/.test(s) || s.includes('/') || SINGLE_FILE_EXT.test(s);
+  return /^[/~.]/.test(s) || s.includes('/') || SINGLE_FILE_EXT.test(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -290,17 +290,14 @@ export function resolveCommand(
 
 /** Normalize app name: lowercase, resolve Thai aliases, strip noise. */
 function normalizeAppName(raw: string): string {
-  let name = raw.toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/['"]/g, '');
+  let name = raw.toLowerCase().replace(/\s+/g, ' ').replace(/['"]/g, '');
 
   // Resolve Thai aliases
   const thaiAlias = THAI_APP_ALIASES.get(name);
   if (thaiAlias) return thaiAlias;
 
   // Strip common prefixes
-  name = name
-    .replace(/^(?:app|application|แอพ|แอป|โปรแกรม)\s+/i, '');
+  name = name.replace(/^(?:app|application|แอพ|แอป|โปรแกรม)\s+/i, '');
 
   return name;
 }

@@ -11,11 +11,7 @@
  * Source of truth: AgentProfile ultraplan + Phase 2 multi-agent plan.
  */
 import type { Database } from 'bun:sqlite';
-import type {
-  AgentPreferences,
-  AgentProfile,
-  AgentProfileSummary,
-} from '../orchestrator/types.ts';
+import type { AgentPreferences, AgentProfile, AgentProfileSummary } from '../orchestrator/types.ts';
 import { DEFAULT_AGENT_PREFERENCES } from '../orchestrator/types.ts';
 import { AgentProfileRowSchema } from './schemas.ts';
 
@@ -124,9 +120,9 @@ export class AgentProfileStore {
 
   /** List all agent profiles (host + specialists). Phase 2 multi-agent query. */
   findAll(): AgentProfile[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM agent_profile ORDER BY role, id`)
-      .all() as Array<Record<string, unknown>>;
+    const rows = this.db.prepare(`SELECT * FROM agent_profile ORDER BY role, id`).all() as Array<
+      Record<string, unknown>
+    >;
     return rows.map((r) => rowToProfile(r)).filter((p): p is AgentProfile => p !== null);
   }
 
@@ -142,9 +138,7 @@ export class AgentProfileStore {
     if (!current) return;
     const merged: AgentPreferences = { ...current.preferences, ...partial };
     this.db
-      .prepare(
-        `UPDATE agent_profile SET preferences_json = ?, updated_at = ? WHERE id = ?`,
-      )
+      .prepare(`UPDATE agent_profile SET preferences_json = ?, updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(merged), Date.now(), id);
     this.summaryCache = null;
   }
@@ -153,18 +147,14 @@ export class AgentProfileStore {
   updateCapabilities(capabilities: string[], id: string = HOST_AGENT_ID): void {
     const unique = Array.from(new Set(capabilities)).sort();
     this.db
-      .prepare(
-        `UPDATE agent_profile SET capabilities_json = ?, updated_at = ? WHERE id = ?`,
-      )
+      .prepare(`UPDATE agent_profile SET capabilities_json = ?, updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(unique), Date.now(), id);
   }
 
   /** Update VINYAN.md link + hash (called on every boot to track freshness). */
   updateVinyanMdLink(path: string | null, hash: string | null, id: string = HOST_AGENT_ID): void {
     this.db
-      .prepare(
-        `UPDATE agent_profile SET vinyan_md_path = ?, vinyan_md_hash = ?, updated_at = ? WHERE id = ?`,
-      )
+      .prepare(`UPDATE agent_profile SET vinyan_md_path = ?, vinyan_md_hash = ?, updated_at = ? WHERE id = ?`)
       .run(path, hash, Date.now(), id);
   }
 
@@ -221,9 +211,9 @@ export class AgentProfileStore {
     const lastSleepCycleAt = deps.db
       ? (() => {
           try {
-            const row = deps.db!
-              .prepare(`SELECT MAX(started_at) as t FROM sleep_cycle_runs`)
-              .get() as { t: number | null } | null;
+            const row = deps.db!.prepare(`SELECT MAX(started_at) as t FROM sleep_cycle_runs`).get() as {
+              t: number | null;
+            } | null;
             return row?.t ?? 0;
           } catch {
             return 0;
@@ -272,16 +262,12 @@ function rowToProfile(raw: unknown): AgentProfile {
   const r = parsed.data;
   const prefRaw = r.preferences_json as Record<string, unknown>;
   const preferences: AgentPreferences = {
-    approvalMode:
-      (prefRaw.approvalMode as AgentPreferences['approvalMode']) ??
-      DEFAULT_AGENT_PREFERENCES.approvalMode,
-    verbosity:
-      (prefRaw.verbosity as AgentPreferences['verbosity']) ?? DEFAULT_AGENT_PREFERENCES.verbosity,
+    approvalMode: (prefRaw.approvalMode as AgentPreferences['approvalMode']) ?? DEFAULT_AGENT_PREFERENCES.approvalMode,
+    verbosity: (prefRaw.verbosity as AgentPreferences['verbosity']) ?? DEFAULT_AGENT_PREFERENCES.verbosity,
     defaultThinkingLevel:
       (prefRaw.defaultThinkingLevel as AgentPreferences['defaultThinkingLevel']) ??
       DEFAULT_AGENT_PREFERENCES.defaultThinkingLevel,
-    language:
-      (prefRaw.language as AgentPreferences['language']) ?? DEFAULT_AGENT_PREFERENCES.language,
+    language: (prefRaw.language as AgentPreferences['language']) ?? DEFAULT_AGENT_PREFERENCES.language,
   };
 
   return {

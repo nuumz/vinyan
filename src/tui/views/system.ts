@@ -131,25 +131,30 @@ function renderMetricsPanel(state: TUIState, width: number, height: number, focu
 
   // Workers/Rules/Skills/Patterns — table layout
   const pad = (v: number, w = 2) => String(v).padStart(w);
-  const statRow = (label: string, cols: string[]) =>
-    `${bold(label.padEnd(10))} ${cols.join('  ')}`;
+  const statRow = (label: string, cols: string[]) => `${bold(label.padEnd(10))} ${cols.join('  ')}`;
 
-  lines.push(statRow('Workers:', [
-    color(pad(m.workers.active) + 'a', ANSI.green),
-    color(pad(m.workers.probation) + 'p', ANSI.yellow),
-    dim(pad(m.workers.demoted) + 'd'),
-    dim(pad(m.workers.retired ?? 0) + 'r'),
-  ]));
-  lines.push(statRow('Rules:', [
-    color(pad(m.rules.active) + 'a', ANSI.green),
-    color(pad(m.rules.probation) + 'p', ANSI.yellow),
-    dim(pad(m.rules.retired) + 'r'),
-  ]));
-  lines.push(statRow('Skills:', [
-    color(pad(m.skills.active) + 'a', ANSI.green),
-    color(pad(m.skills.probation) + 'p', ANSI.yellow),
-    dim(pad(m.skills.demoted) + 'd'),
-  ]));
+  lines.push(
+    statRow('Workers:', [
+      color(pad(m.workers.active) + 'a', ANSI.green),
+      color(pad(m.workers.probation) + 'p', ANSI.yellow),
+      dim(pad(m.workers.demoted) + 'd'),
+      dim(pad(m.workers.retired ?? 0) + 'r'),
+    ]),
+  );
+  lines.push(
+    statRow('Rules:', [
+      color(pad(m.rules.active) + 'a', ANSI.green),
+      color(pad(m.rules.probation) + 'p', ANSI.yellow),
+      dim(pad(m.rules.retired) + 'r'),
+    ]),
+  );
+  lines.push(
+    statRow('Skills:', [
+      color(pad(m.skills.active) + 'a', ANSI.green),
+      color(pad(m.skills.probation) + 'p', ANSI.yellow),
+      dim(pad(m.skills.demoted) + 'd'),
+    ]),
+  );
   lines.push('');
   lines.push(statRow('Patterns:', [bold(String(m.patterns.total))]));
   lines.push(statRow('Sleeps:', [String(m.patterns.sleepCyclesRun)]));

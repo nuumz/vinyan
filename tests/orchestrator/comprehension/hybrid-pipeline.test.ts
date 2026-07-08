@@ -10,11 +10,11 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { verifyComprehension } from '../../../src/oracle/comprehension/index.ts';
 import { newLlmComprehender } from '../../../src/orchestrator/comprehension/llm-comprehender.ts';
 import { mergeComprehensions } from '../../../src/orchestrator/comprehension/merge.ts';
 import { newRuleComprehender } from '../../../src/orchestrator/comprehension/rule-comprehender.ts';
 import type { ComprehensionInput } from '../../../src/orchestrator/comprehension/types.ts';
-import { verifyComprehension } from '../../../src/oracle/comprehension/index.ts';
 import type { LLMProvider, TaskInput } from '../../../src/orchestrator/types.ts';
 
 function provider(content: string): LLMProvider {
@@ -61,7 +61,15 @@ describe('hybrid pipeline — stage 1 + stage 2 merge', () => {
     const input = makeInput({
       goal: 'ok',
       history: [
-        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+        {
+          id: 't-0-1',
+          sessionId: 's',
+          seq: 0,
+          role: 'user',
+          blocks: [{ type: 'text', text: 'write a bedtime story' }],
+          tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+          createdAt: 1,
+        },
       ],
     });
     const s1 = await s1Engine.comprehend(input);
@@ -127,7 +135,15 @@ describe('hybrid pipeline — stage 1 + stage 2 merge', () => {
     const input = makeInput({
       goal: 'ok',
       history: [
-        { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'please write a bedtime story for my niece' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+        {
+          id: 't-0-1',
+          sessionId: 's',
+          seq: 0,
+          role: 'user',
+          blocks: [{ type: 'text', text: 'please write a bedtime story for my niece' }],
+          tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+          createdAt: 1,
+        },
       ],
     });
     // LLM returns a grounded resolvedGoal (appears in history).

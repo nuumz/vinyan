@@ -20,9 +20,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Fact } from '../../src/core/types.ts';
-import { verify as verifyAst } from '../../src/oracle/ast/ast-verifier.ts';
+import { verify as verifyAstResponse } from '../../src/oracle/ast/ast-verifier.ts';
 import { verify as verifyDep } from '../../src/oracle/dep/dep-analyzer.ts';
-import { clearTscCache, verify as verifyType } from '../../src/oracle/type/type-verifier.ts';
+import { clearTscCache, verify as verifyTypeResponse } from '../../src/oracle/type/type-verifier.ts';
+import { asVerdict } from '../../tests/helpers/oracle-verdict.ts';
+
+const verifyAst = (h: Parameters<typeof verifyAstResponse>[0]) => asVerdict(verifyAstResponse(h));
+const verifyType = async (h: Parameters<typeof verifyTypeResponse>[0]) => asVerdict(await verifyTypeResponse(h));
 import { WorldGraph } from '../../src/world-graph/world-graph.ts';
 
 describe('World Graph Lifecycle', () => {

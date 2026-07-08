@@ -7,11 +7,15 @@ import { loadConfig } from '../../src/config/loader.ts';
 import type { Fact, HypothesisTuple } from '../../src/core/types.ts';
 import { containsBypassAttempt } from '../../src/guardrails/bypass-detection.ts';
 import { detectPromptInjection } from '../../src/guardrails/prompt-injection.ts';
-import { verify as verifyAst } from '../../src/oracle/ast/ast-verifier.ts';
+import { verify as verifyAstResponse } from '../../src/oracle/ast/ast-verifier.ts';
 import { verify as verifyDep } from '../../src/oracle/dep/dep-analyzer.ts';
 import { runOracle } from '../../src/oracle/runner.ts';
-import { verify as verifyType } from '../../src/oracle/type/type-verifier.ts';
+import { verify as verifyTypeResponse } from '../../src/oracle/type/type-verifier.ts';
 import { WorldGraph } from '../../src/world-graph/world-graph.ts';
+import { asVerdict } from '../helpers/oracle-verdict.ts';
+
+const verifyAst = (h: HypothesisTuple) => asVerdict(verifyAstResponse(h));
+const verifyType = async (h: HypothesisTuple) => asVerdict(await verifyTypeResponse(h));
 
 describe('Oracle Gate Integration', () => {
   let tempDir: string;

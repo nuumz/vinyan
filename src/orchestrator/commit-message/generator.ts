@@ -184,7 +184,10 @@ export function generateCommitMessage(input: CommitMessageInput): CommitMessageO
   const title = truncate(titleBase, TITLE_MAX_LEN);
   const body =
     affected.length > 0
-      ? `Files:\n${affected.slice(0, 8).map((f) => `- ${f}`).join('\n')}`
+      ? `Files:\n${affected
+          .slice(0, 8)
+          .map((f) => `- ${f}`)
+          .join('\n')}`
       : '';
   const message = composeMessage(title, body, input.coAuthor);
   return { title, body, message, source: 'fallback', degraded: true };

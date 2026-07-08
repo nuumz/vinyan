@@ -19,7 +19,7 @@ import { randomUUID } from 'crypto';
 
 import type { VinyanBus } from '../../core/bus.ts';
 import type { TeamBlackboardEntry, TeamMemberRecord, TeamRecord, TeamStore } from '../../db/team-store.ts';
-import type { TeamBlackboardFs, FsBlackboardEntry } from './team-blackboard-fs.ts';
+import type { FsBlackboardEntry, TeamBlackboardFs } from './team-blackboard-fs.ts';
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -217,9 +217,7 @@ export class TeamManager {
     watcher.on('change', handler);
     watcher.on('error', (err: unknown) => {
       const e = err as { code?: string; message?: string };
-      console.warn(
-        `[vinyan] team-blackboard-watcher: ${e.code ?? 'error'} ${e.message ?? String(err)} (continuing)`,
-      );
+      console.warn(`[vinyan] team-blackboard-watcher: ${e.code ?? 'error'} ${e.message ?? String(err)} (continuing)`);
     });
 
     return () => {
@@ -280,8 +278,7 @@ export class TeamManager {
     if (!this.fsBlackboard) return null;
     // We don't have the original key — scan listKeys until one matches
     // the sanitized file. This is O(team size) but teams are small.
-    const sanitizedBase = (require('path') as typeof import('path'))
-      .basename(path, '.md');
+    const sanitizedBase = (require('path') as typeof import('path')).basename(path, '.md');
     for (const key of this.fsBlackboard.listKeys(teamId)) {
       const filePath = this.fsBlackboard.filePath(teamId, key);
       if ((require('path') as typeof import('path')).basename(filePath, '.md') === sanitizedBase) {

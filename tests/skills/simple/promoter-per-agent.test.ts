@@ -12,12 +12,11 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-import { runSimpleSkillPromoter } from '../../../src/skills/simple/promoter.ts';
-import { createSimpleSkillRegistry } from '../../../src/skills/simple/registry.ts';
-import { SkillArtifactStore } from '../../../src/skills/artifact-store.ts';
 import { SkillOutcomeStore } from '../../../src/db/skill-outcome-store.ts';
 import { SkillTrustLedgerStore } from '../../../src/db/skill-trust-ledger-store.ts';
+import { SkillArtifactStore } from '../../../src/skills/artifact-store.ts';
+import { runSimpleSkillPromoter } from '../../../src/skills/simple/promoter.ts';
+import { createSimpleSkillRegistry } from '../../../src/skills/simple/registry.ts';
 
 let workspace: string;
 let userDir: string;
@@ -199,7 +198,7 @@ describe('promoter — per-agent graduation', () => {
 
       const history = ledger.history('developer/audit', { profile: 'default' });
       expect(history.length).toBe(1);
-      expect((history[0]?.evidence.agentId as string)).toBe('developer');
+      expect(history[0]?.evidence.agentId as string).toBe('developer');
       expect(history[0]?.evidence.promotedFrom).toBe('simple-skill-layer');
     } finally {
       registry.close();

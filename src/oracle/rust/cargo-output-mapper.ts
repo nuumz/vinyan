@@ -78,7 +78,7 @@ function classifyRustError(diagnostic: CargoDiagnostic): OracleErrorCode {
   if (code === 'E0133') return 'UNSAFE_VIOLATION';
 
   // Heuristic fallbacks based on message content (order matters: more specific first)
-  if (msg.includes('lifetime') || msg.includes("doesn't live long enough") || msg.includes("does not live long enough"))
+  if (msg.includes('lifetime') || msg.includes("doesn't live long enough") || msg.includes('does not live long enough'))
     return 'LIFETIME_ERROR';
   if (msg.includes('borrow') || msg.includes('move') || msg.includes('moved')) return 'BORROW_CHECK';
   if (msg.includes('trait') && (msg.includes('not satisfied') || msg.includes('not implemented')))
@@ -139,9 +139,7 @@ export function parseCargoOutput(stdout: string, exitCode: number, durationMs: n
   const evidence: Evidence[] = errors.map(({ diagnostic, span }) => ({
     file: span?.file_name ?? '<unknown>',
     line: span?.line_start ?? 0,
-    snippet: diagnostic.code?.code
-      ? `[${diagnostic.code.code}] ${diagnostic.message}`
-      : diagnostic.message,
+    snippet: diagnostic.code?.code ? `[${diagnostic.code.code}] ${diagnostic.message}` : diagnostic.message,
   }));
 
   // Use the most specific error code from the first error
@@ -169,7 +167,12 @@ export function parseCargoOutput(stdout: string, exitCode: number, durationMs: n
 /**
  * Parse raw cargo output string. Handles both JSON and fallback plain-text output.
  */
-export function parseCargoCheckOutput(stdout: string, stderr: string, exitCode: number, durationMs: number): OracleVerdict {
+export function parseCargoCheckOutput(
+  stdout: string,
+  stderr: string,
+  exitCode: number,
+  durationMs: number,
+): OracleVerdict {
   // Try JSON parse first (from --message-format=json on stdout)
   if (stdout.trim() && stdout.includes('"reason"')) {
     return parseCargoOutput(stdout, exitCode, durationMs);
@@ -179,13 +182,14 @@ export function parseCargoCheckOutput(stdout: string, stderr: string, exitCode: 
   if (exitCode !== 0 && stderr.trim()) {
     const evidence: Evidence[] = [];
     const errorPattern = /^error(\[E\d+\])?: (.+)$/gm;
-    let match;
-    while ((match = errorPattern.exec(stderr)) !== null) {
+    let match = errorPattern.exec(stderr);
+    while (match !== null) {
       evidence.push({
         file: '<cargo>',
         line: 0,
         snippet: match[0]!,
       });
+      match = errorPattern.exec(stderr);
     }
 
     return buildVerdict({

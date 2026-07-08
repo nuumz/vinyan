@@ -43,16 +43,20 @@ describe('Skill Composition', () => {
   });
 
   test('findComposedSkill returns only active composed skills', () => {
-    store.insert(makeSkill({
-      taskSignature: 'composed::build-auth',
-      status: 'active',
-      composedOf: ['build-auth::jwt', 'build-auth::middleware'],
-    }));
-    store.insert(makeSkill({
-      taskSignature: 'composed::build-api',
-      status: 'demoted',
-      composedOf: ['build-api::routes', 'build-api::handlers'],
-    }));
+    store.insert(
+      makeSkill({
+        taskSignature: 'composed::build-auth',
+        status: 'active',
+        composedOf: ['build-auth::jwt', 'build-auth::middleware'],
+      }),
+    );
+    store.insert(
+      makeSkill({
+        taskSignature: 'composed::build-api',
+        status: 'demoted',
+        composedOf: ['build-api::routes', 'build-api::handlers'],
+      }),
+    );
 
     expect(store.findComposedSkill('composed::build-auth')).not.toBeNull();
     expect(store.findComposedSkill('composed::build-api')).toBeNull();
@@ -64,15 +68,19 @@ describe('Skill Composition', () => {
   });
 
   test('findAllComposed returns all composed skills regardless of status', () => {
-    store.insert(makeSkill({
-      taskSignature: 'composed::a',
-      composedOf: ['a::1', 'a::2'],
-    }));
-    store.insert(makeSkill({
-      taskSignature: 'composed::b',
-      status: 'demoted',
-      composedOf: ['b::1', 'b::2'],
-    }));
+    store.insert(
+      makeSkill({
+        taskSignature: 'composed::a',
+        composedOf: ['a::1', 'a::2'],
+      }),
+    );
+    store.insert(
+      makeSkill({
+        taskSignature: 'composed::b',
+        status: 'demoted',
+        composedOf: ['b::1', 'b::2'],
+      }),
+    );
     store.insert(makeSkill({ taskSignature: 'simple::c' }));
 
     const composed = store.findAllComposed();
@@ -107,11 +115,13 @@ describe('Skill Composition', () => {
 
   test('detectComposition skips already-existing composed skills', () => {
     // Pre-insert a composed skill
-    store.insert(makeSkill({
-      taskSignature: 'composed::build-auth',
-      status: 'active',
-      composedOf: ['build-auth::jwt', 'build-auth::middleware'],
-    }));
+    store.insert(
+      makeSkill({
+        taskSignature: 'composed::build-auth',
+        status: 'active',
+        composedOf: ['build-auth::jwt', 'build-auth::middleware'],
+      }),
+    );
 
     const skills: CachedSkill[] = [
       makeSkill({ taskSignature: 'build-auth::jwt', usageCount: 5 }),

@@ -265,7 +265,11 @@ describe('A8 escalationPath accumulation across re-routes', () => {
     const traces: any[] = [];
     let assessCallCount = 0;
     const deps = buildBaseDeps({
-      traceCollector: { record: async (t: any) => { traces.push(t); } },
+      traceCollector: {
+        record: async (t: any) => {
+          traces.push(t);
+        },
+      },
       // Force every iteration to fail verification → outer loop escalates each time
       oracleGate: {
         verify: async () => ({ passed: false, verdicts: {}, reason: 'forced-fail' }),

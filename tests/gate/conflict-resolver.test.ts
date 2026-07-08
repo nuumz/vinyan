@@ -150,7 +150,11 @@ describe('resolveConflicts — Phase 4.8: SL-based resolution', () => {
     const result = resolveConflicts(
       {
         ast: makeVerdict({ verified: true, opinion: { belief: 0.6, disbelief: 0.2, uncertainty: 0.2, baseRate: 0.5 } }),
-        type: makeVerdict({ verified: false, reason: 'uncertain rejection', opinion: { belief: 0.2, disbelief: 0.5, uncertainty: 0.3, baseRate: 0.5 } }),
+        type: makeVerdict({
+          verified: false,
+          reason: 'uncertain rejection',
+          opinion: { belief: 0.2, disbelief: 0.5, uncertainty: 0.3, baseRate: 0.5 },
+        }),
       },
       config,
     );
@@ -173,7 +177,11 @@ describe('resolveConflicts — Phase 4.8: SL-based resolution', () => {
     const result = resolveConflicts(
       {
         ast: makeVerdict({ verified: true, opinion: { belief: 0.3, disbelief: 0.2, uncertainty: 0.5, baseRate: 0.5 } }),
-        type: makeVerdict({ verified: false, reason: 'weighted rejection', opinion: { belief: 0.2, disbelief: 0.6, uncertainty: 0.2, baseRate: 0.5 } }),
+        type: makeVerdict({
+          verified: false,
+          reason: 'weighted rejection',
+          opinion: { belief: 0.2, disbelief: 0.6, uncertainty: 0.2, baseRate: 0.5 },
+        }),
       },
       config,
     );
@@ -188,7 +196,11 @@ describe('resolveConflicts — Phase 4.8: SL-based resolution', () => {
     const result = resolveConflicts(
       {
         ast: makeVerdict({ verified: true, opinion: { belief: 0.6, disbelief: 0.2, uncertainty: 0.2, baseRate: 0.5 } }),
-        type: makeVerdict({ verified: false, reason: 'rejection', opinion: { belief: 0.2, disbelief: 0.5, uncertainty: 0.3, baseRate: 0.5 } }),
+        type: makeVerdict({
+          verified: false,
+          reason: 'rejection',
+          opinion: { belief: 0.2, disbelief: 0.5, uncertainty: 0.3, baseRate: 0.5 },
+        }),
       },
       { oracleTiers: { ast: 'deterministic', type: 'deterministic' }, informationalOracles: new Set() },
     );

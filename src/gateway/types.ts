@@ -15,13 +15,7 @@
  * envelope.
  */
 
-export type GatewayPlatform =
-  | 'telegram'
-  | 'slack'
-  | 'discord'
-  | 'whatsapp'
-  | 'signal'
-  | 'email';
+export type GatewayPlatform = 'telegram' | 'slack' | 'discord' | 'whatsapp' | 'signal' | 'email';
 
 /**
  * Minimum shape every messaging adapter must expose. Registered with the

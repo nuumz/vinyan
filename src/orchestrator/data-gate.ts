@@ -66,9 +66,7 @@ const FEATURE_CONDITIONS: Record<string, Array<{ metric: DataGateMetric; thresho
     { metric: 'active_workers', thresholdKey: 'fleet_min_active_workers' },
     { metric: 'worker_trace_diversity', thresholdKey: 'fleet_min_worker_trace_diversity' },
   ],
-  thinking_calibration: [
-    { metric: 'thinking_trace_count', thresholdKey: 'thinking_calibration_min_traces' },
-  ],
+  thinking_calibration: [{ metric: 'thinking_trace_count', thresholdKey: 'thinking_calibration_min_traces' }],
   uncertainty_signal: [
     { metric: 'thinking_trace_count', thresholdKey: 'thinking_uncertainty_min_traces' },
     { metric: 'thinking_distinct_task_types', thresholdKey: 'thinking_uncertainty_min_task_types' },

@@ -203,9 +203,9 @@ describeSemantic('ContextRetriever — semantic layer (sqlite-vec available)', (
     const retriever = new ContextRetriever(db, store, provider);
     await retriever.indexTurn(t);
 
-    const meta = db
-      .query('SELECT turn_id, model_id FROM turn_embedding_meta WHERE turn_id = ?')
-      .get(t.id) as { turn_id: string; model_id: string } | undefined;
+    const meta = db.query('SELECT turn_id, model_id FROM turn_embedding_meta WHERE turn_id = ?').get(t.id) as
+      | { turn_id: string; model_id: string }
+      | undefined;
     expect(meta).toBeDefined();
     expect(meta?.model_id).toBe('mock');
   });

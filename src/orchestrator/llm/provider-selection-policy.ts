@@ -82,4 +82,3 @@ function canWait(err: NormalizedLLMProviderError, ctx: PolicyContext): boolean {
   if (err.retryAfterMs > POLICY_WAIT_THRESHOLD_MS) return false;
   return ctx.remainingBudgetMs - err.retryAfterMs >= POLICY_BUDGET_FLOOR_MS;
 }
-

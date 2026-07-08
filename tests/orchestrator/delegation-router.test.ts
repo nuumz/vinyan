@@ -383,7 +383,7 @@ describe('buildSubTaskInput', () => {
 
   // R4 — capability token issuance (closes the runtime delegation gap).
   describe('capability token issuance', () => {
-    it("explore: token forbids mutation tools, allowedPaths empty (read-only walks freely)", () => {
+    it('explore: token forbids mutation tools, allowedPaths empty (read-only walks freely)', () => {
       const request: DelegationRequest = {
         goal: 'Survey imports',
         targetFiles: ['src/foo.ts', 'src/bar.ts'],
@@ -442,7 +442,7 @@ describe('buildSubTaskInput', () => {
       expect(token.forbiddenTools).not.toContain('file_write');
     });
 
-    it("provenance carries the delegation rationale for replay (A8)", () => {
+    it('provenance carries the delegation rationale for replay (A8)', () => {
       const request: DelegationRequest = {
         goal: 'Refactor helper module',
         targetFiles: ['src/foo.ts'],
@@ -474,12 +474,7 @@ describe('buildSubTaskInput', () => {
     it('always issues a token (no silent undefined on the delegated path)', () => {
       // Even with the most minimal request, a token must be produced —
       // missing token on the delegated path is forbidden by spec.
-      const result = buildSubTaskInput(
-        { goal: 'noop', targetFiles: [] },
-        makeParent(),
-        makeRouting(),
-        makeBudget(),
-      );
+      const result = buildSubTaskInput({ goal: 'noop', targetFiles: [] }, makeParent(), makeRouting(), makeBudget());
       expect(result.capabilityToken).toBeDefined();
     });
   });

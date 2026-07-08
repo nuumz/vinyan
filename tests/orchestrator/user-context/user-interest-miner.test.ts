@@ -3,14 +3,13 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { SessionStore } from '../../../src/db/session-store.ts';
-import type { Turn } from '../../../src/orchestrator/types.ts';
 import type { TraceStore } from '../../../src/db/trace-store.ts';
-import type { ExecutionTrace } from '../../../src/orchestrator/types.ts';
+import type { ExecutionTrace, Turn } from '../../../src/orchestrator/types.ts';
+import { EMPTY_SNAPSHOT, isEmpty } from '../../../src/orchestrator/user-context/types.ts';
 import {
   formatUserContextForPrompt,
   UserInterestMiner,
 } from '../../../src/orchestrator/user-context/user-interest-miner.ts';
-import { EMPTY_SNAPSHOT, isEmpty } from '../../../src/orchestrator/user-context/types.ts';
 
 // ---------------------------------------------------------------------------
 // Stubs
@@ -104,9 +103,7 @@ describe('UserInterestMiner (task-type aggregation)', () => {
       ...Array.from({ length: 6 }, () =>
         makeTrace({ taskTypeSignature: 'write::essay::medium', timestamp: now - 1000 }),
       ),
-      ...Array.from({ length: 3 }, () =>
-        makeTrace({ taskTypeSignature: 'fix::ts::small', timestamp: now - 2000 }),
-      ),
+      ...Array.from({ length: 3 }, () => makeTrace({ taskTypeSignature: 'fix::ts::small', timestamp: now - 2000 })),
       makeTrace({ taskTypeSignature: 'refactor::py::medium', timestamp: now - 5000 }),
     ];
     const miner = new UserInterestMiner({ traceStore: stubTraceStore(traces), now: () => now });
@@ -199,9 +196,7 @@ describe('UserInterestMiner (session keywords)', () => {
   test('respects minKeywordLen', () => {
     const now = Date.now();
     const sessionId = 's';
-    const messages = [
-      msg(sessionId, 'user', 'ab webtoon cd novel', now - 1000),
-    ];
+    const messages = [msg(sessionId, 'user', 'ab webtoon cd novel', now - 1000)];
     const miner = new UserInterestMiner({
       sessionStore: stubSessionStore({ [sessionId]: messages }),
       now: () => now,

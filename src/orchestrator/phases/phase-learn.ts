@@ -85,12 +85,18 @@ function selectCapabilityFit(intentResolution: IntentResolution): CapabilityFit 
   );
 }
 
-export async function executeLearnPhase(
-  ctx: PhaseContext,
-  li: LearnInput,
-): Promise<LearnResult> {
+export async function executeLearnPhase(ctx: PhaseContext, li: LearnInput): Promise<LearnResult> {
   const { input, deps } = ctx;
-  const { routing, understanding, prediction, forwardPrediction, verification, trace, isAgenticResult, lastAgentResult } = li;
+  const {
+    routing,
+    understanding,
+    prediction,
+    forwardPrediction,
+    verification,
+    trace,
+    isAgenticResult,
+    lastAgentResult,
+  } = li;
 
   // ── SelfModel calibration ──
   if (prediction && deps.selfModel.calibrate) {
@@ -112,7 +118,9 @@ export async function executeLearnPhase(
         if (deps.errorAttributionBus && Math.abs(predictionError.error.composite) > 0.3) {
           try {
             deps.errorAttributionBus.attributeError(predictionError, trace);
-          } catch { /* attribution is best-effort */ }
+          } catch {
+            /* attribution is best-effort */
+          }
         }
       }
     } catch (calibErr) {
@@ -168,7 +176,9 @@ export async function executeLearnPhase(
   // ── STU Phase D: Understanding calibration (A7) ──
   if (understanding.understandingDepth >= 1) {
     try {
-      const { calibrateUnderstanding, computeEnrichedSignature } = await import('../understanding/understanding-calibrator.ts');
+      const { calibrateUnderstanding, computeEnrichedSignature } = await import(
+        '../understanding/understanding-calibrator.ts'
+      );
       const calibration = calibrateUnderstanding(understanding, trace);
       deps.bus?.emit('understanding:calibration', {
         taskId: input.id,
@@ -254,14 +264,14 @@ export async function executeLearnPhase(
 
   // ── STU Phase D: Record understanding snapshot ──
   trace.understandingDepth = understanding.understandingDepth;
-  trace.understandingIntent = understanding.semanticIntent
-    ? JSON.stringify(understanding.semanticIntent)
-    : undefined;
+  trace.understandingIntent = understanding.semanticIntent ? JSON.stringify(understanding.semanticIntent) : undefined;
   trace.resolvedEntities =
     understanding.resolvedEntities.length > 0 ? JSON.stringify(understanding.resolvedEntities) : undefined;
   trace.understandingVerified =
     understanding.verifiedClaims.length > 0
-      ? understanding.verifiedClaims.every((c) => c.type === 'known') ? 1 : 0
+      ? understanding.verifiedClaims.every((c) => c.type === 'known')
+        ? 1
+        : 0
       : undefined;
   trace.understandingPrimaryAction = understanding.semanticIntent?.primaryAction;
 

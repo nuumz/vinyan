@@ -61,12 +61,8 @@ export class AgentRuntimeStore {
          last_transition_at, last_transition_reason, last_heartbeat_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
-    this.sListByState = db.prepare(
-      'SELECT * FROM agent_runtime WHERE state = ? ORDER BY agent_id',
-    );
-    this.sUpdateHeartbeat = db.prepare(
-      'UPDATE agent_runtime SET last_heartbeat_at = ? WHERE agent_id = ?',
-    );
+    this.sListByState = db.prepare('SELECT * FROM agent_runtime WHERE state = ? ORDER BY agent_id');
+    this.sUpdateHeartbeat = db.prepare('UPDATE agent_runtime SET last_heartbeat_at = ? WHERE agent_id = ?');
 
     const sUpdate = db.prepare(`
       UPDATE agent_runtime
@@ -98,23 +94,9 @@ export class AgentRuntimeStore {
       if (p.resetActiveTaskCount) {
         sUpdateReset.run(p.toState, p.at, p.reason, p.at, p.agentId);
       } else {
-        sUpdate.run(
-          p.toState,
-          p.activeTaskCountDelta,
-          p.at,
-          p.reason,
-          p.at,
-          p.agentId,
-        );
+        sUpdate.run(p.toState, p.activeTaskCountDelta, p.at, p.reason, p.at, p.agentId);
       }
-      sLog.run(
-        p.agentId,
-        p.fromState,
-        p.toState,
-        p.reason,
-        p.taskId ?? null,
-        p.at,
-      );
+      sLog.run(p.agentId, p.fromState, p.toState, p.reason, p.taskId ?? null, p.at);
     }) as (p: ApplyTransitionParams) => void;
   }
 

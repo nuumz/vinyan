@@ -361,9 +361,7 @@ async function maybeRegisterSlack(input: WireGatewayInput): Promise<void> {
   if (!slackCfg?.enabled) return;
 
   if (!slackCfg.appToken || !slackCfg.botToken) {
-    input.warnings.push(
-      'gateway.slack.enabled but appToken and/or botToken absent — slack adapter not registered',
-    );
+    input.warnings.push('gateway.slack.enabled but appToken and/or botToken absent — slack adapter not registered');
     return;
   }
 
@@ -395,9 +393,7 @@ async function maybeRegisterDiscord(input: WireGatewayInput): Promise<void> {
   if (!discordCfg?.enabled) return;
 
   if (!discordCfg.botToken) {
-    input.warnings.push(
-      'gateway.discord.enabled but botToken absent — discord adapter not registered',
-    );
+    input.warnings.push('gateway.discord.enabled but botToken absent — discord adapter not registered');
     return;
   }
 

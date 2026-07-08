@@ -161,9 +161,11 @@ export class GatewayIdentityStore {
    * Atomically validate + consume a pairing token. On success the token
    * row is flipped to `consumed`; a second call returns `already-consumed`.
    */
-  consumePairingToken(args: { token: string; consumedBy: string; nowMs: number }):
-    | { ok: true; row: PairingTokenRow }
-    | { ok: false; reason: 'not-found' | 'expired' | 'already-consumed' } {
+  consumePairingToken(args: {
+    token: string;
+    consumedBy: string;
+    nowMs: number;
+  }): { ok: true; row: PairingTokenRow } | { ok: false; reason: 'not-found' | 'expired' | 'already-consumed' } {
     const row = this.db
       .prepare(
         `SELECT token, profile, platform, issued_at, expires_at, consumed_at, consumed_by

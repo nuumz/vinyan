@@ -18,6 +18,8 @@ export function recordEvents(bus: VinyanBus, events: BusEventName[]) {
   );
   return {
     records,
-    cleanup: () => unsubs.forEach((u) => u()),
+    cleanup: () => {
+      for (const u of unsubs) u();
+    },
   };
 }

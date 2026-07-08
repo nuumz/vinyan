@@ -177,11 +177,7 @@ describe('selectRoomContract — creative-writing bypass', () => {
 
   it('still respects the routing level floor even for creative goals', () => {
     expect(
-      selectRoomContract(
-        makeFanInDag(),
-        makeRouting({ level: 1 }),
-        makeInput({ goal: 'write a webtoon novel' }),
-      ),
+      selectRoomContract(makeFanInDag(), makeRouting({ level: 1 }), makeInput({ goal: 'write a webtoon novel' })),
     ).toBeNull();
   });
 

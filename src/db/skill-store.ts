@@ -193,9 +193,7 @@ export class SkillStore {
 
     for (const [prefix, sigMap] of coOccurrences) {
       // Only propose composition when ≥2 sub-skills co-occur ≥threshold times
-      const qualifiedSigs = [...sigMap.entries()]
-        .filter(([, count]) => count >= threshold)
-        .map(([sig]) => sig);
+      const qualifiedSigs = [...sigMap.entries()].filter(([, count]) => count >= threshold).map(([sig]) => sig);
 
       if (qualifiedSigs.length >= 2) {
         // Check this composition doesn't already exist

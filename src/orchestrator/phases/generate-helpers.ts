@@ -3,8 +3,8 @@
  */
 
 import type { WorkerLoopResult } from '../agent/agent-loop.ts';
-import type { AgentSessionSummary, ExecutionTrace, SelfModelPrediction } from '../types.ts';
 import type { OutcomePrediction, PredictionOutcome } from '../forward-predictor-types.ts';
+import type { AgentSessionSummary, ExecutionTrace, SelfModelPrediction } from '../types.ts';
 
 /** Build retry context from an agentic session result (Phase 6.3). */
 export function buildAgentSessionSummary(
@@ -30,10 +30,7 @@ export function buildAgentSessionSummary(
  * Map ExecutionTrace outcome to ForwardPredictor PredictionOutcome.
  * Only records outcomes that reflect test results; skips infrastructure failures.
  */
-export function mapTraceToFPOutcome(
-  predictionId: string,
-  trace: ExecutionTrace,
-): PredictionOutcome | undefined {
+export function mapTraceToFPOutcome(predictionId: string, trace: ExecutionTrace): PredictionOutcome | undefined {
   let testResult: 'pass' | 'partial' | 'fail';
   switch (trace.outcome) {
     case 'success':

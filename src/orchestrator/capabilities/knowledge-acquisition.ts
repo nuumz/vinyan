@@ -66,7 +66,10 @@ export interface KnowledgeProvider {
   /** Provider id used by KnowledgeAcquisitionRequest.providers. */
   readonly id: KnowledgeProviderId;
   /** Best-effort evidence collection. Throwing providers are isolated by acquireKnowledge(). */
-  collect(req: KnowledgeAcquisitionRequest, ctx: KnowledgeProviderContext): Promise<KnowledgeContext[]> | KnowledgeContext[];
+  collect(
+    req: KnowledgeAcquisitionRequest,
+    ctx: KnowledgeProviderContext,
+  ): Promise<KnowledgeContext[]> | KnowledgeContext[];
 }
 
 export interface ResearchPlanningOptions {

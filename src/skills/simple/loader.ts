@@ -159,19 +159,13 @@ function scopeRank(scope: SimpleSkillScope): number {
  * Each subdir under `agentsRoot` is treated as a candidate `agentId`; missing
  * `skills/` subdirectory is silently skipped.
  */
-function scanAgentRoot(
-  agentsRoot: string,
-  scope: 'user-agent' | 'project-agent',
-  failed: string[],
-): SimpleSkill[] {
+function scanAgentRoot(agentsRoot: string, scope: 'user-agent' | 'project-agent', failed: string[]): SimpleSkill[] {
   if (!existsSync(agentsRoot)) return [];
   let agentEntries: string[];
   try {
     agentEntries = readdirSync(agentsRoot);
   } catch (err) {
-    console.warn(
-      `[skill:simple-loader] cannot read ${agentsRoot} (${scope}): ${(err as Error).message}`,
-    );
+    console.warn(`[skill:simple-loader] cannot read ${agentsRoot} (${scope}): ${(err as Error).message}`);
     return [];
   }
 
@@ -186,20 +180,13 @@ function scanAgentRoot(
   return out;
 }
 
-function scanScope(
-  rootDir: string,
-  scope: SimpleSkillScope,
-  failed: string[],
-  agentId?: string,
-): SimpleSkill[] {
+function scanScope(rootDir: string, scope: SimpleSkillScope, failed: string[], agentId?: string): SimpleSkill[] {
   if (!existsSync(rootDir)) return [];
   let entries: string[];
   try {
     entries = readdirSync(rootDir);
   } catch (err) {
-    console.warn(
-      `[skill:simple-loader] cannot read ${rootDir} (${scope}): ${(err as Error).message}`,
-    );
+    console.warn(`[skill:simple-loader] cannot read ${rootDir} (${scope}): ${(err as Error).message}`);
     return [];
   }
 

@@ -11,7 +11,6 @@
  * they lack the session context needed to justify a new convention.
  */
 
-import type { ToolResult } from '../types.ts';
 import {
   type MemoryProposal,
   type ProposalCategory,
@@ -19,6 +18,7 @@ import {
   type ProposalTier,
   writeProposal,
 } from '../memory/memory-proposals.ts';
+import type { ToolResult } from '../types.ts';
 import type { Tool, ToolDescriptor } from './tool-interface.ts';
 
 /**
@@ -53,9 +53,7 @@ function coerceProposal(params: Record<string, unknown>): MemoryProposal {
     };
   });
 
-  const applyTo = Array.isArray(params.apply_to)
-    ? (params.apply_to as unknown[]).map((g) => String(g))
-    : undefined;
+  const applyTo = Array.isArray(params.apply_to) ? (params.apply_to as unknown[]).map((g) => String(g)) : undefined;
 
   return {
     slug: String(params.slug ?? ''),
@@ -113,7 +111,7 @@ export const memoryPropose: Tool = {
           },
           body: {
             type: 'string',
-            description: 'Markdown body with the full proposed rule text (do/don\'t examples, rationale).',
+            description: "Markdown body with the full proposed rule text (do/don't examples, rationale).",
           },
           apply_to: {
             type: 'array',

@@ -17,7 +17,7 @@
  * for L1+ tasks.
  */
 
-import type { ReasoningEngine, RERequest } from '../../orchestrator/types.ts';
+import type { RERequest, ReasoningEngine } from '../../orchestrator/types.ts';
 import type {
   BackendHandle,
   BackendSpawnSpec,

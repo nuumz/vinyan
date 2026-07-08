@@ -104,9 +104,10 @@ export function ecpDataPartToVerdict(dataPart: ECPDataPart, peerTrust: PeerTrust
     tierReliability: (dataPart as Record<string, unknown>).tier_reliability as number | undefined,
     engineCertainty: (dataPart as Record<string, unknown>).engine_certainty as number | undefined,
     // A6 trust override: untrusted peers' confidenceSource is downgraded to 'llm-self-report'
-    confidenceSource: peerTrust === 'untrusted'
-      ? 'llm-self-report'
-      : ((dataPart as Record<string, unknown>).confidence_source as OracleVerdict['confidenceSource'] | undefined),
+    confidenceSource:
+      peerTrust === 'untrusted'
+        ? 'llm-self-report'
+        : ((dataPart as Record<string, unknown>).confidence_source as OracleVerdict['confidenceSource'] | undefined),
   });
 }
 

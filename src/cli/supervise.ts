@@ -22,8 +22,8 @@
  * The child runs when VINYAN_SUPERVISED=1 is set in its env.
  */
 
-import { watch, type FSWatcher } from 'chokidar';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
+import { type FSWatcher, watch } from 'chokidar';
 import { join } from 'path';
 import { loadConfig } from '../config/index.ts';
 import {
@@ -124,7 +124,11 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
     removePidFile(supervisorPidPath);
     const c = currentChild;
     if (c && !c.killed) {
-      try { c.kill('SIGKILL'); } catch { /* already gone */ }
+      try {
+        c.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
     }
   });
 
@@ -151,7 +155,11 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
       // Second signal = user is insistent. Hard-kill the child and
       // exit immediately so the user is not stranded.
       console.error('[vinyan-supervisor] Second signal received — SIGKILL + exit');
-      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* ignore */
+      }
       process.exit(1);
     }
 
@@ -161,11 +169,19 @@ export async function superviseServe(workspace: string, originalArgv: string[]):
     // shutdown — direct SIGHUP forwarding would kill the child without
     // letting it suspend sessions / flush state.
     const forwardSignal: 'SIGTERM' | 'SIGINT' = signal === 'SIGHUP' ? 'SIGTERM' : signal;
-    try { child.kill(forwardSignal); } catch { /* ignore */ }
+    try {
+      child.kill(forwardSignal);
+    } catch {
+      /* ignore */
+    }
     const escalate = setTimeout(() => {
       if (child.killed) return;
       console.error(`[vinyan-supervisor] Child did not exit after ${FORCE_KILL_MS}ms — SIGKILL`);
-      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* ignore */
+      }
     }, FORCE_KILL_MS);
     (escalate as { unref?: () => void }).unref?.();
 

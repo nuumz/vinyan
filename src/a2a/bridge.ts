@@ -222,11 +222,7 @@ export class A2ABridge {
     // aligned with A2A's `A2ATaskState` `'input-required'`, so it bridges
     // directly without translation.
     const state: A2ATask['status']['state'] =
-      result.status === 'completed'
-        ? 'completed'
-        : result.status === 'input-required'
-          ? 'input-required'
-          : 'failed';
+      result.status === 'completed' ? 'completed' : result.status === 'input-required' ? 'input-required' : 'failed';
 
     // Build artifacts from mutations — apply I13 confidence cap on verdicts
     const artifacts = result.mutations.map((m) => {

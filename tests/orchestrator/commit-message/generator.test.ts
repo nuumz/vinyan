@@ -13,9 +13,7 @@ function makeSpec(summary: string): SpecArtifact {
     ],
     apiShape: [],
     dataContracts: [],
-    edgeCases: [
-      { id: 'ec-1', scenario: 'Budget zero', expected: 'reject', severity: 'blocker' },
-    ],
+    edgeCases: [{ id: 'ec-1', scenario: 'Budget zero', expected: 'reject', severity: 'blocker' }],
     openQuestions: [],
   };
 }
@@ -53,9 +51,7 @@ describe('generateCommitMessage — spec source', () => {
 
   test('truncates long titles to ≤72 chars', () => {
     const out = generateCommitMessage({
-      spec: makeSpec(
-        'Add ' + 'very '.repeat(30) + 'long summary that would exceed the title length budget',
-      ),
+      spec: makeSpec('Add ' + 'very '.repeat(30) + 'long summary that would exceed the title length budget'),
     });
     expect(out.title.length).toBeLessThanOrEqual(72);
   });

@@ -8,7 +8,7 @@
  * - module-tidy → `go mod tidy -diff`
  */
 
-import { buildVerdict } from '../../core/index.ts';
+import { buildVerdict, type OracleVerdict } from '../../core/index.ts';
 import { fromScalar } from '../../core/subjective-opinion.ts';
 import { HypothesisTupleSchema } from '../protocol.ts';
 import { parseGoBuildOutput, parseGoModTidyOutput, parseGoVetOutput } from './go-output-mapper.ts';
@@ -70,7 +70,7 @@ async function runCommand(cmd: string[], opts?: { captureStdout?: boolean }) {
   return { ...result, durationMs };
 }
 
-let verdict;
+let verdict: OracleVerdict;
 
 switch (pattern) {
   case 'type-check':

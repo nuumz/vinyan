@@ -77,9 +77,7 @@ export interface RegisterDefaultMemoryResult {
 const PLUGIN_ID = 'vinyan.default.memory';
 const ZERO_SHA = '0'.repeat(64);
 
-export async function registerDefaultMemory(
-  opts: RegisterDefaultMemoryOptions,
-): Promise<RegisterDefaultMemoryResult> {
+export async function registerDefaultMemory(opts: RegisterDefaultMemoryOptions): Promise<RegisterDefaultMemoryResult> {
   const manifest = buildDefaultMemoryManifest();
 
   // Try the optional internal-ingest path first.

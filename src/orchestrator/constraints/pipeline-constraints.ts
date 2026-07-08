@@ -49,10 +49,7 @@ export const PIPELINE_CONSTRAINT_PREFIXES = [
 ] as const;
 
 /** Exact-match pipeline tokens (not prefixed payloads). */
-export const PIPELINE_CONSTRAINT_TOKENS = new Set<string>([
-  'THINKING:enabled',
-  'TOOLS:enabled',
-]);
+export const PIPELINE_CONSTRAINT_TOKENS = new Set<string>(['THINKING:enabled', 'TOOLS:enabled']);
 
 export interface PartitionedConstraints {
   /** Raw user intent — safe to render into LLM prompts verbatim. */
@@ -69,9 +66,7 @@ export interface PartitionedConstraints {
  * Ordering within each half preserves input order (constraints are
  * order-sensitive for some consumers).
  */
-export function partitionConstraints(
-  constraints: readonly string[] | null | undefined,
-): PartitionedConstraints {
+export function partitionConstraints(constraints: readonly string[] | null | undefined): PartitionedConstraints {
   if (!constraints || constraints.length === 0) {
     return { user: [], pipeline: [] };
   }
@@ -100,8 +95,6 @@ export function isPipelineConstraint(constraint: string): boolean {
  * Convenience: just the user entries, as a new array. Call-site sugar
  * for the common case `partitionConstraints(x).user`.
  */
-export function userConstraintsOnly(
-  constraints: readonly string[] | null | undefined,
-): string[] {
+export function userConstraintsOnly(constraints: readonly string[] | null | undefined): string[] {
   return [...partitionConstraints(constraints).user];
 }

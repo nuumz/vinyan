@@ -36,9 +36,7 @@ export interface ResearchCueDetection {
   /** Should a research step be injected at the top of the workflow? */
   needsResearch: boolean;
   /** Which detector fired (for observability). */
-  reason?:
-    | 'explicit-research-cue'
-    | 'long-form-creative';
+  reason?: 'explicit-research-cue' | 'long-form-creative';
   /** Human-readable brief to inject into the step description. */
   brief?: string;
 }
@@ -56,7 +54,8 @@ export function detectResearchCues(goal: string): ResearchCueDetection {
     return {
       needsResearch: true,
       reason: 'explicit-research-cue',
-      brief: 'Research current trends, market signals, and audience preferences relevant to the goal. Use LLM training knowledge only — do NOT attempt external web access.',
+      brief:
+        'Research current trends, market signals, and audience preferences relevant to the goal. Use LLM training knowledge only — do NOT attempt external web access.',
     };
   }
 
@@ -64,7 +63,8 @@ export function detectResearchCues(goal: string): ResearchCueDetection {
     return {
       needsResearch: true,
       reason: 'long-form-creative',
-      brief: 'Before drafting, research current trends, popular genres, and audience preferences for this creative topic. Use LLM training knowledge only.',
+      brief:
+        'Before drafting, research current trends, popular genres, and audience preferences for this creative topic. Use LLM training knowledge only.',
     };
   }
 
@@ -95,26 +95,22 @@ export function buildResearchStep(brief: string): WorkflowStep {
  * If a step with the research id already exists in `steps`, the original list
  * is returned unchanged — planner-generated research takes precedence.
  */
-export function prependResearchStep(
-  steps: WorkflowStep[],
-  researchStep: WorkflowStep,
-): WorkflowStep[] {
+export function prependResearchStep(steps: WorkflowStep[], researchStep: WorkflowStep): WorkflowStep[] {
   if (steps.some((s) => s.id === researchStep.id)) return steps;
 
-  const rewired = steps.map((s) =>
-    s.dependencies.length === 0
-      ? { ...s, dependencies: [researchStep.id] }
-      : s,
-  );
+  const rewired = steps.map((s) => (s.dependencies.length === 0 ? { ...s, dependencies: [researchStep.id] } : s));
 
   // Down-scale original steps' budget fractions to keep total ≤ 1.0.
   const originalTotal = rewired.reduce((sum, s) => sum + (s.budgetFraction ?? 0), 0);
   const remaining = Math.max(0, 1 - researchStep.budgetFraction);
   const scale = originalTotal > 0 && originalTotal > remaining ? remaining / originalTotal : 1;
-  const scaled = scale === 1 ? rewired : rewired.map((s) => ({
-    ...s,
-    budgetFraction: Number((s.budgetFraction * scale).toFixed(3)),
-  }));
+  const scaled =
+    scale === 1
+      ? rewired
+      : rewired.map((s) => ({
+          ...s,
+          budgetFraction: Number((s.budgetFraction * scale).toFixed(3)),
+        }));
 
   return [researchStep, ...scaled];
 }

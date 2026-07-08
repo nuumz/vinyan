@@ -1,10 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { classifyMutation } from '../../../src/oracle/commonsense/mutation-classifier.ts';
-import {
-  extractApplicationContext,
-  selectMicrotheory,
-} from '../../../src/oracle/commonsense/microtheory-selector.ts';
 import type { HypothesisTuple } from '../../../src/core/types.ts';
+import { extractApplicationContext, selectMicrotheory } from '../../../src/oracle/commonsense/microtheory-selector.ts';
+import { classifyMutation } from '../../../src/oracle/commonsense/mutation-classifier.ts';
 
 describe('classifyMutation', () => {
   test('read-only tools', () => {
@@ -63,9 +60,7 @@ describe('extractApplicationContext', () => {
   });
 
   test('extracts tool from context', () => {
-    const ctx = extractApplicationContext(
-      makeHypothesis({ context: { tool: 'edit_file' } }),
-    );
+    const ctx = extractApplicationContext(makeHypothesis({ context: { tool: 'edit_file' } }));
     expect(ctx.command).toBe('edit_file');
   });
 
@@ -91,12 +86,8 @@ describe('extractApplicationContext', () => {
   });
 
   test('extracts compound TypeScript extensions', () => {
-    expect(
-      extractApplicationContext(makeHypothesis({ target: 'src/foo.tsx' })).file_extension,
-    ).toBe('tsx');
-    expect(
-      extractApplicationContext(makeHypothesis({ target: 'src/foo.mts' })).file_extension,
-    ).toBe('mts');
+    expect(extractApplicationContext(makeHypothesis({ target: 'src/foo.tsx' })).file_extension).toBe('tsx');
+    expect(extractApplicationContext(makeHypothesis({ target: 'src/foo.mts' })).file_extension).toBe('mts');
   });
 });
 
@@ -133,9 +124,7 @@ describe('selectMicrotheory — domain axis', () => {
   });
 
   test('migration paths → data-pipeline', () => {
-    expect(selectMicrotheory({ path: 'src/db/migrations/_squashed/010_x.ts' }).domain).toBe(
-      'data-pipeline',
-    );
+    expect(selectMicrotheory({ path: 'src/db/migrations/_squashed/010_x.ts' }).domain).toBe('data-pipeline');
   });
 
   test('REST/api paths → web-rest', () => {

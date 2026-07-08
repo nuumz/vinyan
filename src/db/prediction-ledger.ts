@@ -7,7 +7,6 @@
  * Axiom: A7 (prediction error as learning signal)
  */
 import type { Database } from 'bun:sqlite';
-import { migratePredictionLedgerSchema } from './prediction-ledger-schema.ts';
 import type {
   FileOutcomeStat,
   OutcomePrediction,
@@ -15,6 +14,7 @@ import type {
   PredictionDistribution,
   PredictionOutcome,
 } from '../orchestrator/forward-predictor-types.ts';
+import { migratePredictionLedgerSchema } from './prediction-ledger-schema.ts';
 
 export class PredictionLedger {
   private db: Database;
@@ -76,12 +76,7 @@ export class PredictionLedger {
     });
   }
 
-  recordOutcome(
-    outcome: PredictionOutcome,
-    brierScore: number,
-    crpsBlast?: number,
-    crpsQuality?: number,
-  ): void {
+  recordOutcome(outcome: PredictionOutcome, brierScore: number, crpsBlast?: number, crpsQuality?: number): void {
     this.insertOutcomeStmt.run({
       $prediction_id: outcome.predictionId,
       $actual_test_result: outcome.actualTestResult,

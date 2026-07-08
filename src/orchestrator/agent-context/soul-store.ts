@@ -8,9 +8,9 @@
  *
  * Source of truth: Living Agent Soul plan
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'fs';
-import { join, basename } from 'path';
-import { type SoulDocument, parseSoulMd, renderSoulMd } from './soul-schema.ts';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { basename, join } from 'path';
+import { parseSoulMd, renderSoulMd, type SoulDocument } from './soul-schema.ts';
 
 export class SoulStore {
   private soulsDir: string;

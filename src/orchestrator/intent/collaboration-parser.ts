@@ -192,6 +192,7 @@ const MAX_PARTICIPANT_COUNT = 6;
  */
 const DEFAULT_AMBIGUOUS_COUNT = 3;
 
+// biome-ignore-start lint/style/useNamingConvention: Thai numeral words are user-input lookup tokens, not identifiers
 const THAI_NUMBER_WORDS: Record<string, number> = {
   สอง: 2,
   สาม: 3,
@@ -199,6 +200,7 @@ const THAI_NUMBER_WORDS: Record<string, number> = {
   ห้า: 5,
   หก: 6,
 };
+// biome-ignore-end lint/style/useNamingConvention: Thai numeral words are user-input lookup tokens, not identifiers
 
 const ENGLISH_NUMBER_WORDS: Record<string, number> = {
   one: 1,

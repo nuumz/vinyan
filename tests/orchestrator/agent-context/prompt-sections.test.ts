@@ -3,10 +3,10 @@
  * memory, and skills appear in the assembled prompt.
  */
 import { describe, expect, test } from 'bun:test';
-import { createDefaultRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
-import type { SectionContext } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 import type { AgentContext } from '../../../src/orchestrator/agent-context/types.ts';
 import { createEmptyContext } from '../../../src/orchestrator/agent-context/types.ts';
+import type { SectionContext } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
+import { createDefaultRegistry } from '../../../src/orchestrator/llm/prompt-section-registry.ts';
 
 function makeMinimalContext(agentContext?: AgentContext): SectionContext {
   return {

@@ -9,9 +9,9 @@
  */
 
 import type { VinyanBus } from '../../core/bus.ts';
-import type { UserInterestMiner } from '../user-context/user-interest-miner.ts';
 import type { LLMProviderRegistry } from '../llm/provider-registry.ts';
 import type { AgentSpec, SemanticTaskUnderstanding, Turn } from '../types.ts';
+import type { UserInterestMiner } from '../user-context/user-interest-miner.ts';
 
 export interface IntentResolverDeps {
   registry: LLMProviderRegistry;

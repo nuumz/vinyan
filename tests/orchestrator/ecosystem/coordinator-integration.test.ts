@@ -1,10 +1,9 @@
-import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
-
+import { describe, expect, it } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
-import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
+import { migration001 } from '../../../src/db/migrations/001_initial_schema.ts';
 import type { TaskFacts } from '../../../src/orchestrator/ecosystem/commitment-bridge.ts';
+import { buildEcosystem } from '../../../src/orchestrator/ecosystem/index.ts';
 import type { ReasoningEngine } from '../../../src/orchestrator/types.ts';
 
 function makeDb(): Database {
@@ -75,7 +74,8 @@ describe('EcosystemCoordinator — integration smoke', () => {
 
     // Simulate an auction win — this opens a commitment automatically via the bridge
     bus.emit('market:auction_completed', {
-      auctionId: 't-1', taskId: 't-1',
+      auctionId: 't-1',
+      taskId: 't-1',
       winnerId: 'eng-a',
       score: 0.85,
       bidderCount: 2,

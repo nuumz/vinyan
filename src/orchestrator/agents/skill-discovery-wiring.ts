@@ -20,12 +20,12 @@
 import type { Database } from 'bun:sqlite';
 import type { VinyanConfig } from '../../config/schema.ts';
 import { runGate as runOracleGate } from '../../gate/gate.ts';
-import type { CriticEngine } from '../critic/critic-engine.ts';
 import type { SkillArtifactStore } from '../../skills/artifact-store.ts';
 import { AgentskillsIoAdapter } from '../../skills/hub/adapters/agentskills-io.ts';
 import { GitHubAdapter } from '../../skills/hub/adapters/github.ts';
 import type { SkillRegistryAdapter } from '../../skills/hub/registry-adapter.ts';
 import { setupSkillImporter } from '../../skills/hub/wiring.ts';
+import type { CriticEngine } from '../critic/critic-engine.ts';
 import type { CapabilityRequirement } from '../types.ts';
 import type { LocalHubAcquirer, RemoteCandidateDiscoveryFn } from './local-hub-acquirer.ts';
 

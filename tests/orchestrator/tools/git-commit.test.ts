@@ -56,10 +56,7 @@ describe('git_commit tool', () => {
 
   test('rejects a too-short commit message before touching git', async () => {
     writeFileSync(join(workspace, 'a.txt'), 'a\n');
-    const result = await gitCommit.execute(
-      { callId: 'c1', message: 'no', paths: ['a.txt'] },
-      ctx(),
-    );
+    const result = await gitCommit.execute({ callId: 'c1', message: 'no', paths: ['a.txt'] }, ctx());
     expect(result.status).toBe('denied');
     expect(result.error).toContain('at least');
   });

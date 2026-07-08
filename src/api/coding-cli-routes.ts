@@ -15,9 +15,9 @@
  *   POST /api/v1/coding-cli/run                             — headless one-shot run
  */
 import { z } from 'zod';
+import type { CodingCliStore } from '../db/coding-cli-store.ts';
 import type { ExternalCodingCliController } from '../orchestrator/external-coding-cli/index.ts';
 import { CodingCliTaskSchema, PROVIDER_IDS } from '../orchestrator/external-coding-cli/types.ts';
-import type { CodingCliStore } from '../db/coding-cli-store.ts';
 
 export interface CodingCliRouteDeps {
   controller: ExternalCodingCliController;

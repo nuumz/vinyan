@@ -30,7 +30,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { type AutoMemory, loadAutoMemory, type LoadAutoMemoryOptions } from './auto-memory-loader.ts';
+import { type AutoMemory, type LoadAutoMemoryOptions, loadAutoMemory } from './auto-memory-loader.ts';
 
 export interface MemorySnapshot {
   /** Profile namespace this snapshot was captured under. */
@@ -95,8 +95,7 @@ export function captureMemorySnapshot(opts: CaptureMemorySnapshotOptions): Memor
 
   const contentHash = hashSnapshotContent(autoMemory);
   const characterCount = autoMemory
-    ? autoMemory.indexContent.length +
-      autoMemory.entries.reduce((acc, e) => acc + e.content.length, 0)
+    ? autoMemory.indexContent.length + autoMemory.entries.reduce((acc, e) => acc + e.content.length, 0)
     : 0;
 
   const snapshot: MemorySnapshot = Object.freeze({
@@ -173,11 +172,7 @@ export function isDuplicateMemoryEntry(existing: ReadonlyArray<string>, candidat
 }
 
 function normalise(text: string): string {
-  return text
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim();
+  return text.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -221,7 +216,7 @@ export function memorySafetyVerdict(content: string): MemorySafetyVerdict {
   if (/\bsk-[A-Za-z0-9]{20,}/.test(content)) flags.push('credential:openai');
   if (/\bghp_[A-Za-z0-9]{30,}/.test(content)) flags.push('credential:github');
   if (/\bAKIA[0-9A-Z]{16}\b/.test(content)) flags.push('credential:aws');
-  if (/\bBearer\s+eyJ[A-Za-z0-9_\-]{10,}/.test(content)) flags.push('credential:jwt');
+  if (/\bBearer\s+eyJ[A-Za-z0-9_-]{10,}/.test(content)) flags.push('credential:jwt');
   if (/(?:password|api[_-]?key|secret)\s*[:=]\s*\S+/i.test(content)) flags.push('credential:keyvalue');
 
   // Destructive shell snippets — do NOT block; flag for review. Memory

@@ -13,55 +13,212 @@
 import { createHash } from 'node:crypto';
 import type { TraceStore } from '../../db/trace-store.ts';
 import type { WorldGraph } from '../../world-graph/world-graph.ts';
-import { EntityResolver } from './entity-resolver.ts';
-import { profileHistory } from './historical-profiler.ts';
 import { computeTaskSignature } from '../prediction/self-model.ts';
 import { extractActionVerb } from '../task-fingerprint.ts';
-import type { ActionCategory, SemanticTaskUnderstanding, TaskDomain, TaskInput, TaskIntent, TaskType, TaskUnderstanding, ToolRequirement } from '../types.ts';
+import type {
+  ActionCategory,
+  SemanticTaskUnderstanding,
+  TaskDomain,
+  TaskInput,
+  TaskIntent,
+  TaskType,
+  TaskUnderstanding,
+  ToolRequirement,
+} from '../types.ts';
+import { EntityResolver } from './entity-resolver.ts';
+import { profileHistory } from './historical-profiler.ts';
 import type { UnderstandingEngine } from './understanding-engine.ts';
 
 /** Keywords that indicate software engineering context (Set-based O(1) lookup). */
 const CODE_KEYWORD_SET = new Set([
-  'file', 'code', 'src', 'function', 'class', 'module', 'import', 'export', 'test', 'api',
-  'endpoint', 'bug', 'error', 'refactor', 'deploy', 'build', 'compile', 'lint', 'type',
-  'interface', 'schema', 'database', 'query', 'migration', 'docker', 'ci', 'cd', 'pipeline',
-  'git', 'branch', 'merge', 'commit', 'config', 'env', 'package', 'dependency', 'library',
-  'framework', 'server', 'client', 'route', 'middleware', 'controller', 'service', 'model',
-  'component', 'hook', 'state', 'prop', 'render', 'template', 'style', 'css', 'html', 'jsx',
-  'tsx', 'vue', 'svelte', 'astro', 'sql', 'orm', 'redis', 'kafka', 'queue', 'socket', 'auth',
-  'token', 'jwt', 'oauth', 'session', 'cookie', 'cors', 'ssl', 'tls', 'cert', 'log', 'metric',
-  'trace', 'debug', 'monitor', 'alert', 'cron', 'schedule', 'script', 'cli', 'command', 'tool',
-  'plugin', 'extension', 'sdk', 'worker', 'thread', 'process', 'cache', 'index', 'regex',
-  'parse', 'serialize', 'encode', 'decode', 'hash', 'encrypt', 'algorithm', 'tree', 'graph',
-  'stack', 'heap', 'sort', 'search', 'complexity', 'runtime', 'memory', 'cpu', 'performance',
-  'optimize', 'benchmark', 'latency', 'throughput',
+  'file',
+  'code',
+  'src',
+  'function',
+  'class',
+  'module',
+  'import',
+  'export',
+  'test',
+  'api',
+  'endpoint',
+  'bug',
+  'error',
+  'refactor',
+  'deploy',
+  'build',
+  'compile',
+  'lint',
+  'type',
+  'interface',
+  'schema',
+  'database',
+  'query',
+  'migration',
+  'docker',
+  'ci',
+  'cd',
+  'pipeline',
+  'git',
+  'branch',
+  'merge',
+  'commit',
+  'config',
+  'env',
+  'package',
+  'dependency',
+  'library',
+  'framework',
+  'server',
+  'client',
+  'route',
+  'middleware',
+  'controller',
+  'service',
+  'model',
+  'component',
+  'hook',
+  'state',
+  'prop',
+  'render',
+  'template',
+  'style',
+  'css',
+  'html',
+  'jsx',
+  'tsx',
+  'vue',
+  'svelte',
+  'astro',
+  'sql',
+  'orm',
+  'redis',
+  'kafka',
+  'queue',
+  'socket',
+  'auth',
+  'token',
+  'jwt',
+  'oauth',
+  'session',
+  'cookie',
+  'cors',
+  'ssl',
+  'tls',
+  'cert',
+  'log',
+  'metric',
+  'trace',
+  'debug',
+  'monitor',
+  'alert',
+  'cron',
+  'schedule',
+  'script',
+  'cli',
+  'command',
+  'tool',
+  'plugin',
+  'extension',
+  'sdk',
+  'worker',
+  'thread',
+  'process',
+  'cache',
+  'index',
+  'regex',
+  'parse',
+  'serialize',
+  'encode',
+  'decode',
+  'hash',
+  'encrypt',
+  'algorithm',
+  'tree',
+  'graph',
+  'stack',
+  'heap',
+  'sort',
+  'search',
+  'complexity',
+  'runtime',
+  'memory',
+  'cpu',
+  'performance',
+  'optimize',
+  'benchmark',
+  'latency',
+  'throughput',
 ]);
 /** Multi-word code patterns that need regex (compound terms). */
 const CODE_COMPOUND_RE = /\b(data.?structure|linked.?list|profil)\b/i;
 
 function containsCodeKeyword(text: string): boolean {
   const words = text.toLowerCase().split(/[\s,.:;!?()[\]{}"'`]+/);
-  if (words.some(w => CODE_KEYWORD_SET.has(w))) return true;
+  if (words.some((w) => CODE_KEYWORD_SET.has(w))) return true;
   return CODE_COMPOUND_RE.test(text);
 }
 
 /** Keywords that strongly indicate non-software-engineering context (Set-based). */
 const NON_CODE_KEYWORD_SET = new Set([
-  'screenshot', 'photo', 'picture', 'camera', 'weather', 'recipe', 'cook', 'translate',
-  'song', 'music', 'play', 'movie', 'game', 'joke', 'poem', 'story', 'draw', 'paint',
-  'calendar', 'appointment', 'reminder', 'email', 'message', 'chat', 'call', 'phone',
-  'drive', 'map', 'direction', 'flight', 'hotel', 'book', 'shop', 'buy', 'order',
-  'deliver', 'price', 'stock', 'crypto', 'bitcoin', 'exercise', 'workout', 'diet',
-  'nutrition', 'health', 'doctor', 'medicine', 'symptom',
+  'screenshot',
+  'photo',
+  'picture',
+  'camera',
+  'weather',
+  'recipe',
+  'cook',
+  'translate',
+  'song',
+  'music',
+  'play',
+  'movie',
+  'game',
+  'joke',
+  'poem',
+  'story',
+  'draw',
+  'paint',
+  'calendar',
+  'appointment',
+  'reminder',
+  'email',
+  'message',
+  'chat',
+  'call',
+  'phone',
+  'drive',
+  'map',
+  'direction',
+  'flight',
+  'hotel',
+  'book',
+  'shop',
+  'buy',
+  'order',
+  'deliver',
+  'price',
+  'stock',
+  'crypto',
+  'bitcoin',
+  'exercise',
+  'workout',
+  'diet',
+  'nutrition',
+  'health',
+  'doctor',
+  'medicine',
+  'symptom',
 ]);
 
 function containsNonCodeKeyword(text: string): boolean {
   const words = text.toLowerCase().split(/[\s,.:;!?()[\]{}"'`]+/);
-  return words.some(w => NON_CODE_KEYWORD_SET.has(w));
+  return words.some((w) => NON_CODE_KEYWORD_SET.has(w));
 }
 
 /** Greeting patterns across common languages. */
-const GREETING_PATTERN = /^\s*(สวัสดี|หวัดดี|hello|hi|hey|good\s+(morning|afternoon|evening)|howdy|こんにちは|你好|bonjour|hola|\u0421\u0430\u043b\u0430\u043c|\u0645\u0631\u062d\u0628\u0627)\s*[!?.,\u0e46]*\s*$/i;
+const GREETING_PATTERN =
+  /^\s*(สวัสดี|หวัดดี|hello|hi|hey|good\s+(morning|afternoon|evening)|howdy|こんにちは|你好|bonjour|hola|\u0421\u0430\u043b\u0430\u043c|\u0645\u0631\u062d\u0628\u0627)\s*[!?.,\u0e46]*\s*$/i;
 
 /**
  * Classify task domain — determines capability scope and tool access.
@@ -132,13 +289,15 @@ export function classifyTaskDomain(
 // - False positive execute (act on a question) is dangerous — may cause mutations
 
 /** Thai question markers at sentence end — strongest Thai inquiry signal. */
-const THAI_QUESTION_END = /(?:อะไร|ยังไง|อย่างไร|เท่าไหร่|กี่|ไหม|มั้ย|หรือเปล่า|รึเปล่า|ใช่ไหม|ใช่มั้ย|หรือยัง|ได้ไหม|ดีไหม|คืออะไร|หมายความว่า)\s*[?]*\s*$/;
+const THAI_QUESTION_END =
+  /(?:อะไร|ยังไง|อย่างไร|เท่าไหร่|กี่|ไหม|มั้ย|หรือเปล่า|รึเปล่า|ใช่ไหม|ใช่มั้ย|หรือยัง|ได้ไหม|ดีไหม|คืออะไร|หมายความว่า)\s*[?]*\s*$/;
 
 /** Thai inquiry governing verbs — explanation/information requests. */
 const THAI_INQUIRY_GOVERNING = /(?:^\s*(?:อะไร|ทำไม))|(?:อธิบาย|ช่วยอธิบาย|ช่วยบอก|ช่วยเล่า|ช่วยตอบ|ช่วยแนะนำ|เล่าให้ฟัง)/;
 
 /** English inquiry frame — question words at start + explanation request phrases. */
-const ENGLISH_INQUIRY_FRAME = /(?:^\s*(?:how|what|why|where|when|who|which)\b)|(?:^\s*(?:is|are|does|do|can|could|should|would)\s+(?:it|this|that|there|I|we|you|the)\b)|(?:\b(?:explain|describe|tell me|show me how|walk me through|help me understand|want to (?:know|understand)|what does\b.+\bmean)\b)/i;
+const ENGLISH_INQUIRY_FRAME =
+  /(?:^\s*(?:how|what|why|where|when|who|which)\b)|(?:^\s*(?:is|are|does|do|can|could|should|would)\s+(?:it|this|that|there|I|we|you|the)\b)|(?:\b(?:explain|describe|tell me|show me how|walk me through|help me understand|want to (?:know|understand)|what does\b.+\bmean)\b)/i;
 
 // ── Thai Command Detection (compound-aware) ─────────────────────────────
 //
@@ -156,9 +315,24 @@ const ENGLISH_INQUIRY_FRAME = /(?:^\s*(?:how|what|why|where|when|who|which)\b)|(
 
 /** Thai verbs that signal command intent when standalone. */
 const THAI_COMMAND_VERBS = [
-  'รัน', 'ติดตั้ง', 'แก้', 'สร้าง', 'ลบ', 'เปิด', 'ปิด',
-  'ส่ง', 'ย้าย', 'ทำ', 'ถอน', 'อัพเดท', 'อัปเดต', 'คัดลอก',
-  'ตรวจสอบ', 'ตรวจ', 'เช็ค', 'ดู',
+  'รัน',
+  'ติดตั้ง',
+  'แก้',
+  'สร้าง',
+  'ลบ',
+  'เปิด',
+  'ปิด',
+  'ส่ง',
+  'ย้าย',
+  'ทำ',
+  'ถอน',
+  'อัพเดท',
+  'อัปเดต',
+  'คัดลอก',
+  'ตรวจสอบ',
+  'ตรวจ',
+  'เช็ค',
+  'ดู',
 ];
 
 /**
@@ -167,23 +341,41 @@ const THAI_COMMAND_VERBS = [
  */
 const THAI_NON_COMMAND_COMPOUNDS = [
   // เปิด → non-action meanings
-  'เปิดเผย', 'เปิดใจ', 'เปิดโอกาส', 'เปิดตัว',
+  'เปิดเผย',
+  'เปิดใจ',
+  'เปิดโอกาส',
+  'เปิดตัว',
   // ปิด → non-action meanings
-  'ปิดบัง', 'ปิดกั้น',
+  'ปิดบัง',
+  'ปิดกั้น',
   // ทำ → question words / non-imperative
-  'ทำไม', 'ทำอะไร', 'ทำยังไง', 'ทำได้', 'ทำให้', 'ทำงาน', 'ทำการ',
+  'ทำไม',
+  'ทำอะไร',
+  'ทำยังไง',
+  'ทำได้',
+  'ทำให้',
+  'ทำงาน',
+  'ทำการ',
   // แก้ → non-action meanings
-  'แก้ตัว', 'แก้แค้น',
+  'แก้ตัว',
+  'แก้แค้น',
   // ส่ง → non-action meanings
-  'ส่งผล', 'ส่งเสริม',
+  'ส่งผล',
+  'ส่งเสริม',
   // สร้าง → non-action meanings
-  'สร้างสรรค์', 'สร้างเสริม',
+  'สร้างสรรค์',
+  'สร้างเสริม',
   // ดู → non-action meanings
-  'ดูเหมือน', 'ดูแล', 'ดูจะ', 'ดูว่า', 'ดูเป็น',
+  'ดูเหมือน',
+  'ดูแล',
+  'ดูจะ',
+  'ดูว่า',
+  'ดูเป็น',
 ].sort((a, b) => b.length - a.length); // longest first
 
 /** ช่วย + action verb compounds — always command. */
-const THAI_HELP_COMMAND_RE = /ช่วย(?:รัน|ลบ|สร้าง|แก้|ติดตั้ง|ย้าย|ถอน|ส่ง|เปิด|ปิด|อัพเดท|อัปเดต|deploy|เปิดไฟล์|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก|ตรวจสอบ|ตรวจ|เช็ค|ดู)/;
+const THAI_HELP_COMMAND_RE =
+  /ช่วย(?:รัน|ลบ|สร้าง|แก้|ติดตั้ง|ย้าย|ถอน|ส่ง|เปิด|ปิด|อัพเดท|อัปเดต|deploy|เปิดไฟล์|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก|ตรวจสอบ|ตรวจ|เช็ค|ดู)/;
 
 /** อยากให้ ... verb — Thai request pattern, always command. */
 const THAI_WANT_COMMAND_RE = /อยากให้.*?(?:รัน|สร้าง|ลบ|เปิด|ปิด|แก้|ติดตั้ง|ย้าย|ส่ง|ทำ|ตรวจสอบ|ตรวจ|เช็ค|ดู)/;
@@ -216,25 +408,94 @@ function containsThaiCommand(text: string): boolean {
 
 /** English command verbs — Set-based O(1) lookup per word. */
 const ENGLISH_COMMAND_VERBS = new Set([
-  'fix', 'create', 'delete', 'remove', 'update', 'install', 'deploy', 'run', 'execute',
-  'build', 'start', 'stop', 'restart', 'write', 'refactor', 'review', 'analyze', 'debug',
-  'test', 'migrate', 'configure', 'setup', 'clean', 'format', 'generate', 'publish',
-  'release', 'push', 'pull', 'fetch', 'merge', 'rebase', 'checkout', 'rename', 'move',
-  'copy', 'show', 'list', 'add', 'implement', 'change', 'modify', 'set', 'enable',
-  'disable', 'upgrade', 'downgrade', 'init', 'reset', 'clear', 'scan', 'validate',
-  'verify', 'inspect', 'open', 'close', 'connect', 'disconnect', 'send', 'capture',
-  'convert', 'transform', 'download', 'upload', 'launch', 'paste', 'split', 'compress',
-  'extract', 'backup', 'restore', 'schedule', 'trigger', 'sync', 'export', 'import',
-  'patch', 'make',
+  'fix',
+  'create',
+  'delete',
+  'remove',
+  'update',
+  'install',
+  'deploy',
+  'run',
+  'execute',
+  'build',
+  'start',
+  'stop',
+  'restart',
+  'write',
+  'refactor',
+  'review',
+  'analyze',
+  'debug',
+  'test',
+  'migrate',
+  'configure',
+  'setup',
+  'clean',
+  'format',
+  'generate',
+  'publish',
+  'release',
+  'push',
+  'pull',
+  'fetch',
+  'merge',
+  'rebase',
+  'checkout',
+  'rename',
+  'move',
+  'copy',
+  'show',
+  'list',
+  'add',
+  'implement',
+  'change',
+  'modify',
+  'set',
+  'enable',
+  'disable',
+  'upgrade',
+  'downgrade',
+  'init',
+  'reset',
+  'clear',
+  'scan',
+  'validate',
+  'verify',
+  'inspect',
+  'open',
+  'close',
+  'connect',
+  'disconnect',
+  'send',
+  'capture',
+  'convert',
+  'transform',
+  'download',
+  'upload',
+  'launch',
+  'paste',
+  'split',
+  'compress',
+  'extract',
+  'backup',
+  'restore',
+  'schedule',
+  'trigger',
+  'sync',
+  'export',
+  'import',
+  'patch',
+  'make',
 ]);
 
 function containsEnglishCommand(text: string): boolean {
   const words = text.toLowerCase().split(/[\s,.:;!?()[\]{}"'`]+/);
-  return words.some(w => ENGLISH_COMMAND_VERBS.has(w));
+  return words.some((w) => ENGLISH_COMMAND_VERBS.has(w));
 }
 
 /** Meta-questions about the system itself. */
-const META_PATTERN = /(?:คุณคือ|คุณทำอะไร|ทำอะไรได้|คุณเป็น)|(who are you|what can you|what are you|your capabilities|your name)/i;
+const META_PATTERN =
+  /(?:คุณคือ|คุณทำอะไร|ทำอะไรได้|คุณเป็น)|(who are you|what can you|what are you|your capabilities|your name)/i;
 
 /**
  * Classify task intent — what does the user want the orchestrator to DO?
@@ -253,10 +514,7 @@ const META_PATTERN = /(?:คุณคือ|คุณทำอะไร|ทำ�
  * 5. Code mutation tasks → execute
  * 6. Default → inquire (safer — doesn't promise action)
  */
-export function classifyTaskIntent(
-  understanding: TaskUnderstanding,
-  taskDomain: TaskDomain,
-): TaskIntent {
+export function classifyTaskIntent(understanding: TaskUnderstanding, taskDomain: TaskDomain): TaskIntent {
   const goal = understanding.rawGoal;
 
   // 1. Conversational domain → converse
@@ -285,12 +543,14 @@ export function classifyTaskIntent(
 /** CLI tools / system commands that require shell_exec or similar tool to execute.
  * Removed ambiguous standalone words: go, node, make, convert — too common in natural language.
  * These are still caught when combined with CLI-specific arguments in context. */
-const TOOL_COMMAND_PATTERN = /\b(git|npm|bun|yarn|pnpm|docker|brew|curl|wget|pip|apt|cargo|python|ssh|scp|rsync|kubectl|terraform|aws|gcloud|az|mv|cp|rm|mkdir|chmod|chown|tar|zip|unzip|cat|ls|find|grep|sed|awk|heroku|vercel|netlify|ffmpeg|imagemagick|pandoc)\b/i;
+const TOOL_COMMAND_PATTERN =
+  /\b(git|npm|bun|yarn|pnpm|docker|brew|curl|wget|pip|apt|cargo|python|ssh|scp|rsync|kubectl|terraform|aws|gcloud|az|mv|cp|rm|mkdir|chmod|chown|tar|zip|unzip|cat|ls|find|grep|sed|awk|heroku|vercel|netlify|ffmpeg|imagemagick|pandoc)\b/i;
 
 /** Thai action verbs implying system-level execution (not just information).
  * Note: 'deploy' matches substrings (e.g. 'redeploy') — acceptable because redeploying also needs tools.
  * Note: ลง uses boundary guard to prevent matching ลงทะเบียน, ลงทุน, etc. */
-const THAI_TOOL_ACTION_PATTERN = /(?:รัน|ติดตั้ง|ลง(?:\s|$)|ถอน|อัพเดท|อัปเดต|deploy|เปิดไฟล์|เปิดแอพ|เปิดแอป|เปิดโปรแกรม|เปิดเว็บ|เปิดเบราว์เซอร์|ปิดแอพ|ปิดแอป|ปิดโปรแกรม|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก|ตรวจสอบ|เช็ค)/;
+const THAI_TOOL_ACTION_PATTERN =
+  /(?:รัน|ติดตั้ง|ลง(?:\s|$)|ถอน|อัพเดท|อัปเดต|deploy|เปิดไฟล์|เปิดแอพ|เปิดแอป|เปิดโปรแกรม|เปิดเว็บ|เปิดเบราว์เซอร์|ปิดแอพ|ปิดแอป|ปิดโปรแกรม|สร้างไฟล์|ลบไฟล์|ย้ายไฟล์|คัดลอก|ตรวจสอบ|เช็ค)/;
 
 /**
  * Assess whether a task requires tool execution to achieve its goal.

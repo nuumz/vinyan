@@ -3,7 +3,13 @@
  * A3: Deterministic Governance — all thresholds are deterministic rule-based.
  * Design: docs/research/ehd-implementation-design.md §2.4, §3.1, §3.2
  */
-import { type FusionInput, type SubjectiveOpinion, fromScalar, fuseAll, projectedProbability } from '../core/subjective-opinion.ts';
+import {
+  type FusionInput,
+  fromScalar,
+  fuseAll,
+  projectedProbability,
+  type SubjectiveOpinion,
+} from '../core/subjective-opinion.ts';
 
 export type EpistemicGateDecision =
   | 'allow' // High confidence pass (>= HIGH_CONFIDENCE)
@@ -20,8 +26,8 @@ export interface ConfidenceThresholds {
 
 export const DEFAULT_THRESHOLDS: ConfidenceThresholds = {
   HIGH_CONFIDENCE: 0.85,
-  ADEQUATE_CONFIDENCE: 0.60,
-  LOW_CONFIDENCE: 0.40,
+  ADEQUATE_CONFIDENCE: 0.6,
+  LOW_CONFIDENCE: 0.4,
   UNCERTAIN: 0.25,
 };
 
@@ -154,10 +160,7 @@ export function toClassicDecision(decision: EpistemicGateDecision): 'allow' | 'b
  *
  * Returns descriptive strings (not enum values) for direct display in caveats.
  */
-export function generateResolutionHints(
-  abstentionReasons: string[],
-  aggregateConfidence: number,
-): string[] {
+export function generateResolutionHints(abstentionReasons: string[], aggregateConfidence: number): string[] {
   const hints: string[] = [];
 
   // NaN confidence — no oracle provided data at all

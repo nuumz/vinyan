@@ -285,9 +285,7 @@ describe('TaskEventRecorder', () => {
 
     expect(handle.droppedCount()).toBe(1);
     handle.flush();
-    const stepIds = store
-      .listForTask('t-8')
-      .map((e) => (e.payload as { stepId: string }).stepId);
+    const stepIds = store.listForTask('t-8').map((e) => (e.payload as { stepId: string }).stepId);
     // No LOW events to evict — falls back to oldest-first FIFO.
     expect(stepIds).toEqual(['b', 'c']);
   });

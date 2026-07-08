@@ -230,7 +230,14 @@ describe('RoomSupervisor — text-answer recordResult', () => {
     const blackboard = new RoomBlackboard(() => 1000);
 
     state.rounds = 3;
-    sup.recordResult(state, ledger, blackboard, integrator, 'room-debate::integrator', makeResult('synthesized output'));
+    sup.recordResult(
+      state,
+      ledger,
+      blackboard,
+      integrator,
+      'room-debate::integrator',
+      makeResult('synthesized output'),
+    );
     const finalEntry = blackboard.read('final/answer');
     expect(finalEntry?.value).toBe('synthesized output');
     const claim = ledger.readAll().find((e) => e.type === 'claim');

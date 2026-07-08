@@ -23,11 +23,11 @@ export const SOUL_MAX_TOKENS = 1500;
 
 /** Per-section entry limits to keep soul bounded. */
 export const SOUL_SECTION_LIMITS = {
-  philosophy: 3,        // lines
-  domainExpertise: 5,   // entries
+  philosophy: 3, // lines
+  domainExpertise: 5, // entries
   winningStrategies: 5, // entries
-  antiPatterns: 5,      // entries
-  selfKnowledge: 3,     // entries
+  antiPatterns: 5, // entries
+  selfKnowledge: 3, // entries
   activeExperiments: 2, // entries
 } as const;
 
@@ -95,15 +95,18 @@ export function countSoulTokens(soul: SoulDocument): number {
 export function createSeedSoul(agentId: string, tier: string): SoulDocument {
   const philosophyByTier: Record<string, string> = {
     fast: 'I prioritize speed and correctness over exploration. I make focused, minimal changes and avoid over-engineering.',
-    balanced: 'I balance thoroughness with efficiency. I read existing patterns before proposing changes and prefer minimal diffs.',
-    powerful: 'I handle complex, multi-step tasks with careful analysis. I read the full dependency cone before mutations and verify my reasoning.',
+    balanced:
+      'I balance thoroughness with efficiency. I read existing patterns before proposing changes and prefer minimal diffs.',
+    powerful:
+      'I handle complex, multi-step tasks with careful analysis. I read the full dependency cone before mutations and verify my reasoning.',
   };
 
   return {
     agentId,
     version: 0,
     updatedAt: new Date().toISOString(),
-    philosophy: philosophyByTier[tier] ?? 'I approach tasks methodically, reading before editing and preferring minimal changes.',
+    philosophy:
+      philosophyByTier[tier] ?? 'I approach tasks methodically, reading before editing and preferring minimal changes.',
     domainExpertise: [],
     winningStrategies: [],
     antiPatterns: [],

@@ -32,11 +32,7 @@ export class PredictionTierSelectorImpl implements PredictionTierSelector {
   }
 
   select(traceCount: number, edgeCount: number, miscalibrationFlag: boolean): PredictionTier {
-    if (
-      traceCount >= this.config.minTracesCausal &&
-      edgeCount >= this.config.minEdgesCausal &&
-      !miscalibrationFlag
-    ) {
+    if (traceCount >= this.config.minTracesCausal && edgeCount >= this.config.minEdgesCausal && !miscalibrationFlag) {
       return 'causal';
     }
 

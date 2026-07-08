@@ -83,8 +83,7 @@ export const DEGRADATION_POLICY_MATRIX: Readonly<Record<DegradationFailureType, 
     capabilityImpact: 'blocked',
     retryable: false,
     severity: 'critical',
-    rationale:
-      'Fail-closed: governance traces carry provenance for A8; losing them silently breaks audit guarantees.',
+    rationale: 'Fail-closed: governance traces carry provenance for A8; losing them silently breaks audit guarantees.',
   },
   'budget-pressure': {
     action: 'degrade',

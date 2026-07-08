@@ -29,9 +29,7 @@ export function computeStructuralFeatures(
   // Accept ASCII '?' and full-width '？' (U+FF1F, common in Thai/CJK IME input)
   // plus trailing Thai interrogative particles.
   const endsWithQuestion =
-    trimmed.endsWith('?') ||
-    trimmed.endsWith('？') ||
-    THAI_QUESTION_PARTICLE_REGEX.test(trimmed);
+    trimmed.endsWith('?') || trimmed.endsWith('？') || THAI_QUESTION_PARTICLE_REGEX.test(trimmed);
   return {
     lengthChars: trimmed.length,
     endsWithQuestion,

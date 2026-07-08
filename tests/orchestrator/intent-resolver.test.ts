@@ -13,9 +13,9 @@ import {
   clearIntentResolverCache,
   computeStructuralFeatures,
   fallbackStrategy,
+  type IntentResolverDeps,
   intentResolverCacheSize,
   resolveIntent,
-  type IntentResolverDeps,
 } from '../../src/orchestrator/intent-resolver.ts';
 import { LLMProviderRegistry } from '../../src/orchestrator/llm/provider-registry.ts';
 import type { LLMProvider, LLMRequest, LLMResponse, TaskInput } from '../../src/orchestrator/types.ts';
@@ -75,12 +75,14 @@ beforeEach(() => {
 
 describe('resolveIntent', () => {
   test('classifies conversational intent from LLM response', async () => {
-    const provider = makeProvider(JSON.stringify({
-      strategy: 'conversational',
-      refinedGoal: 'สวัสดี ผู้ใช้ทักทาย',
-      reasoning: 'User is greeting.',
-      confidence: 0.95,
-    }));
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'conversational',
+        refinedGoal: 'สวัสดี ผู้ใช้ทักทาย',
+        reasoning: 'User is greeting.',
+        confidence: 0.95,
+      }),
+    );
     const result = await resolveIntent(makeInput('สวัสดี'), makeDeps(provider));
 
     expect(result.strategy).toBe('conversational');
@@ -90,17 +92,16 @@ describe('resolveIntent', () => {
   });
 
   test('classifies direct-tool with tool call details', async () => {
-    const provider = makeProvider(JSON.stringify({
-      strategy: 'direct-tool',
-      refinedGoal: 'Open Google Chrome application',
-      reasoning: 'Single shell_exec call.',
-      directToolCall: { tool: 'shell_exec', parameters: { command: 'open -a "Google Chrome"' } },
-      confidence: 0.9,
-    }));
-    const result = await resolveIntent(
-      makeInput('อยากให้เปิดแอพ google chrome ให้เลย'),
-      makeDeps(provider),
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'direct-tool',
+        refinedGoal: 'Open Google Chrome application',
+        reasoning: 'Single shell_exec call.',
+        directToolCall: { tool: 'shell_exec', parameters: { command: 'open -a "Google Chrome"' } },
+        confidence: 0.9,
+      }),
     );
+    const result = await resolveIntent(makeInput('อยากให้เปิดแอพ google chrome ให้เลย'), makeDeps(provider));
 
     expect(result.strategy).toBe('direct-tool');
     expect(result.directToolCall).toBeDefined();
@@ -109,17 +110,16 @@ describe('resolveIntent', () => {
   });
 
   test('classifies agentic-workflow with workflow prompt', async () => {
-    const provider = makeProvider(JSON.stringify({
-      strategy: 'agentic-workflow',
-      refinedGoal: 'Refactor auth module and deploy',
-      reasoning: 'Multi-step task requiring planning.',
-      workflowPrompt: 'Step 1: Identify auth files. Step 2: Refactor. Step 3: Run tests. Step 4: Deploy.',
-      confidence: 0.85,
-    }));
-    const result = await resolveIntent(
-      makeInput('ช่วย refactor auth module แล้ว deploy ให้ด้วย'),
-      makeDeps(provider),
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'agentic-workflow',
+        refinedGoal: 'Refactor auth module and deploy',
+        reasoning: 'Multi-step task requiring planning.',
+        workflowPrompt: 'Step 1: Identify auth files. Step 2: Refactor. Step 3: Run tests. Step 4: Deploy.',
+        confidence: 0.85,
+      }),
     );
+    const result = await resolveIntent(makeInput('ช่วย refactor auth module แล้ว deploy ให้ด้วย'), makeDeps(provider));
 
     expect(result.strategy).toBe('agentic-workflow');
     expect(result.workflowPrompt).toContain('Step 1');
@@ -127,12 +127,14 @@ describe('resolveIntent', () => {
   });
 
   test('classifies full-pipeline for code modification', async () => {
-    const provider = makeProvider(JSON.stringify({
-      strategy: 'full-pipeline',
-      refinedGoal: 'Fix type error in src/foo.ts',
-      reasoning: 'Code modification task with specific file target.',
-      confidence: 0.92,
-    }));
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'full-pipeline',
+        refinedGoal: 'Fix type error in src/foo.ts',
+        reasoning: 'Code modification task with specific file target.',
+        confidence: 0.92,
+      }),
+    );
     const result = await resolveIntent(
       makeInput('fix type error in src/foo.ts', { targetFiles: ['src/foo.ts'] }),
       makeDeps(provider),
@@ -142,22 +144,28 @@ describe('resolveIntent', () => {
   });
 
   test('defaults confidence to 0.8 when LLM omits it', async () => {
-    const provider = makeProvider(JSON.stringify({
-      strategy: 'conversational',
-      refinedGoal: 'Hello',
-      reasoning: 'Greeting.',
-    }));
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'conversational',
+        refinedGoal: 'Hello',
+        reasoning: 'Greeting.',
+      }),
+    );
     const result = await resolveIntent(makeInput('hello'), makeDeps(provider));
 
     expect(result.confidence).toBe(0.8);
   });
 
   test('handles markdown-fenced JSON response', async () => {
-    const provider = makeProvider('```json\n' + JSON.stringify({
-      strategy: 'conversational',
-      refinedGoal: 'Hi',
-      reasoning: 'Greeting.',
-    }) + '\n```');
+    const provider = makeProvider(
+      '```json\n' +
+        JSON.stringify({
+          strategy: 'conversational',
+          refinedGoal: 'Hi',
+          reasoning: 'Greeting.',
+        }) +
+        '\n```',
+    );
     const result = await resolveIntent(makeInput('hi'), makeDeps(provider));
 
     expect(result.strategy).toBe('conversational');
@@ -165,24 +173,25 @@ describe('resolveIntent', () => {
 
   test('throws when no provider is available', async () => {
     const emptyRegistry = new LLMProviderRegistry();
-    await expect(resolveIntent(makeInput('hello'), { registry: emptyRegistry }))
-      .rejects.toThrow('No LLM provider available');
+    await expect(resolveIntent(makeInput('hello'), { registry: emptyRegistry })).rejects.toThrow(
+      'No LLM provider available',
+    );
   });
 
   test('throws on invalid JSON when no alternate provider is available', async () => {
     const provider = makeProvider('This is not JSON at all');
-    await expect(resolveIntent(makeInput('hello'), makeDeps(provider)))
-      .rejects.toThrow();
+    await expect(resolveIntent(makeInput('hello'), makeDeps(provider))).rejects.toThrow();
   });
 
   test('throws on invalid strategy value when no alternate is available', async () => {
-    const provider = makeProvider(JSON.stringify({
-      strategy: 'invalid-strategy',
-      refinedGoal: 'Test',
-      reasoning: 'Test.',
-    }));
-    await expect(resolveIntent(makeInput('hello'), makeDeps(provider)))
-      .rejects.toThrow();
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'invalid-strategy',
+        refinedGoal: 'Test',
+        reasoning: 'Test.',
+      }),
+    );
+    await expect(resolveIntent(makeInput('hello'), makeDeps(provider))).rejects.toThrow();
   });
 
   test('respects timeout', async () => {
@@ -201,8 +210,9 @@ describe('resolveIntent', () => {
       },
     };
 
-    await expect(resolveIntent(makeInput('hello'), makeDeps(slowProvider)))
-      .rejects.toThrow('Intent resolution timeout');
+    await expect(resolveIntent(makeInput('hello'), makeDeps(slowProvider))).rejects.toThrow(
+      'Intent resolution timeout',
+    );
   }, 15000);
 });
 
@@ -221,7 +231,10 @@ describe('resolveIntent (provider tier preference)', () => {
         fastCalls++;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x', confidence: 0.9 }),
-          toolCalls: [], tokensUsed: { input: 10, output: 10 }, model: 'p-fast', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 10, output: 10 },
+          model: 'p-fast',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -232,7 +245,10 @@ describe('resolveIntent (provider tier preference)', () => {
         balancedCalls++;
         return {
           content: JSON.stringify({ strategy: 'agentic-workflow', refinedGoal: 'x', reasoning: 'x', confidence: 0.9 }),
-          toolCalls: [], tokensUsed: { input: 10, output: 10 }, model: 'p-balanced', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 10, output: 10 },
+          model: 'p-balanced',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -254,7 +270,10 @@ describe('resolveIntent (provider tier preference)', () => {
         fastCalls++;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
-          toolCalls: [], tokensUsed: { input: 10, output: 10 }, model: 'p-fast', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 10, output: 10 },
+          model: 'p-fast',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -264,8 +283,16 @@ describe('resolveIntent (provider tier preference)', () => {
       async generate(_req): Promise<LLMResponse> {
         toolUsesCalls++;
         return {
-          content: JSON.stringify({ strategy: 'direct-tool', refinedGoal: 'x', reasoning: 'x', directToolCall: { tool: 'shell_exec', parameters: { command: 'echo hi' } } }),
-          toolCalls: [], tokensUsed: { input: 10, output: 10 }, model: 'p-tool-uses', stopReason: 'end_turn',
+          content: JSON.stringify({
+            strategy: 'direct-tool',
+            refinedGoal: 'x',
+            reasoning: 'x',
+            directToolCall: { tool: 'shell_exec', parameters: { command: 'echo hi' } },
+          }),
+          toolCalls: [],
+          tokensUsed: { input: 10, output: 10 },
+          model: 'p-tool-uses',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -303,7 +330,10 @@ describe('resolveIntent (provider tier preference)', () => {
             },
             confidence: 0.8,
           }),
-          toolCalls: [], tokensUsed: { input: 50, output: 50 }, model: 'p-balanced', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 50, output: 50 },
+          model: 'p-balanced',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -320,7 +350,10 @@ describe('resolveIntent (provider tier preference)', () => {
             directToolCall: { tool: 'shell_exec', parameters: { command: expectedCommand } },
             confidence: 0.95,
           }),
-          toolCalls: [], tokensUsed: { input: 50, output: 50 }, model: 'p-tool-uses', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 50, output: 50 },
+          model: 'p-tool-uses',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -348,7 +381,10 @@ describe('resolveIntent (structural features)', () => {
         captured = req.userPrompt;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'capture', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'capture',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -416,7 +452,10 @@ describe('resolveIntent (canonical examples)', () => {
         capturedSystem = req.systemPrompt ?? '';
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'capture', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'capture',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -446,7 +485,10 @@ describe('resolveIntent (cache)', () => {
         calls++;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x', confidence: 0.9 }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'cached', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'cached',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -467,7 +509,10 @@ describe('resolveIntent (cache)', () => {
         calls++;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'cached', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'cached',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -493,7 +538,10 @@ describe('resolveIntent (cache)', () => {
         calls++;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'cached', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'cached',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -505,11 +553,13 @@ describe('resolveIntent (cache)', () => {
   });
 
   test('prunes expired entries once the cache crosses the eviction threshold', async () => {
-    const provider = makeProvider(JSON.stringify({
-      strategy: 'conversational',
-      refinedGoal: 'x',
-      reasoning: 'x',
-    }));
+    const provider = makeProvider(
+      JSON.stringify({
+        strategy: 'conversational',
+        refinedGoal: 'x',
+        reasoning: 'x',
+      }),
+    );
     const registry = makeRegistry(provider);
     let clock = 10_000;
     const deps = (): IntentResolverDeps => ({ registry, now: () => clock });
@@ -546,7 +596,10 @@ describe('resolveIntent (user-context injection)', () => {
         captured = req.userPrompt;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'capture', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'capture',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -571,10 +624,11 @@ describe('resolveIntent (user-context injection)', () => {
         ],
       } as never,
     });
-    await resolveIntent(
-      makeInput('ทักทายหน่อย', { sessionId: 's1' }),
-      { registry: makeRegistry(provider), userInterestMiner: miner, sessionId: 's1' },
-    );
+    await resolveIntent(makeInput('ทักทายหน่อย', { sessionId: 's1' }), {
+      registry: makeRegistry(provider),
+      userInterestMiner: miner,
+      sessionId: 's1',
+    });
 
     expect(captured).toContain('User context (learned from past activity)');
     expect(captured).toContain('creative-writing');
@@ -589,7 +643,10 @@ describe('resolveIntent (user-context injection)', () => {
         captured = req.userPrompt;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'capture', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'capture',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -618,10 +675,7 @@ describe('resolveIntent (original bug case)', () => {
       'p-balanced',
       'balanced',
     );
-    const result = await resolveIntent(
-      makeInput('อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง'),
-      makeDeps(provider),
-    );
+    const result = await resolveIntent(makeInput('อยากให้ช่วยเขียนนิยายลงขายในเว็บตูนสักเรื่อง'), makeDeps(provider));
 
     expect(result.strategy).toBe('agentic-workflow');
     expect(result.reasoningSource).toBe('llm');
@@ -638,12 +692,9 @@ describe('resolveIntent (original bug case)', () => {
 // resolveIntent — deterministic-first pipeline (tier 0.8, A5)
 // ---------------------------------------------------------------------------
 
-import {
-  composeDeterministicCandidate,
-  mapUnderstandingToStrategy,
-} from '../../src/orchestrator/intent-resolver.ts';
-import type { SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
 import { createBus } from '../../src/core/bus.ts';
+import { composeDeterministicCandidate, mapUnderstandingToStrategy } from '../../src/orchestrator/intent-resolver.ts';
+import type { SemanticTaskUnderstanding } from '../../src/orchestrator/types.ts';
 
 function makeUnderstanding(
   input: TaskInput,
@@ -808,7 +859,10 @@ describe('resolveIntent (deterministic pipeline)', () => {
         llmCalls++;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'x', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'x',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -835,7 +889,10 @@ describe('resolveIntent (deterministic pipeline)', () => {
         llmCalls++;
         return {
           content: JSON.stringify({ strategy: 'conversational', refinedGoal: 'x', reasoning: 'x' }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'llm', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'llm',
+          stopReason: 'end_turn',
         };
       },
     };
@@ -866,7 +923,9 @@ describe('resolveIntent (deterministic pipeline)', () => {
     );
     const bus = createBus();
     let contradictionEvents = 0;
-    bus.on('intent:contradiction', () => { contradictionEvents++; });
+    bus.on('intent:contradiction', () => {
+      contradictionEvents++;
+    });
 
     const input = makeInput('analyze the codebase for performance bottlenecks');
     const understanding = makeUnderstanding(input, {
@@ -901,7 +960,9 @@ describe('resolveIntent (deterministic pipeline)', () => {
     );
     const bus = createBus();
     let uncertainEvents = 0;
-    bus.on('intent:uncertain', () => { uncertainEvents++; });
+    bus.on('intent:uncertain', () => {
+      uncertainEvents++;
+    });
 
     const input = makeInput('จัดการเรื่องนี้ให้หน่อย');
     const understanding = makeUnderstanding(input, {
@@ -965,13 +1026,18 @@ describe('resolveIntent (deterministic pipeline)', () => {
             workflowPrompt: 'step 1',
             confidence: 0.9,
           }),
-          toolCalls: [], tokensUsed: { input: 1, output: 1 }, model: 'p-balanced', stopReason: 'end_turn',
+          toolCalls: [],
+          tokensUsed: { input: 1, output: 1 },
+          model: 'p-balanced',
+          stopReason: 'end_turn',
         };
       },
     };
     const bus = createBus();
     let cacheHits = 0;
-    bus.on('intent:cache_hit', () => { cacheHits++; });
+    bus.on('intent:cache_hit', () => {
+      cacheHits++;
+    });
 
     const input = makeInput('refactor the auth module carefully');
     const understanding = makeUnderstanding(input, {
@@ -1032,9 +1098,7 @@ describe('resolveIntent — external-coding-cli pre-classifier', () => {
     expect(result.strategy).toBe('agentic-workflow');
     expect(result.externalCodingCli).toBeDefined();
     expect(result.externalCodingCli?.providerId).toBe('claude-code');
-    expect(result.externalCodingCli?.targetPaths).toContain(
-      '/Users/phumin.k/appl/Docs/s1_design_spec',
-    );
+    expect(result.externalCodingCli?.targetPaths).toContain('/Users/phumin.k/appl/Docs/s1_design_spec');
     // Crucially — NOT direct-tool / shell_exec.
     expect(result.strategy).not.toBe('direct-tool');
     expect(result.directToolCall).toBeUndefined();
@@ -1042,19 +1106,13 @@ describe('resolveIntent — external-coding-cli pre-classifier', () => {
   });
 
   test('English "ask claude code to ..." routes to externalCodingCli', async () => {
-    const result = await resolveIntent(
-      makeInput('ask claude code cli to refactor src/foo.ts'),
-      makeDeps(),
-    );
+    const result = await resolveIntent(makeInput('ask claude code cli to refactor src/foo.ts'), makeDeps());
     expect(result.strategy).toBe('agentic-workflow');
     expect(result.externalCodingCli?.providerId).toBe('claude-code');
   });
 
   test('"use gh copilot to ..." routes to externalCodingCli with copilot provider', async () => {
-    const result = await resolveIntent(
-      makeInput('use gh copilot to suggest a fix'),
-      makeDeps(),
-    );
+    const result = await resolveIntent(makeInput('use gh copilot to suggest a fix'), makeDeps());
     expect(result.strategy).toBe('agentic-workflow');
     expect(result.externalCodingCli?.providerId).toBe('github-copilot');
   });
@@ -1072,10 +1130,7 @@ describe('resolveIntent — external-coding-cli pre-classifier', () => {
         confidence: 0.9,
       }),
     );
-    const result = await resolveIntent(
-      makeInput('what is claude code?'),
-      makeDeps(provider),
-    );
+    const result = await resolveIntent(makeInput('what is claude code?'), makeDeps(provider));
     expect(result.externalCodingCli).toBeUndefined();
   });
 
@@ -1091,22 +1146,16 @@ describe('resolveIntent — external-coding-cli pre-classifier', () => {
     //   - reasoningSource='deterministic'
     //   - directToolCall is undefined — the shell_exec parser MUST not see this
     const result = await resolveIntent(
-      makeInput(
-        'สั่งงาน claude code cli ช่วยรัน verify flow เปิดบัญชีกองทุน `/Users/phumin.k/appl/Docs/s1_design_spec`',
-      ),
+      makeInput('สั่งงาน claude code cli ช่วยรัน verify flow เปิดบัญชีกองทุน `/Users/phumin.k/appl/Docs/s1_design_spec`'),
       makeDeps(),
     );
     expect(result.strategy).toBe('agentic-workflow');
     expect(result.directToolCall).toBeUndefined();
     expect(result.externalCodingCli).toBeDefined();
     expect(result.externalCodingCli?.providerId).toBe('claude-code');
-    expect(result.externalCodingCli?.targetPaths).toContain(
-      '/Users/phumin.k/appl/Docs/s1_design_spec',
-    );
+    expect(result.externalCodingCli?.targetPaths).toContain('/Users/phumin.k/appl/Docs/s1_design_spec');
     // The directory path becomes cwd because it has no file extension.
-    expect(result.externalCodingCli?.cwd).toBe(
-      '/Users/phumin.k/appl/Docs/s1_design_spec',
-    );
+    expect(result.externalCodingCli?.cwd).toBe('/Users/phumin.k/appl/Docs/s1_design_spec');
     // The CLI receives a clean instruction with the verb / provider stripped.
     expect(result.externalCodingCli?.taskText).toContain('verify flow');
     expect(result.reasoning).toContain('external-coding-cli');
@@ -1126,8 +1175,7 @@ describe('resolveIntent — external-coding-cli pre-classifier', () => {
     // The pre-classifier runs BEFORE the cache lookup at [A.0], so even
     // though [A] would normally short-circuit on a cache hit, the
     // ECC verdict wins on every call.
-    const goal =
-      'สั่งงาน claude code cli ช่วยรัน verify flow `/Users/test/spec`';
+    const goal = 'สั่งงาน claude code cli ช่วยรัน verify flow `/Users/test/spec`';
     // First call without ECC pre-classifier (simulated by an LLM that
     // emits direct-tool). The current pre-classifier would catch this
     // immediately, so we manually pre-warm the cache via composition.
@@ -1205,10 +1253,7 @@ describe('resolveIntent — external-coding-cli pre-classifier', () => {
         confidence: 0.7,
       }),
     );
-    const result = await resolveIntent(
-      makeInput('retry'),
-      makeDeps(provider),
-    );
+    const result = await resolveIntent(makeInput('retry'), makeDeps(provider));
     expect(result.externalCodingCli).toBeUndefined();
   });
 
@@ -1225,10 +1270,7 @@ describe('resolveIntent — external-coding-cli pre-classifier', () => {
         confidence: 0.75,
       }),
     );
-    const result = await resolveIntent(
-      makeInput('ดูไฟล์ใน `/tmp/foo` หน่อย'),
-      makeDeps(provider),
-    );
+    const result = await resolveIntent(makeInput('ดูไฟล์ใน `/tmp/foo` หน่อย'), makeDeps(provider));
     expect(result.externalCodingCli).toBeUndefined();
   });
 });

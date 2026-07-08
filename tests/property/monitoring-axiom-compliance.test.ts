@@ -55,20 +55,15 @@ const opinionArb: fc.Arbitrary<SubjectiveOpinion> = fc
 describe('A1 — Epistemic coherence', () => {
   test('fromScalar produces a valid opinion for any (confidence, uncertainty) pair', () => {
     fc.assert(
-      fc.property(
-        probArb,
-        fc.float({ min: 0, max: 1, noNaN: true }),
-        baseRateArb,
-        (confidence, defaultU, baseRate) => {
-          const o = fromScalar(confidence, baseRate, defaultU);
-          expect(isValid(o)).toBe(true);
-          // b + d + u = 1 (within SL_EPSILON), all components in [0, 1].
-          expect(Math.abs(o.belief + o.disbelief + o.uncertainty - 1)).toBeLessThan(SL_EPSILON);
-          expect(o.belief).toBeGreaterThanOrEqual(0);
-          expect(o.disbelief).toBeGreaterThanOrEqual(0);
-          expect(o.uncertainty).toBeGreaterThanOrEqual(0);
-        },
-      ),
+      fc.property(probArb, fc.float({ min: 0, max: 1, noNaN: true }), baseRateArb, (confidence, defaultU, baseRate) => {
+        const o = fromScalar(confidence, baseRate, defaultU);
+        expect(isValid(o)).toBe(true);
+        // b + d + u = 1 (within SL_EPSILON), all components in [0, 1].
+        expect(Math.abs(o.belief + o.disbelief + o.uncertainty - 1)).toBeLessThan(SL_EPSILON);
+        expect(o.belief).toBeGreaterThanOrEqual(0);
+        expect(o.disbelief).toBeGreaterThanOrEqual(0);
+        expect(o.uncertainty).toBeGreaterThanOrEqual(0);
+      }),
       { numRuns: 200 },
     );
   });
@@ -89,12 +84,16 @@ describe('A1 — Epistemic coherence', () => {
 describe('A2 — First-class uncertainty', () => {
   test('fromScalar with defaultUncertainty > 0 always preserves at least that much uncertainty', () => {
     fc.assert(
-      fc.property(probArb, fc.float({ min: Math.fround(0.01), max: Math.fround(0.99), noNaN: true }), (confidence, defaultU) => {
-        const o = fromScalar(confidence, 0.5, defaultU);
-        // Uncertainty must NEVER drop below the requested floor — that
-        // would mean fromScalar fabricated certainty out of thin air.
-        expect(o.uncertainty).toBeGreaterThanOrEqual(defaultU - SL_EPSILON);
-      }),
+      fc.property(
+        probArb,
+        fc.float({ min: Math.fround(0.01), max: Math.fround(0.99), noNaN: true }),
+        (confidence, defaultU) => {
+          const o = fromScalar(confidence, 0.5, defaultU);
+          // Uncertainty must NEVER drop below the requested floor — that
+          // would mean fromScalar fabricated certainty out of thin air.
+          expect(o.uncertainty).toBeGreaterThanOrEqual(defaultU - SL_EPSILON);
+        },
+      ),
       { numRuns: 200 },
     );
   });
@@ -117,14 +116,10 @@ describe('A3 — Deterministic governance', () => {
   test('OracleEMACalibrator is deterministic — same observation sequence → same final state', () => {
     fc.assert(
       fc.property(
-        fc.array(
-          fc.tuple(
-            fc.constantFrom('ast', 'type', 'dep', 'lint'),
-            fc.boolean(),
-            fc.boolean(),
-          ),
-          { minLength: 1, maxLength: 50 },
-        ),
+        fc.array(fc.tuple(fc.constantFrom('ast', 'type', 'dep', 'lint'), fc.boolean(), fc.boolean()), {
+          minLength: 1,
+          maxLength: 50,
+        }),
         (observations) => {
           const calA = new OracleEMACalibrator();
           const calB = new OracleEMACalibrator();

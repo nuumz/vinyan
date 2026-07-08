@@ -116,10 +116,7 @@ describe('cot-injection — gate paths', () => {
 
   test("A10 — all-stale yields 'all-stale' skip distinct from filter skip", () => {
     const decision = evaluateInjection({
-      thoughts: [
-        thought({ content: 'stale1', ts: NOW - 600_000 }),
-        thought({ content: 'stale2', ts: NOW - 700_000 }),
-      ],
+      thoughts: [thought({ content: 'stale1', ts: NOW - 600_000 }), thought({ content: 'stale2', ts: NOW - 700_000 })],
       toolCalls: [],
       priorRoundCompleted: true,
       now: NOW,
@@ -205,13 +202,8 @@ describe('cot-injection — A2 reflect grouping + A3 determinism', () => {
       now: NOW,
     });
     if (decision.kind !== 'inject') throw new Error('expected inject');
-    expect(decision.reasoning.map((t) => t.content)).toEqual([
-      'pre-tool reasoning',
-      'post-tool reasoning',
-    ]);
-    expect(decision.reflective.map((t) => t.content)).toEqual([
-      'I am uncertain whether X or Y',
-    ]);
+    expect(decision.reasoning.map((t) => t.content)).toEqual(['pre-tool reasoning', 'post-tool reasoning']);
+    expect(decision.reflective.map((t) => t.content)).toEqual(['I am uncertain whether X or Y']);
   });
 
   test('formatInjectionForPrompt highlights reflective uncertainty as must-address', () => {
@@ -275,9 +267,7 @@ describe('cot-injection — A2 reflect grouping + A3 determinism', () => {
     expect(decision.thoughts).toHaveLength(MAX_INJECTED_THOUGHTS);
     // Sliced last by ts → drops the earliest 5.
     expect(decision.thoughts[0]!.content).toBe('t5');
-    expect(decision.thoughts[MAX_INJECTED_THOUGHTS - 1]!.content).toBe(
-      `t${MAX_INJECTED_THOUGHTS + 4}`,
-    );
+    expect(decision.thoughts[MAX_INJECTED_THOUGHTS - 1]!.content).toBe(`t${MAX_INJECTED_THOUGHTS + 4}`);
   });
 
   test('A3 — chronological order preserved regardless of input order', () => {
@@ -330,7 +320,7 @@ describe('cot-injection — A1 verifier isolation invariant', () => {
       }
       for (const name of entries) {
         const full = join(dir, name);
-        let st;
+        let st: import('node:fs').Stats;
         try {
           st = statSync(full);
         } catch {
@@ -371,10 +361,7 @@ describe('cot-injection — A1 verifier isolation invariant', () => {
       }
     }
     if (violations.length > 0) {
-      throw new Error(
-        'A1 invariant violated — verification code references CoT thoughts:\n' +
-          violations.join('\n'),
-      );
+      throw new Error('A1 invariant violated — verification code references CoT thoughts:\n' + violations.join('\n'));
     }
   });
 });

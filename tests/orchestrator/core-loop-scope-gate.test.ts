@@ -90,7 +90,11 @@ function makeCodeRegistry() {
 
 describe('General-purpose orchestrator — all tasks dispatched', () => {
   test('greeting proceeds through LLM, not rejected', async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeReasoningRegistry(), useSubprocess: false });
+    const orchestrator = createOrchestrator({
+      workspace: tempDir,
+      registry: makeReasoningRegistry(),
+      useSubprocess: false,
+    });
     const result = await orchestrator.executeTask(makeReasoningInput('สวัสดี'));
 
     expect(result.status).toBe('completed');
@@ -101,7 +105,11 @@ describe('General-purpose orchestrator — all tasks dispatched', () => {
   });
 
   test('non-code request proceeds through LLM, not rejected', async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeReasoningRegistry(), useSubprocess: false });
+    const orchestrator = createOrchestrator({
+      workspace: tempDir,
+      registry: makeReasoningRegistry(),
+      useSubprocess: false,
+    });
     const result = await orchestrator.executeTask(makeReasoningInput('ช่วยถ่ายรูป screenshot'));
 
     expect(result.status).toBe('completed');
@@ -118,7 +126,11 @@ describe('General-purpose orchestrator — all tasks dispatched', () => {
   });
 
   test('reasoning about code completes normally', async () => {
-    const orchestrator = createOrchestrator({ workspace: tempDir, registry: makeReasoningRegistry(), useSubprocess: false });
+    const orchestrator = createOrchestrator({
+      workspace: tempDir,
+      registry: makeReasoningRegistry(),
+      useSubprocess: false,
+    });
     const result = await orchestrator.executeTask(makeReasoningInput('explain how the database query optimizer works'));
 
     expect(result.status).toBe('completed');

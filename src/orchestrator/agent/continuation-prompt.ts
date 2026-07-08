@@ -40,7 +40,9 @@ export function buildContinuationPrompt(ctx: ContinuationContext): string {
     parts.push(`Oracles that rejected the previous attempt: ${ctx.failedOracles.join(', ')}`);
   }
 
-  parts.push('Address the blockers directly. Reuse anything you already wrote — do not re-read files you already have in context.');
+  parts.push(
+    'Address the blockers directly. Reuse anything you already wrote — do not re-read files you already have in context.',
+  );
 
   return parts.join('\n');
 }

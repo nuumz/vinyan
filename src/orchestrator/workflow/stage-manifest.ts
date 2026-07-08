@@ -438,8 +438,11 @@ export function parseWinnerVerdict(
   // answer, but we tolerate explanatory text after it.
   const fence = /```json\s*([\s\S]*?)\s*```/gi;
   let lastMatch: RegExpExecArray | null = null;
-  let m: RegExpExecArray | null;
-  while ((m = fence.exec(synthesisOutput)) !== null) lastMatch = m;
+  let m: RegExpExecArray | null = fence.exec(synthesisOutput);
+  while (m !== null) {
+    lastMatch = m;
+    m = fence.exec(synthesisOutput);
+  }
   if (!lastMatch) return undefined;
   let parsed: unknown;
   try {
@@ -479,13 +482,7 @@ export function parseWinnerVerdict(
   if (obj.scores && typeof obj.scores === 'object') {
     const candidate: Record<string, number> = {};
     for (const [k, v] of Object.entries(obj.scores as Record<string, unknown>)) {
-      if (
-        participatingAgentIds.includes(k) &&
-        typeof v === 'number' &&
-        Number.isInteger(v) &&
-        v >= 0 &&
-        v <= 10
-      ) {
+      if (participatingAgentIds.includes(k) && typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 10) {
         candidate[k] = v;
       }
     }

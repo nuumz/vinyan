@@ -6,8 +6,8 @@
  * and skips entirely for non-creative domains.
  */
 import { describe, expect, test } from 'bun:test';
-import type { Turn, RoutingDecision, TaskInput, TaskResult } from '../../src/orchestrator/types.ts';
 import { maybeEmitCreativeClarificationGate } from '../../src/orchestrator/creative-clarification-gate.ts';
+import type { RoutingDecision, TaskInput, TaskResult, Turn } from '../../src/orchestrator/types.ts';
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -58,9 +58,12 @@ function makeDeps(history: Turn[] | undefined = undefined) {
         events.push({ name, payload });
       },
     } as never,
-    sessionManager: history === undefined ? undefined : {
-      getTurnsHistory: () => history,
-    },
+    sessionManager:
+      history === undefined
+        ? undefined
+        : {
+            getTurnsHistory: () => history,
+          },
     traceCollector: {
       record: async (trace: unknown) => {
         recordedTraces.push(trace);
@@ -145,21 +148,13 @@ describe('maybeEmitCreativeClarificationGate — skips when not applicable', () 
 
   test('skips for a short greeting', async () => {
     const { deps } = makeDeps([]);
-    const result = await maybeEmitCreativeClarificationGate(
-      makeInput('hi', { sessionId: 's1' }),
-      makeRouting(),
-      deps,
-    );
+    const result = await maybeEmitCreativeClarificationGate(makeInput('hi', { sessionId: 's1' }), makeRouting(), deps);
     expect(result).toBeNull();
   });
 
   test('treats an absent sessionManager as a fresh session (still fires for creative)', async () => {
     const { deps, events } = makeDeps(undefined);
-    const result = await maybeEmitCreativeClarificationGate(
-      makeInput('write a webtoon novel'),
-      makeRouting(),
-      deps,
-    );
+    const result = await maybeEmitCreativeClarificationGate(makeInput('write a webtoon novel'), makeRouting(), deps);
     expect(result).not.toBeNull();
     expect(events.some((e) => e.name === 'agent:clarification_requested')).toBe(true);
   });
@@ -190,9 +185,7 @@ describe('maybeEmitCreativeClarificationGate — skips when not applicable', () 
     const result = await maybeEmitCreativeClarificationGate(
       makeInput('อยากเขียนนิยาย', {
         sessionId: 's1',
-        constraints: [
-          `CLARIFICATION_BATCH:${JSON.stringify({ questions: ['ประเภท?'], reply: 'fantasy' })}`,
-        ],
+        constraints: [`CLARIFICATION_BATCH:${JSON.stringify({ questions: ['ประเภท?'], reply: 'fantasy' })}`],
       }),
       makeRouting(),
       deps,
@@ -229,11 +222,7 @@ describe('maybeEmitCreativeClarificationGate — skips when not applicable', () 
 describe('maybeEmitCreativeClarificationGate — trace shape', () => {
   test('records a trace with approach=creative-clarification', async () => {
     const { deps, recordedTraces } = makeDeps([]);
-    await maybeEmitCreativeClarificationGate(
-      makeInput('write a novel', { sessionId: 's1' }),
-      makeRouting(3),
-      deps,
-    );
+    await maybeEmitCreativeClarificationGate(makeInput('write a novel', { sessionId: 's1' }), makeRouting(3), deps);
     const trace = recordedTraces[0] as { approach: string; routingLevel: number; outcome: string };
     expect(trace.approach).toBe('creative-clarification');
     expect(trace.routingLevel).toBe(3);

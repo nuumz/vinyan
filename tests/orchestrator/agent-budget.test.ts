@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 import type { AgentBudget } from '../../src/orchestrator/protocol.ts';
 import type { RoutingDecision } from '../../src/orchestrator/types.ts';
-import { AgentBudgetTracker } from '../../src/orchestrator/agent/agent-budget.ts';
 
 function makeBudget(overrides: Partial<AgentBudget> = {}): AgentBudget {
   return {
@@ -98,7 +98,9 @@ describe('AgentBudgetTracker', () => {
 
   describe('deriveChildBudget', () => {
     it('uses delegationRemaining * 0.5 cap', () => {
-      const tracker = new AgentBudgetTracker(makeBudget({ delegation: 2000, delegationDepth: 0, maxDelegationDepth: 3 }));
+      const tracker = new AgentBudgetTracker(
+        makeBudget({ delegation: 2000, delegationDepth: 0, maxDelegationDepth: 3 }),
+      );
 
       const child = tracker.deriveChildBudget(1500);
 
@@ -121,7 +123,7 @@ describe('AgentBudgetTracker', () => {
 
       // allocated = min(800, floor(2000*0.5)=1000) = 800
       expect(child.maxTokens).toBe(800);
-      expect(child.base).toBe(Math.floor(800 * 0.6));   // 480
+      expect(child.base).toBe(Math.floor(800 * 0.6)); // 480
       expect(child.negotiable).toBe(Math.floor(800 * 0.3)); // 240
       expect(child.delegation).toBe(Math.floor(800 * 0.1)); // 80
     });
@@ -194,29 +196,35 @@ describe('AgentBudgetTracker', () => {
 
   describe('canDelegate', () => {
     it('returns true when depth < max and delegation remaining', () => {
-      const tracker = new AgentBudgetTracker(makeBudget({
-        delegationDepth: 0,
-        maxDelegationDepth: 1,
-        delegation: 1000,
-      }));
+      const tracker = new AgentBudgetTracker(
+        makeBudget({
+          delegationDepth: 0,
+          maxDelegationDepth: 1,
+          delegation: 1000,
+        }),
+      );
       expect(tracker.canDelegate()).toBe(true);
     });
 
     it('returns false when at max depth', () => {
-      const tracker = new AgentBudgetTracker(makeBudget({
-        delegationDepth: 1,
-        maxDelegationDepth: 1,
-        delegation: 1000,
-      }));
+      const tracker = new AgentBudgetTracker(
+        makeBudget({
+          delegationDepth: 1,
+          maxDelegationDepth: 1,
+          delegation: 1000,
+        }),
+      );
       expect(tracker.canDelegate()).toBe(false);
     });
 
     it('returns false when no delegation tokens remain', () => {
-      const tracker = new AgentBudgetTracker(makeBudget({
-        delegationDepth: 0,
-        maxDelegationDepth: 3,
-        delegation: 0,
-      }));
+      const tracker = new AgentBudgetTracker(
+        makeBudget({
+          delegationDepth: 0,
+          maxDelegationDepth: 3,
+          delegation: 0,
+        }),
+      );
       expect(tracker.canDelegate()).toBe(false);
     });
   });
@@ -252,12 +260,14 @@ describe('AgentBudgetTracker', () => {
 
   describe('toSnapshot', () => {
     it('reflects consumed amounts in remaining pools', () => {
-      const tracker = new AgentBudgetTracker(makeBudget({
-        base: 6000,
-        negotiable: 2500,
-        delegation: 1500,
-        maxExtensionRequests: 3,
-      }));
+      const tracker = new AgentBudgetTracker(
+        makeBudget({
+          base: 6000,
+          negotiable: 2500,
+          delegation: 1500,
+          maxExtensionRequests: 3,
+        }),
+      );
 
       tracker.recordTurn(1000);
       tracker.requestExtension(500); // granted min(500, 2500*0.5=1250) = 500

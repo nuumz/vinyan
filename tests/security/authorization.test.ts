@@ -3,17 +3,12 @@
  * API input sanitization, and multi-token role mapping.
  */
 
-import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
-import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import {
-  ROLE_PERMISSIONS,
-  hasPermission,
-  classifyRequest,
-  loadTokenFile,
-} from '../../src/security/authorization.ts';
-import { sanitizeTaskInput } from '../../src/security/guardrails-api.ts';
 import { createAuthMiddleware } from '../../src/security/auth.ts';
+import { classifyRequest, hasPermission, loadTokenFile, ROLE_PERMISSIONS } from '../../src/security/authorization.ts';
+import { sanitizeTaskInput } from '../../src/security/guardrails-api.ts';
 import type { Role } from '../../src/security/types.ts';
 
 // ── Role Permission Matrix ────────────────────────────────────────────
@@ -227,12 +222,15 @@ describe('loadTokenFile', () => {
   });
 
   it('loads valid token file', () => {
-    writeFileSync(tokenFilePath, JSON.stringify({
-      tokens: [
-        { token: 'read-token-123', role: 'readonly' },
-        { token: 'admin-token-456', role: 'admin', instanceId: 'inst-1' },
-      ],
-    }));
+    writeFileSync(
+      tokenFilePath,
+      JSON.stringify({
+        tokens: [
+          { token: 'read-token-123', role: 'readonly' },
+          { token: 'admin-token-456', role: 'admin', instanceId: 'inst-1' },
+        ],
+      }),
+    );
     const map = loadTokenFile(tokenFilePath);
     expect(map.size).toBe(2);
     expect(map.get('read-token-123')?.role).toBe('readonly');
@@ -257,12 +255,15 @@ describe('createAuthMiddleware with RBAC', () => {
   beforeAll(() => {
     mkdirSync(tmpDir, { recursive: true });
     writeFileSync(defaultTokenPath, 'default-admin-token\n', { mode: 0o600 });
-    writeFileSync(tokenConfigPath, JSON.stringify({
-      tokens: [
-        { token: 'readonly-tok', role: 'readonly' },
-        { token: 'operator-tok', role: 'operator' },
-      ],
-    }));
+    writeFileSync(
+      tokenConfigPath,
+      JSON.stringify({
+        tokens: [
+          { token: 'readonly-tok', role: 'readonly' },
+          { token: 'operator-tok', role: 'operator' },
+        ],
+      }),
+    );
   });
 
   afterAll(() => {
@@ -291,25 +292,31 @@ describe('createAuthMiddleware with RBAC', () => {
 
   it('authorizes readonly for GET endpoints', () => {
     const mw = createAuthMiddleware(defaultTokenPath, tokenConfigPath);
-    const ctx = mw.authenticate(new Request('http://localhost/api/v1/health', {
-      headers: { authorization: 'Bearer readonly-tok' },
-    }));
+    const ctx = mw.authenticate(
+      new Request('http://localhost/api/v1/health', {
+        headers: { authorization: 'Bearer readonly-tok' },
+      }),
+    );
     expect(mw.authorize(ctx, 'GET', '/api/v1/health')).toBe(true);
   });
 
   it('denies readonly for POST tasks', () => {
     const mw = createAuthMiddleware(defaultTokenPath, tokenConfigPath);
-    const ctx = mw.authenticate(new Request('http://localhost/api/v1/tasks', {
-      headers: { authorization: 'Bearer readonly-tok' },
-    }));
+    const ctx = mw.authenticate(
+      new Request('http://localhost/api/v1/tasks', {
+        headers: { authorization: 'Bearer readonly-tok' },
+      }),
+    );
     expect(mw.authorize(ctx, 'POST', '/api/v1/tasks')).toBe(false);
   });
 
   it('authorizes operator for write:tasks', () => {
     const mw = createAuthMiddleware(defaultTokenPath, tokenConfigPath);
-    const ctx = mw.authenticate(new Request('http://localhost/api/v1/tasks', {
-      headers: { authorization: 'Bearer operator-tok' },
-    }));
+    const ctx = mw.authenticate(
+      new Request('http://localhost/api/v1/tasks', {
+        headers: { authorization: 'Bearer operator-tok' },
+      }),
+    );
     expect(mw.authorize(ctx, 'POST', '/api/v1/tasks')).toBe(true);
   });
 

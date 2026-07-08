@@ -3,10 +3,7 @@
  * classification (plan commit D2). Pure function; no I/O, no LLM.
  */
 import { describe, expect, it } from 'bun:test';
-import {
-  computeStructuralFeatures,
-  renderStructuralFeatures,
-} from '../../../src/orchestrator/intent/features.ts';
+import { computeStructuralFeatures, renderStructuralFeatures } from '../../../src/orchestrator/intent/features.ts';
 import type { Turn } from '../../../src/orchestrator/types.ts';
 
 function entry(role: 'user' | 'assistant', content: string): Turn {

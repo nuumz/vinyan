@@ -73,8 +73,7 @@ export class CodingCliRunner {
     const stdout = proc.stdout();
     const stderr = proc.stderr();
     const result =
-      this.adapter.parseFinalResult(stdout) ??
-      parseFinalResult(stdout, { expectedProviderId: this.adapter.id });
+      this.adapter.parseFinalResult(stdout) ?? parseFinalResult(stdout, { expectedProviderId: this.adapter.id });
     events.onProcessExit?.(exit.code, exit.signal);
     return { exitCode: exit.code, signal: exit.signal, stdout, stderr, result, durationMs };
   }
@@ -119,12 +118,7 @@ export class CodingCliRunner {
     return proc;
   }
 
-  private handleChunk(
-    chunk: string,
-    channel: 'stdout' | 'stderr',
-    ctx: ParseContext,
-    events: RunnerEvents,
-  ): void {
+  private handleChunk(chunk: string, channel: 'stdout' | 'stderr', ctx: ParseContext, events: RunnerEvents): void {
     ctx.buffer += chunk;
     const parsed = this.adapter.parseOutputDelta(chunk, ctx);
     for (const evt of parsed) {
@@ -174,16 +168,11 @@ export class InteractiveSessionHandle {
 
   async send(message: string, role: 'initial' | 'followup' = 'followup'): Promise<boolean> {
     const formatted =
-      role === 'initial'
-        ? this.adapter.formatInitialPrompt(this.task)
-        : this.adapter.formatFollowupMessage(message);
+      role === 'initial' ? this.adapter.formatInitialPrompt(this.task) : this.adapter.formatFollowupMessage(message);
     return this.proc.write(formatted);
   }
 
-  async respondToApproval(
-    request: CodingCliApprovalRequest,
-    decision: 'approved' | 'rejected',
-  ): Promise<boolean> {
+  async respondToApproval(request: CodingCliApprovalRequest, decision: 'approved' | 'rejected'): Promise<boolean> {
     const reply: CodingCliInput = this.adapter.respondToApproval(request, decision);
     switch (reply.kind) {
       case 'stdin':

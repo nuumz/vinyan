@@ -10,21 +10,23 @@
  *   - commonsensePromoted is always 0 (M4.5 hookup is opt-in)
  */
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { PATTERN_SCHEMA_SQL } from '../../src/db/pattern-schema.ts';
 import { PatternStore } from '../../src/db/pattern-store.ts';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
 import { CommonSenseRegistry } from '../../src/oracle/commonsense/registry.ts';
-import { SleepCycleRunner } from '../../src/sleep-cycle/sleep-cycle.ts';
 import type { ExecutionTrace } from '../../src/orchestrator/types.ts';
+import { SleepCycleRunner } from '../../src/sleep-cycle/sleep-cycle.ts';
 
 function makeStores() {
   const db = new Database(':memory:');
   db.exec(TRACE_SCHEMA_SQL);
   db.exec(PATTERN_SCHEMA_SQL);
-  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at INTEGER NOT NULL);`);
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at INTEGER NOT NULL);`,
+  );
   migration001.up(db);
   return {
     db,
@@ -52,12 +54,7 @@ function makeTrace(overrides: Partial<ExecutionTrace>): ExecutionTrace {
   };
 }
 
-function insertFailingTraces(
-  traceStore: TraceStore,
-  count: number,
-  approach: string,
-  taskTypeSignature: string,
-): void {
+function insertFailingTraces(traceStore: TraceStore, count: number, approach: string, taskTypeSignature: string): void {
   for (let i = 0; i < count; i++) {
     traceStore.insert(
       makeTrace({

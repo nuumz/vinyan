@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { PredictionLedger } from '../../src/db/prediction-ledger.ts';
 import type { OutcomePrediction, PredictionOutcome } from '../../src/orchestrator/forward-predictor-types.ts';
 
@@ -106,9 +106,7 @@ describe('PredictionLedger', () => {
 
     const pred2 = makePrediction({
       predictionId: 'p2',
-      causalRiskFiles: [
-        { filePath: 'src/a.ts', breakProbability: 0.5, causalChain: [] },
-      ],
+      causalRiskFiles: [{ filePath: 'src/a.ts', breakProbability: 0.5, causalChain: [] }],
     });
     ledger.recordPrediction(pred2);
     ledger.recordOutcome(makeOutcome('p2', { actualTestResult: 'fail', actualQuality: 30 }), 0.8);
@@ -245,12 +243,14 @@ describe('PredictionLedger', () => {
       taskId: 'task-1',
       selectedPlanId: 'plan-a',
       selectedReason: 'highest_quality',
-      planRankings: [{
-        planId: 'plan-a',
-        predictedOutcome: makePrediction({ predictionId: 'rank-pred' }),
-        rank: 1,
-        executed: true,
-      }],
+      planRankings: [
+        {
+          planId: 'plan-a',
+          predictedOutcome: makePrediction({ predictionId: 'rank-pred' }),
+          rank: 1,
+          executed: true,
+        },
+      ],
     });
 
     // Verify it was inserted (no getter API, but should not throw)

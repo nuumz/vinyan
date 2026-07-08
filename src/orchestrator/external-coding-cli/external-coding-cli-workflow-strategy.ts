@@ -11,10 +11,7 @@
  * separation of generation (CLI) from verification (Vinyan) is enforced
  * here, not elsewhere.
  */
-import {
-  type WorkflowMetadata,
-  type WorkflowRegistry,
-} from '../workflow/workflow-registry.ts';
+import type { WorkflowMetadata, WorkflowRegistry } from '../workflow/workflow-registry.ts';
 import type { ExternalCodingCliController } from './external-coding-cli-controller.ts';
 import type {
   CodingCliCapabilities,

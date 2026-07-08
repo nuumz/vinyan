@@ -7,8 +7,8 @@
  * Source of truth: spec/tdd.md §10, arch D7
  */
 
-import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type { SkillStore } from '../db/skill-store.ts';
+import { userConstraintsOnly } from './constraints/pipeline-constraints.ts';
 import type { TaskDecomposer } from './core-loop.ts';
 import { allCriteriaMet, formatFailures, validateDAG } from './dag-validator.ts';
 import type { LLMProviderRegistry } from './llm/provider-registry.ts';
@@ -161,7 +161,7 @@ export class TaskDecomposerImpl implements TaskDecomposer {
         });
         const dag = this.parseDAG(response.content);
         if (!dag) {
-          validationFeedback = "Response was not valid JSON matching TaskDAG schema.";
+          validationFeedback = 'Response was not valid JSON matching TaskDAG schema.';
           continue;
         }
         const criteria = validateDAG(dag, blastRadius);

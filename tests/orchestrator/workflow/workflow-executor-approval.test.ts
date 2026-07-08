@@ -16,8 +16,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { createBus } from '../../../src/core/bus.ts';
-import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 import type { TaskInput } from '../../../src/orchestrator/types.ts';
+import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 
 function makeInput(goal: string, overrides: Partial<TaskInput> = {}): TaskInput {
   return {
@@ -90,9 +90,7 @@ describe('executeWorkflow — approval gate', () => {
     // judgement.
     const bus = createBus();
     const events: Array<{ name: string; payload: unknown }> = [];
-    bus.on('workflow:plan_approved', (p) =>
-      events.push({ name: 'plan_approved', payload: p }),
-    );
+    bus.on('workflow:plan_approved', (p) => events.push({ name: 'plan_approved', payload: p }));
     const result = await executeWorkflow(makeInput('analyse something'), {
       bus,
       workflowConfig: { requireUserApproval: true, approvalTimeoutMs: 50 },
@@ -139,9 +137,7 @@ describe('executeWorkflow — approval gate', () => {
     };
     const bus = createBus();
     const events: Array<{ name: string; payload: unknown }> = [];
-    bus.on('workflow:plan_rejected', (p) =>
-      events.push({ name: 'plan_rejected', payload: p }),
-    );
+    bus.on('workflow:plan_rejected', (p) => events.push({ name: 'plan_rejected', payload: p }));
     const result = await executeWorkflow(makeInput('refactor the auth module'), {
       bus,
       llmRegistry: { selectByTier: () => mockProvider } as any,

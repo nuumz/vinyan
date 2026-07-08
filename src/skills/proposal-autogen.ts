@@ -38,21 +38,18 @@
 
 import type { VinyanBus } from '../core/bus.ts';
 import type { SkillProposalStore } from '../db/skill-proposal-store.ts';
-import type { CachedSkill } from '../orchestrator/types.ts';
 import type { ParameterLedger } from '../orchestrator/adaptive-params/parameter-ledger.ts';
+import type { CachedSkill } from '../orchestrator/types.ts';
 import {
+  type AutogenPolicySnapshot,
   computeAdaptiveThreshold,
   MAX_THRESHOLD,
   MIN_THRESHOLD,
   readPersistedThreshold,
   recordThresholdChange,
   STATIC_THRESHOLD_FALLBACK,
-  type AutogenPolicySnapshot,
 } from './autogen-policy.ts';
-import {
-  DEFAULT_COOLDOWN_MS,
-  type SkillAutogenStateStore,
-} from './autogen-state-store.ts';
+import { DEFAULT_COOLDOWN_MS, type SkillAutogenStateStore } from './autogen-state-store.ts';
 
 export interface SkillProposalAutogenDeps {
   readonly bus: VinyanBus;
@@ -318,10 +315,7 @@ export function wireSkillProposalAutogen(deps: SkillProposalAutogenDeps): () => 
  *   2. Fresh adaptive computation (when policy enabled).
  *   3. Static fallback.
  */
-function readInitialThreshold(
-  deps: SkillProposalAutogenDeps,
-  staticThreshold: number,
-): number {
+function readInitialThreshold(deps: SkillProposalAutogenDeps, staticThreshold: number): number {
   if (deps.policyEnabled === false) return staticThreshold;
   if (deps.ledger) {
     const persisted = readPersistedThreshold(deps.ledger);
@@ -357,12 +351,7 @@ function recomputeThresholdAndRecord(
   if (snapshot.threshold === oldThreshold) return oldThreshold;
   if (deps.ledger) {
     try {
-      const recorded = recordThresholdChange(
-        deps.ledger,
-        oldThreshold,
-        snapshot,
-        'autogen periodic recompute',
-      );
+      const recorded = recordThresholdChange(deps.ledger, oldThreshold, snapshot, 'autogen periodic recompute');
       if (recorded) {
         deps.bus.emit('skill:autogen_threshold_changed', {
           profile,
@@ -425,9 +414,7 @@ function renderSkillMd(skill: CachedSkill, successCount: number): string {
   const lines: string[] = [];
   lines.push(`# ${autogenName(skill)}`);
   lines.push('');
-  lines.push(
-    `Auto-generated from ${successCount} successful runs of task signature \`${skill.taskSignature}\`.`,
-  );
+  lines.push(`Auto-generated from ${successCount} successful runs of task signature \`${skill.taskSignature}\`.`);
   lines.push('');
   lines.push('## Approach');
   lines.push(skill.approach || '(no approach text recorded)');

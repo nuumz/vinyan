@@ -26,7 +26,7 @@ const WRITER_ROLE: RoleSpec = {
 const EDITOR_ROLE: RoleSpec = {
   name: 'editor',
   responsibility:
-    'Review the writer\'s draft for narrative coherence, pacing, character voice, and grammar. Post constructive feedback into `editor:feedback:*`. Do NOT rewrite — propose edits; the writer applies them.',
+    "Review the writer's draft for narrative coherence, pacing, character voice, and grammar. Post constructive feedback into `editor:feedback:*`. Do NOT rewrite — propose edits; the writer applies them.",
   writableBlackboardKeys: ['editor:feedback:*'],
   maxTurns: 2,
   canWriteFiles: false,
@@ -41,11 +41,7 @@ const TREND_ANALYST_ROLE: RoleSpec = {
   canWriteFiles: false,
 };
 
-export const CREATIVE_WRITING_ROLES: RoleSpec[] = [
-  WRITER_ROLE,
-  EDITOR_ROLE,
-  TREND_ANALYST_ROLE,
-];
+export const CREATIVE_WRITING_ROLES: RoleSpec[] = [WRITER_ROLE, EDITOR_ROLE, TREND_ANALYST_ROLE];
 
 export interface CreativeWritingRoomOptions {
   roomId: string;
@@ -60,9 +56,7 @@ export interface CreativeWritingRoomOptions {
  * Build a RoomContract pre-configured for creative-writing collaboration.
  * Returns a contract the Room dispatcher can use directly.
  */
-export function buildCreativeWritingRoomContract(
-  options: CreativeWritingRoomOptions,
-): RoomContract {
+export function buildCreativeWritingRoomContract(options: CreativeWritingRoomOptions): RoomContract {
   return {
     roomId: options.roomId,
     parentTaskId: options.parentTaskId,

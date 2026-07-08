@@ -9,7 +9,15 @@
  * values so the Orchestrator never depends on vendor vocabulary.
  */
 import type { VinyanBus } from '../../core/bus.ts';
-import type { LLMProvider, LLMRequest, RERequest, REResponse, ReasoningEngine, RoutingLevel, ThinkingConfig } from '../types.ts';
+import type {
+  LLMProvider,
+  LLMRequest,
+  RERequest,
+  REResponse,
+  ReasoningEngine,
+  RoutingLevel,
+  ThinkingConfig,
+} from '../types.ts';
 import { engineIdFromWorker as engineIdFromWorkerImpl } from './engine-worker-binding.ts';
 import type { PromptCacheTiers } from './prompt-assembler.ts';
 import type { LLMProviderRegistry } from './provider-registry.ts';
@@ -42,12 +50,17 @@ export class LLMReasoningEngine implements ReasoningEngine {
    *   and the default list. Pass when the provider's declared capabilities don't match
    *   what the RE should advertise (e.g. mock engines in tests).
    */
-  constructor(private readonly provider: LLMProvider, capabilitiesOverride?: string[]) {
+  constructor(
+    private readonly provider: LLMProvider,
+    capabilitiesOverride?: string[],
+  ) {
     this.id = provider.id;
     this.tier = provider.tier;
     this.capabilities = capabilitiesOverride?.length
       ? capabilitiesOverride
-      : (provider.capabilities?.length ? provider.capabilities : DEFAULT_LLM_CAPABILITIES);
+      : provider.capabilities?.length
+        ? provider.capabilities
+        : DEFAULT_LLM_CAPABILITIES;
     this.maxContextTokens = provider.maxContextTokens;
   }
 
@@ -147,10 +160,11 @@ export class ReasoningEngineRegistry {
    * Capability-first selection — the primary path for future non-LLM REs.
    * Falls back to tier-based if no capability-declaring engine is found.
    */
-  selectByCapability(required: string[], preferredTier?: 'fast' | 'balanced' | 'powerful' | 'tool-uses'): ReasoningEngine | undefined {
-    const capable = Array.from(this.engines.values()).filter(
-      (e) => required.every((c) => e.capabilities.includes(c)),
-    );
+  selectByCapability(
+    required: string[],
+    preferredTier?: 'fast' | 'balanced' | 'powerful' | 'tool-uses',
+  ): ReasoningEngine | undefined {
+    const capable = Array.from(this.engines.values()).filter((e) => required.every((c) => e.capabilities.includes(c)));
     if (capable.length === 0) return undefined;
     if (preferredTier) {
       const tiered = capable.find((e) => e.tier === preferredTier);

@@ -10,9 +10,9 @@
  */
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import { TRACE_SCHEMA_SQL } from '../../src/db/trace-schema.ts';
 import { TraceStore } from '../../src/db/trace-store.ts';
-import { asPersonaId } from '../../src/core/agent-vocabulary.ts';
 import type { ExecutionTrace } from '../../src/orchestrator/types.ts';
 
 function createDb(): Database {
@@ -112,20 +112,7 @@ describe('TraceStore agent_id partitioning', () => {
           model_used, tokens_consumed, duration_ms, outcome,
           oracle_verdicts, affected_files)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        'malformed-1',
-        'task-mal',
-        'INVALID UPPER',
-        Date.now(),
-        1,
-        'noop',
-        'haiku',
-        0,
-        0,
-        'success',
-        '{}',
-        '[]',
-      ],
+      ['malformed-1', 'task-mal', 'INVALID UPPER', Date.now(), 1, 'noop', 'haiku', 0, 0, 'success', '{}', '[]'],
     );
     const recent = store.findRecent(10);
     const malformed = recent.find((r) => r.id === 'malformed-1');

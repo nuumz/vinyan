@@ -17,12 +17,8 @@
  *   - Tests can inject a static registry without spinning up a real filesystem
  *     watcher (the prompt-section tests in Phase 3 will use this).
  */
-import { filterSkillsForAgent, loadSimpleSkills, type LoadSimpleSkillsOptions, type SimpleSkill } from './loader.ts';
-import {
-  startSimpleSkillWatcher,
-  type SimpleSkillWatcher,
-  type SimpleSkillWatcherOptions,
-} from './watcher.ts';
+import { filterSkillsForAgent, type LoadSimpleSkillsOptions, loadSimpleSkills, type SimpleSkill } from './loader.ts';
+import { type SimpleSkillWatcher, type SimpleSkillWatcherOptions, startSimpleSkillWatcher } from './watcher.ts';
 
 export interface SimpleSkillRegistry {
   /**
@@ -68,9 +64,7 @@ export interface CreateSimpleSkillRegistryOptions extends LoadSimpleSkillsOption
   readonly watcherDebounceMs?: number;
 }
 
-export function createSimpleSkillRegistry(
-  opts: CreateSimpleSkillRegistryOptions,
-): SimpleSkillRegistry {
+export function createSimpleSkillRegistry(opts: CreateSimpleSkillRegistryOptions): SimpleSkillRegistry {
   let skills: readonly SimpleSkill[] = [];
   const byName = new Map<string, SimpleSkill>();
   let version = 0;

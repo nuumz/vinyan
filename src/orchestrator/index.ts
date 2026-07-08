@@ -17,6 +17,7 @@ export type {
   WorkerPool,
 } from './core-loop.ts';
 export { executeTask } from './core-loop.ts';
+export { LLMReasoningEngine, ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';
 export {
   IsolationLevelSchema,
   PerceptualHierarchySchema,
@@ -42,13 +43,13 @@ export type {
   // Perception & Memory
   PerceptualHierarchy,
   PredictionError,
-  RiskFactors,
-  RoutingDecision,
   // Reasoning Engine abstraction
   REEngineType,
   RERequest,
   REResponse,
   ReasoningEngine,
+  RiskFactors,
+  RoutingDecision,
   // Routing
   RoutingLevel,
   // Self-Model
@@ -67,4 +68,3 @@ export type {
   WorkingMemoryState,
 } from './types.ts';
 export { ECP_PROTOCOL_VERSION } from './types.ts';
-export { LLMReasoningEngine, ReasoningEngineRegistry } from './llm/llm-reasoning-engine.ts';

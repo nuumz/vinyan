@@ -49,21 +49,21 @@ function providerHangs(): LLMProvider {
     id: 'mock-hang',
     tier: 'balanced',
     async generate(): Promise<LLMResponse> {
-      return new Promise(() => { /* never resolves */ });
+      return new Promise(() => {
+        /* never resolves */
+      });
     },
   };
 }
 
 // ── Input helper ────────────────────────────────────────────────────────
 
-function makeInput(
-  overrides: {
-    goal: string;
-    history?: ComprehensionInput['history'];
-    pendingQuestions?: string[];
-    rootGoal?: string | null;
-  },
-): ComprehensionInput {
+function makeInput(overrides: {
+  goal: string;
+  history?: ComprehensionInput['history'];
+  pendingQuestions?: string[];
+  rootGoal?: string | null;
+}): ComprehensionInput {
   const task: TaskInput = {
     id: 't-1',
     source: 'api',
@@ -95,8 +95,24 @@ describe('LlmComprehender', () => {
         goal: 'ok',
         rootGoal: 'write a bedtime story',
         history: [
-          { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-          { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: 'sure, what genre?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+          {
+            id: 't-0-1',
+            sessionId: 's',
+            seq: 0,
+            role: 'user',
+            blocks: [{ type: 'text', text: 'write a bedtime story' }],
+            tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+            createdAt: 1,
+          },
+          {
+            id: 't-0-2',
+            sessionId: 's',
+            seq: 0,
+            role: 'assistant',
+            blocks: [{ type: 'text', text: 'sure, what genre?' }],
+            tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+            createdAt: 2,
+          },
         ],
       }),
     );
@@ -109,9 +125,7 @@ describe('LlmComprehender', () => {
     expect(out.params.data?.resolvedGoal).toBe('write a bedtime story');
     expect(out.params.data?.priorContextSummary.length).toBeGreaterThan(0);
     // Engine identity travels via evidence_chain (one of the entries must be llm:advisory).
-    expect(
-      out.params.evidence_chain.some((e) => e.source === 'llm:advisory'),
-    ).toBe(true);
+    expect(out.params.evidence_chain.some((e) => e.source === 'llm:advisory')).toBe(true);
   });
 
   test('accepts JSON wrapped in ```json fences', async () => {
@@ -134,9 +148,7 @@ describe('LlmComprehender', () => {
     expect(out.params.type).toBe('unknown');
     expect(out.params.tier).toBe('unknown');
     expect(out.params.confidence).toBe(0);
-    expect(
-      out.params.evidence_chain.some((e) => e.source.startsWith('llm:failure:')),
-    ).toBe(true);
+    expect(out.params.evidence_chain.some((e) => e.source.startsWith('llm:failure:'))).toBe(true);
   });
 
   test('invalid schema (missing required field) → unknown', async () => {
@@ -179,11 +191,7 @@ describe('LlmComprehender', () => {
     const out2 = await eng.comprehend(makeInput({ goal: 'ok' }));
     expect(callCount).toBe(1);
     expect(out2.params.type).toBe('unknown');
-    expect(
-      out2.params.evidence_chain.some((e) =>
-        e.source.includes('circuit-breaker-open'),
-      ),
-    ).toBe(true);
+    expect(out2.params.evidence_chain.some((e) => e.source.includes('circuit-breaker-open'))).toBe(true);
   });
 
   test('timeout → unknown, without blocking the pipeline', async () => {
@@ -230,11 +238,7 @@ describe('LlmComprehender', () => {
     const out = await eng.comprehend(makeInput({ goal: 'ok' }));
     expect(out.params.confidence).toBeLessThanOrEqual(0.2);
     // Calibrator-ceiling evidence entry is present.
-    expect(
-      out.params.evidence_chain.some((e) =>
-        e.source === 'rule:calibrator-ceiling',
-      ),
-    ).toBe(true);
+    expect(out.params.evidence_chain.some((e) => e.source === 'rule:calibrator-ceiling')).toBe(true);
   });
 
   test('calibrator ceiling (unknown) falls back to conservative default (not 0.5)', async () => {

@@ -20,9 +20,7 @@ export const PROTECTED_BRANCHES = new Set(['main', 'master', 'release', 'product
 
 export const ALLOWED_PR_BASES = new Set(['main', 'master', 'develop', 'next']);
 
-export type ShipPolicyVerdict =
-  | { allowed: true }
-  | { allowed: false; reason: string; code: ShipPolicyRejectCode };
+export type ShipPolicyVerdict = { allowed: true } | { allowed: false; reason: string; code: ShipPolicyRejectCode };
 
 export type ShipPolicyRejectCode =
   | 'force-push-protected'

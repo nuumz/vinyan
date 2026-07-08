@@ -3,8 +3,9 @@
  * in-memory bun:sqlite database with the repo's migration runner so the
  * tested schema matches production exactly.
  */
-import { describe, expect, test } from 'bun:test';
+
 import { Database } from 'bun:sqlite';
+import { describe, expect, test } from 'bun:test';
 import { CodingCliStore } from '../../../src/db/coding-cli-store.ts';
 import { ALL_MIGRATIONS, MigrationRunner } from '../../../src/db/migrations/index.ts';
 import type {

@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { AgentContract } from '../../../src/core/agent-contract.ts';
 import { createBus } from '../../../src/core/bus.ts';
+import type { AgentLoopDeps, WorkerLoopResult } from '../../../src/orchestrator/agent/agent-loop.ts';
 import { RoomDispatcher, type RoomExecuteInput } from '../../../src/orchestrator/room/room-dispatcher.ts';
 import { selectRoomContract } from '../../../src/orchestrator/room/room-selector.ts';
 import type { GoalVerifier } from '../../../src/orchestrator/room/room-supervisor.ts';
@@ -21,7 +22,6 @@ import type {
   TaskInput,
   WorkingMemoryState,
 } from '../../../src/orchestrator/types.ts';
-import type { AgentLoopDeps, WorkerLoopResult } from '../../../src/orchestrator/agent/agent-loop.ts';
 
 // ── Fixtures ───────────────────────────────────────────────────────
 

@@ -41,17 +41,12 @@ describe('transactional ingest — α.2', () => {
       ingestor.ingestSession({
         profile: 'default',
         sessionId: 's-rollback',
-        summaryMarkdown:
-          '# decision section\n\nWe chose strategy A because it is safer. Strategy B failed.',
+        summaryMarkdown: '# decision section\n\nWe chose strategy A because it is safer. Strategy B failed.',
       }),
     ).toThrow('simulated page-writer failure');
 
-    const sources = (db
-      .query('SELECT COUNT(*) as c FROM memory_wiki_sources')
-      .get() as { c: number } | null)?.c;
-    const pages = (db.query('SELECT COUNT(*) as c FROM memory_wiki_pages').get() as
-      | { c: number }
-      | null)?.c;
+    const sources = (db.query('SELECT COUNT(*) as c FROM memory_wiki_sources').get() as { c: number } | null)?.c;
+    const pages = (db.query('SELECT COUNT(*) as c FROM memory_wiki_pages').get() as { c: number } | null)?.c;
     // Both rolled back — no source, no pages.
     expect(sources).toBe(0);
     expect(pages).toBe(0);
@@ -67,11 +62,7 @@ describe('transactional ingest — α.2', () => {
       return 42;
     });
     expect(got).toBe(42);
-    expect(
-      (db
-        .query('SELECT COUNT(*) as c FROM memory_wiki_operations')
-        .get() as { c: number } | null)?.c,
-    ).toBe(1);
+    expect((db.query('SELECT COUNT(*) as c FROM memory_wiki_operations').get() as { c: number } | null)?.c).toBe(1);
 
     // Failed transaction rolls back.
     expect(() =>
@@ -80,10 +71,6 @@ describe('transactional ingest — α.2', () => {
         throw new Error('rollback me');
       }),
     ).toThrow('rollback me');
-    expect(
-      (db
-        .query('SELECT COUNT(*) as c FROM memory_wiki_operations')
-        .get() as { c: number } | null)?.c,
-    ).toBe(1); // still 1, the second insert rolled back
+    expect((db.query('SELECT COUNT(*) as c FROM memory_wiki_operations').get() as { c: number } | null)?.c).toBe(1); // still 1, the second insert rolled back
   });
 });

@@ -4,8 +4,8 @@
  * α = 0.2 for 80% nominal coverage
  */
 import { describe, expect, it } from 'bun:test';
-import { CalibrationEngineImpl } from '@vinyan/orchestrator/prediction/calibration-engine.ts';
 import type { PredictionDistribution } from '@vinyan/orchestrator/forward-predictor-types.ts';
+import { CalibrationEngineImpl } from '@vinyan/orchestrator/prediction/calibration-engine.ts';
 
 const ALPHA = 0.2;
 
@@ -22,7 +22,7 @@ describe('CalibrationEngine — scoreInterval', () => {
     const pred: PredictionDistribution = { lo: 3, mid: 5, hi: 7 };
     const actual = 1;
     const is = engine.scoreInterval(pred, actual);
-    const expected = (7 - 3) + (2 / ALPHA) * (3 - 1);
+    const expected = 7 - 3 + (2 / ALPHA) * (3 - 1);
     expect(is).toBeCloseTo(expected, 10);
   });
 
@@ -31,7 +31,7 @@ describe('CalibrationEngine — scoreInterval', () => {
     const pred: PredictionDistribution = { lo: 3, mid: 5, hi: 7 };
     const actual = 10;
     const is = engine.scoreInterval(pred, actual);
-    const expected = (7 - 3) + (2 / ALPHA) * (10 - 7);
+    const expected = 7 - 3 + (2 / ALPHA) * (10 - 7);
     expect(is).toBeCloseTo(expected, 10);
   });
 

@@ -18,10 +18,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  filterSkillsForAgent,
-  loadSimpleSkills,
-} from '../../../src/skills/simple/loader.ts';
+import { filterSkillsForAgent, loadSimpleSkills } from '../../../src/skills/simple/loader.ts';
 
 let userDir: string;
 let userAgentsDir: string;

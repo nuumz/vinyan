@@ -307,8 +307,8 @@ import type {
   PipelineStep,
   PipelineStepStatus,
   TabBadge,
-  TUIState,
   ToastMessage,
+  TUIState,
   ViewTab,
 } from './types.ts';
 
@@ -420,10 +420,7 @@ function renderToast(toast: ToastMessage, width: number): string {
 function renderNotification(notif: NotificationEntry, total: number, index: number, width: number): string {
   const icon = notif.type === 'approval' ? color('⚠', ANSI.yellow, ANSI.bold) : color('!', ANSI.red);
   const taskPart = notif.taskId ? `${notif.taskId} ` : '';
-  const actions =
-    notif.type === 'approval'
-      ? `${dim('[a]')}pprove ${dim('[r]')}eject`
-      : `${dim('[Space]')}view`;
+  const actions = notif.type === 'approval' ? `${dim('[a]')}pprove ${dim('[r]')}eject` : `${dim('[Space]')}view`;
   const counter = total > 1 ? ` (${index + 1}/${total})` : '';
   const content = `${icon} ${taskPart}${notif.message}  ${actions}${counter}`;
   return padEnd(content, width);

@@ -72,10 +72,7 @@ describe('buildResearchStep', () => {
 describe('prependResearchStep', () => {
   test('prepends and rewires previously-root steps to depend on the research step', () => {
     const research = buildResearchStep('brief');
-    const plan = [
-      step({ id: 'write', dependencies: [] }),
-      step({ id: 'edit', dependencies: ['write'] }),
-    ];
+    const plan = [step({ id: 'write', dependencies: [] }), step({ id: 'edit', dependencies: ['write'] })];
     const result = prependResearchStep(plan, research);
 
     expect(result.map((s) => s.id)).toEqual([RESEARCH_STEP_ID, 'write', 'edit']);

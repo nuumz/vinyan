@@ -5,11 +5,11 @@
  * the module-level setter/clearer work.
  */
 
-import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { MigrationRunner, ALL_MIGRATIONS } from '../../../src/db/migrations/index.ts';
+import { afterEach, describe, expect, test } from 'bun:test';
 import { LocalOracleProfileStore } from '../../../src/db/local-oracle-profile-store.ts';
-import { profileStatusWeight, setGateDeps, clearGateDeps } from '../../../src/gate/gate.ts';
+import { ALL_MIGRATIONS, MigrationRunner } from '../../../src/db/migrations/index.ts';
+import { clearGateDeps, profileStatusWeight, setGateDeps } from '../../../src/gate/gate.ts';
 
 // Reset module-level state between tests so gate attenuation behaves
 // deterministically regardless of test file ordering.

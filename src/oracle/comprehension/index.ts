@@ -24,10 +24,7 @@
  * for routing (the literal goal was already valid before this phase).
  */
 
-import type {
-  ComprehendedTaskMessage,
-  ComprehensionEngineType,
-} from '../../orchestrator/comprehension/types.ts';
+import type { ComprehendedTaskMessage, ComprehensionEngineType } from '../../orchestrator/comprehension/types.ts';
 import { maxTierForEngineType, tierRank } from '../../orchestrator/comprehension/types.ts';
 import type { ContentBlock, Turn } from '../../orchestrator/types.ts';
 
@@ -245,9 +242,7 @@ export function verifyComprehension(input: VerifyComprehensionInput): Comprehens
   if (input.engineType) {
     const ceiling = maxTierForEngineType(input.engineType);
     if (tierRank(declaredTier) > tierRank(ceiling)) {
-      reasons.push(
-        `engineType=${input.engineType} caps tier at ${ceiling}, but engine self-reported ${declaredTier}`,
-      );
+      reasons.push(`engineType=${input.engineType} caps tier at ${ceiling}, but engine self-reported ${declaredTier}`);
       return {
         verified: false,
         type: 'contradictory',

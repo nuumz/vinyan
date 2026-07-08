@@ -115,12 +115,23 @@ export class RejectedApproachStore {
   loadForTaskWithVerb(fileTarget: string, taskType: string, actionVerb: string, limit = 5): RejectedApproachRow[] {
     const now = Date.now();
     // Prefer verb-matched approaches
-    const verbMatched = this.queryByFileTypeVerbStmt.all(fileTarget, taskType, actionVerb, now, limit) as RejectedApproachRow[];
+    const verbMatched = this.queryByFileTypeVerbStmt.all(
+      fileTarget,
+      taskType,
+      actionVerb,
+      now,
+      limit,
+    ) as RejectedApproachRow[];
     if (verbMatched.length >= limit) return verbMatched;
 
     // Fill remaining from same file+type (any verb)
     const remaining = limit - verbMatched.length;
-    const all = this.queryByFileAndTypeStmt.all(fileTarget, taskType, now, remaining + verbMatched.length) as RejectedApproachRow[];
+    const all = this.queryByFileAndTypeStmt.all(
+      fileTarget,
+      taskType,
+      now,
+      remaining + verbMatched.length,
+    ) as RejectedApproachRow[];
     const matchedIds = new Set(verbMatched.map((r) => r.id));
     const additional = all.filter((r) => !matchedIds.has(r.id)).slice(0, remaining);
     return [...verbMatched, ...additional];

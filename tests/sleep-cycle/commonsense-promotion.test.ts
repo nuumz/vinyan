@@ -1,19 +1,21 @@
 import { Database } from 'bun:sqlite';
-import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { migration001 } from '../../src/db/migrations/001_initial_schema.ts';
 import { CommonSenseRegistry } from '../../src/oracle/commonsense/registry.ts';
+import type { ExecutionTrace, ExtractedPattern, RoutingLevel } from '../../src/orchestrator/types.ts';
 import {
   promoteAllPatterns,
   promotePatternToCommonsense,
   walkForwardBacktest,
 } from '../../src/sleep-cycle/promotion.ts';
-import type { ExecutionTrace, ExtractedPattern, RoutingLevel } from '../../src/orchestrator/types.ts';
 
 let registry: CommonSenseRegistry;
 
 beforeEach(() => {
   const db = new Database(':memory:');
-  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at INTEGER NOT NULL);`);
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at INTEGER NOT NULL);`,
+  );
   migration001.up(db);
   registry = new CommonSenseRegistry(db);
 });
@@ -86,11 +88,7 @@ describe('walkForwardBacktest', () => {
 
   test('success-pattern: all-success traces → all windows pass', () => {
     const traces = makeSuccessfulTraces(20, 'delete::ts::large-blast');
-    const result = walkForwardBacktest(
-      makePattern({ type: 'success-pattern' }),
-      traces,
-      5,
-    );
+    const result = walkForwardBacktest(makePattern({ type: 'success-pattern' }), traces, 5);
     expect(result.passingWindows).toBe(5);
   });
 
@@ -105,28 +103,28 @@ describe('walkForwardBacktest', () => {
 
 describe('promotePatternToCommonsense — gates', () => {
   test('rejects worker-performance type', () => {
-    const result = promotePatternToCommonsense(
-      makePattern({ type: 'worker-performance' }),
-      { registry, traces: makeFailingTraces(20, 'delete::ts::large-blast') },
-    );
+    const result = promotePatternToCommonsense(makePattern({ type: 'worker-performance' }), {
+      registry,
+      traces: makeFailingTraces(20, 'delete::ts::large-blast'),
+    });
     expect(result.promoted).toBe(false);
     expect(result.reason).toContain('not eligible');
   });
 
   test('rejects when frequency < minObservations', () => {
-    const result = promotePatternToCommonsense(
-      makePattern({ frequency: 10 }),
-      { registry, traces: makeFailingTraces(20, 'delete::ts::large-blast') },
-    );
+    const result = promotePatternToCommonsense(makePattern({ frequency: 10 }), {
+      registry,
+      traces: makeFailingTraces(20, 'delete::ts::large-blast'),
+    });
     expect(result.promoted).toBe(false);
     expect(result.reason).toMatch(/frequency .* < 30/);
   });
 
   test('rejects when Wilson LB below threshold', () => {
-    const result = promotePatternToCommonsense(
-      makePattern({ confidence: 0.85 }),
-      { registry, traces: makeFailingTraces(20, 'delete::ts::large-blast') },
-    );
+    const result = promotePatternToCommonsense(makePattern({ confidence: 0.85 }), {
+      registry,
+      traces: makeFailingTraces(20, 'delete::ts::large-blast'),
+    });
     expect(result.promoted).toBe(false);
     expect(result.reason).toMatch(/Wilson LB .* < 0.95/);
   });
@@ -140,10 +138,10 @@ describe('promotePatternToCommonsense — gates', () => {
   });
 
   test('rejects when approach is unparseable', () => {
-    const result = promotePatternToCommonsense(
-      makePattern({ approach: '' }),
-      { registry, traces: makeFailingTraces(20, 'delete::ts::large-blast') },
-    );
+    const result = promotePatternToCommonsense(makePattern({ approach: '' }), {
+      registry,
+      traces: makeFailingTraces(20, 'delete::ts::large-blast'),
+    });
     expect(result.promoted).toBe(false);
     expect(result.reason).toContain('matcher inferable');
   });
@@ -208,10 +206,7 @@ describe('promotePatternToCommonsense — rule shape', () => {
 
   test('rule pattern matcher derived from approach', () => {
     const traces = makeFailingTraces(25, 'delete::ts::large-blast');
-    const result = promotePatternToCommonsense(
-      makePattern({ approach: 'rm -rf tests/' }),
-      { registry, traces },
-    );
+    const result = promotePatternToCommonsense(makePattern({ approach: 'rm -rf tests/' }), { registry, traces });
     expect(result.rule!.pattern.kind).toBe('literal-substring');
     if (result.rule!.pattern.kind === 'literal-substring') {
       expect(result.rule!.pattern.needle).toBe('rm -rf tests/');

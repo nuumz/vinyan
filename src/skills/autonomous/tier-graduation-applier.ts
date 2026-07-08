@@ -21,10 +21,11 @@
  * Treat each tier change as effectively a NEW skill version (A4 Content-
  * Addressed Truth — the new contentHash is what skill-card envelopes pin).
  */
-import { computeContentHash } from '../skill-md/hash.ts';
+
+import type { SkillTrustLedgerStore, SkillTrustStatus } from '../../db/skill-trust-ledger-store.ts';
 import type { SkillArtifactStore } from '../artifact-store.ts';
 import { SkillArtifactNotFoundError } from '../artifact-store.ts';
-import type { SkillTrustLedgerStore, SkillTrustStatus } from '../../db/skill-trust-ledger-store.ts';
+import { computeContentHash } from '../skill-md/hash.ts';
 import type { GraduationDecision } from './tier-graduation.ts';
 
 /** SKILL.md statuses that the trust ledger also recognizes. The schema's

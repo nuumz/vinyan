@@ -13,16 +13,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBus, type VinyanBusEvents } from '../../../src/core/bus.ts';
-import { createMockProvider } from '../../../src/orchestrator/llm/mock-provider.ts';
-import { LLMProviderRegistry } from '../../../src/orchestrator/llm/provider-registry.ts';
+import type { ExternalCodingCliController } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-controller.ts';
 import {
-  CodingCliWorkflowStrategy,
   type CodingCliWorkflowOutcome,
   type CodingCliWorkflowStep,
+  CodingCliWorkflowStrategy,
 } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-workflow-strategy.ts';
-import type { ExternalCodingCliController } from '../../../src/orchestrator/external-coding-cli/external-coding-cli-controller.ts';
 import { createOrchestrator as _createOrchestrator } from '../../../src/orchestrator/factory.ts';
 import { clearIntentResolverCache } from '../../../src/orchestrator/intent-resolver.ts';
+import { createMockProvider } from '../../../src/orchestrator/llm/mock-provider.ts';
+import { LLMProviderRegistry } from '../../../src/orchestrator/llm/provider-registry.ts';
 import type { TaskInput } from '../../../src/orchestrator/types.ts';
 
 let tempDir: string;
@@ -106,9 +106,7 @@ describe('Gap 3 — Self-Application Boundary', () => {
     });
 
     const result = await orchestrator.executeTask(
-      makeInput(
-        'ask claude code cli to refactor src/orchestrator/external-coding-cli/runner.ts',
-      ),
+      makeInput('ask claude code cli to refactor src/orchestrator/external-coding-cli/runner.ts'),
     );
 
     // 1. Strategy was NEVER called — boundary refused dispatch.
@@ -116,18 +114,14 @@ describe('Gap 3 — Self-Application Boundary', () => {
     // 2. Self-application event fired.
     expect(events.length).toBe(1);
     expect(events[0]?.providerId).toBe('claude-code');
-    expect(events[0]?.targetPaths.some((p) =>
-      p.includes('src/orchestrator/external-coding-cli/'),
-    )).toBe(true);
+    expect(events[0]?.targetPaths.some((p) => p.includes('src/orchestrator/external-coding-cli/'))).toBe(true);
     // 3. Task surfaces honest failure.
     expect(result.status).toBe('failed');
     expect(result.answer ?? '').toContain('Self-application detected');
     expect(result.answer ?? '').toContain('human approval');
     // 4. Trace approach + decisionId.
     expect(result.trace.approach).toBe('external-coding-cli');
-    const provenance = result.trace.governanceProvenance as
-      | { decisionId?: string }
-      | undefined;
+    const provenance = result.trace.governanceProvenance as { decisionId?: string } | undefined;
     expect(provenance?.decisionId).toContain('external-coding-cli-self-application');
   });
 
@@ -139,9 +133,7 @@ describe('Gap 3 — Self-Application Boundary', () => {
       useSubprocess: false,
       codingCliStrategyOverride: fake,
     });
-    await orchestrator.executeTask(
-      makeInput('ask claude code cli to refactor src/foo.ts'),
-    );
+    await orchestrator.executeTask(makeInput('ask claude code cli to refactor src/foo.ts'));
     // Strategy WAS called — boundary doesn't apply to non-self paths.
     expect(fake.ranCount).toBe(1);
   });

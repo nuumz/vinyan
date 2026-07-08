@@ -10,10 +10,10 @@
  * @see instruction-hierarchy.ts for the multi-tier resolver implementation.
  */
 import {
-  resolveInstructions,
   clearInstructionHierarchyCache,
   type InstructionMemory as HierarchyMemory,
   type InstructionContext,
+  resolveInstructions,
 } from './instruction-hierarchy.ts';
 
 // Re-export the hierarchy memory type — it's the same shape used throughout the pipeline.

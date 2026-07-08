@@ -178,9 +178,7 @@ export class GatewayScheduleStore {
    * and resolved the profile. Returns true when a row actually disappeared.
    */
   delete(id: string, profile: string): boolean {
-    const res = this.db
-      .prepare(`DELETE FROM gateway_schedules WHERE id = ? AND profile = ?`)
-      .run(id, profile);
+    const res = this.db.prepare(`DELETE FROM gateway_schedules WHERE id = ? AND profile = ?`).run(id, profile);
     return res.changes > 0;
   }
 

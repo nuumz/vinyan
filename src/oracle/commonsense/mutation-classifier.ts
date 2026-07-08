@@ -35,14 +35,7 @@ const READONLY_TOOLS = new Set([
   'stat',
 ]);
 
-const DESTRUCTIVE_TOOLS = new Set([
-  'delete_file',
-  'remove_file',
-  'rm',
-  'rmdir',
-  'truncate',
-  'unlink',
-]);
+const DESTRUCTIVE_TOOLS = new Set(['delete_file', 'remove_file', 'rm', 'rmdir', 'truncate', 'unlink']);
 
 const ADDITIVE_TOOLS = new Set([
   'write_file',

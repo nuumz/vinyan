@@ -33,8 +33,9 @@
  * The importer catches them and produces a well-formed `critic-error`
  * rejected state (see `importer.ts` step 5).
  */
-import type { TaskInput, PerceptualHierarchy } from '../../orchestrator/types.ts';
+
 import type { CriticEngine, CriticResult, WorkerProposal } from '../../orchestrator/critic/critic-engine.ts';
+import type { PerceptualHierarchy, TaskInput } from '../../orchestrator/types.ts';
 import type { ImporterCriticFn, ImporterCriticRequest, ImporterCriticVerdict } from './importer.ts';
 
 /**
@@ -133,9 +134,7 @@ function synthesizePerception(): PerceptualHierarchy {
 }
 
 function mapCriticResult(result: CriticResult): ImporterCriticVerdict {
-  const confidence = Number.isFinite(result.confidence)
-    ? Math.max(0, Math.min(1, result.confidence))
-    : 0;
+  const confidence = Number.isFinite(result.confidence) ? Math.max(0, Math.min(1, result.confidence)) : 0;
   const notes = buildNotes(result);
   return {
     approved: result.approved === true,

@@ -11,9 +11,9 @@ import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import { PATTERN_SCHEMA_SQL } from '../../../src/db/pattern-schema.ts';
 import { PatternStore } from '../../../src/db/pattern-store.ts';
-import { DecompositionLearner } from '../../../src/orchestrator/replan/decomposition-learner.ts';
 import { GoalTrajectoryTracker } from '../../../src/orchestrator/goal-satisfaction/goal-evaluator.ts';
-import type { TaskDAG, TaskResult, TaskInput, ExecutionTrace } from '../../../src/orchestrator/types.ts';
+import { DecompositionLearner } from '../../../src/orchestrator/replan/decomposition-learner.ts';
+import type { ExecutionTrace, TaskDAG, TaskInput, TaskResult } from '../../../src/orchestrator/types.ts';
 import { WorkingMemory } from '../../../src/orchestrator/working-memory.ts';
 
 function createPatternStore(): PatternStore {
@@ -37,9 +37,27 @@ function makeInput(overrides?: Partial<TaskInput>): TaskInput {
 function makePlan(): TaskDAG {
   return {
     nodes: [
-      { id: 'n1', description: 'extract interface', targetFiles: ['src/auth.ts'], dependencies: [], assignedOracles: ['type'] },
-      { id: 'n2', description: 'implement adapter', targetFiles: ['src/auth-adapter.ts'], dependencies: ['n1'], assignedOracles: ['type', 'test'] },
-      { id: 'n3', description: 'update imports', targetFiles: ['src/index.ts'], dependencies: ['n2'], assignedOracles: ['type', 'lint'] },
+      {
+        id: 'n1',
+        description: 'extract interface',
+        targetFiles: ['src/auth.ts'],
+        dependencies: [],
+        assignedOracles: ['type'],
+      },
+      {
+        id: 'n2',
+        description: 'implement adapter',
+        targetFiles: ['src/auth-adapter.ts'],
+        dependencies: ['n1'],
+        assignedOracles: ['type', 'test'],
+      },
+      {
+        id: 'n3',
+        description: 'update imports',
+        targetFiles: ['src/index.ts'],
+        dependencies: ['n2'],
+        assignedOracles: ['type', 'lint'],
+      },
     ],
   };
 }
@@ -62,9 +80,7 @@ function makeSuccessResult(plan: TaskDAG): TaskResult {
   return {
     id: 'task-1',
     status: 'completed',
-    mutations: [
-      { file: 'src/auth.ts', diff: '+ interface Auth {}', oracleVerdicts: {} },
-    ],
+    mutations: [{ file: 'src/auth.ts', diff: '+ interface Auth {}', oracleVerdicts: {} }],
     trace,
     plan,
   };
@@ -100,9 +116,7 @@ describe('Feedback Loop Integration', () => {
 
     // ── Step 5: Simulate seed injection into goal (as outer-loop does) ──
     const nextInput = makeInput({ id: 'task-2' });
-    const seedDesc = seed!.nodes
-      .map((n) => `${n.id}: ${n.description} [${n.assignedOracles.join(',')}]`)
-      .join(' → ');
+    const seedDesc = seed!.nodes.map((n) => `${n.id}: ${n.description} [${n.assignedOracles.join(',')}]`).join(' → ');
     const enhancedGoal = `${nextInput.goal}\n\n[SEED DECOMPOSITION] A prior winning plan shape for similar tasks: ${seedDesc}. Consider reusing this structure.`;
 
     expect(enhancedGoal).toContain('[SEED DECOMPOSITION]');
@@ -173,8 +187,20 @@ describe('Feedback Loop Integration', () => {
     // Step 1: First task succeeds with a 2-node plan
     const firstPlan: TaskDAG = {
       nodes: [
-        { id: 'n1', description: 'type-check isolation for src/foo.ts', targetFiles: ['src/foo.ts'], dependencies: [], assignedOracles: ['type'] },
-        { id: 'n2', description: 'edit remaining', targetFiles: ['src/bar.ts'], dependencies: ['n1'], assignedOracles: ['type', 'lint'] },
+        {
+          id: 'n1',
+          description: 'type-check isolation for src/foo.ts',
+          targetFiles: ['src/foo.ts'],
+          dependencies: [],
+          assignedOracles: ['type'],
+        },
+        {
+          id: 'n2',
+          description: 'edit remaining',
+          targetFiles: ['src/bar.ts'],
+          dependencies: ['n1'],
+          assignedOracles: ['type', 'lint'],
+        },
       ],
     };
     learner.recordWinningDecomposition('code-edit::src/foo.ts', firstPlan, 'trace-1');

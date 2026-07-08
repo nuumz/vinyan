@@ -16,16 +16,17 @@
  * using a structural type here we let that PR land the event name in
  * `src/core/bus.ts` without this file fighting for the same diff.
  */
-import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
+
 import type { GatewayIdentityStore } from '../db/gateway-identity-store.ts';
-import type { GatewayRateLimiter } from './security/rate-limiter.ts';
+import type { TaskInput, TaskResult } from '../orchestrator/types.ts';
 import {
   type InboundEnvelope,
   InboundEnvelopeSchema,
+  MAX_ENVELOPE_TEXT_LEN,
   type OutboundEnvelope,
   OutboundEnvelopeSchema,
-  MAX_ENVELOPE_TEXT_LEN,
 } from './envelope.ts';
+import type { GatewayRateLimiter } from './security/rate-limiter.ts';
 
 // ── Structural bus surface ────────────────────────────────────────────
 //
@@ -131,10 +132,7 @@ export class GatewayDispatcher {
       });
       // Best-effort apology — swallow any failure here too.
       try {
-        const outbound = await this.buildOutbound(
-          env,
-          'Sorry, I hit an internal error handling that request.',
-        );
+        const outbound = await this.buildOutbound(env, 'Sorry, I hit an internal error handling that request.');
         await this.deps.deliverReply(outbound);
       } catch (deliveryErr) {
         this.deps.log('error', 'gateway.dispatcher.error_reply_failed', {
@@ -196,10 +194,7 @@ export class GatewayDispatcher {
       envelopeId: env.envelopeId,
       gatewayUserId,
     });
-    await this.safeReply(
-      env,
-      'Paired successfully. You can now send tasks; reply with plain text.',
-    );
+    await this.safeReply(env, 'Paired successfully. You can now send tasks; reply with plain text.');
   }
 
   private buildTaskInput(env: InboundEnvelope): TaskInput {
@@ -225,12 +220,7 @@ export class GatewayDispatcher {
     // observable shapes. This keeps the gateway resilient even when the
     // core loop reshapes its output envelope.
     const r = result as unknown as Record<string, unknown>;
-    const candidates = [
-      r.response,
-      r.output,
-      r.message,
-      (r.summary as Record<string, unknown> | undefined)?.text,
-    ];
+    const candidates = [r.response, r.output, r.message, (r.summary as Record<string, unknown> | undefined)?.text];
     for (const cand of candidates) {
       if (typeof cand === 'string' && cand.trim().length > 0) return cand;
     }
@@ -241,10 +231,7 @@ export class GatewayDispatcher {
   }
 
   private async buildOutbound(env: InboundEnvelope, text: string): Promise<OutboundEnvelope> {
-    const truncated =
-      text.length > MAX_ENVELOPE_TEXT_LEN
-        ? `${text.slice(0, MAX_ENVELOPE_TEXT_LEN - 1)}…`
-        : text;
+    const truncated = text.length > MAX_ENVELOPE_TEXT_LEN ? `${text.slice(0, MAX_ENVELOPE_TEXT_LEN - 1)}…` : text;
     return OutboundEnvelopeSchema.parse({
       envelopeId: crypto.randomUUID(),
       platform: env.platform,

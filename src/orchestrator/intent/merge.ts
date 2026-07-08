@@ -15,7 +15,7 @@
  * events so upstream observability can record tier-disagreement rates.
  */
 
-import { z } from 'zod';
+import type { z } from 'zod';
 import type { VinyanBus } from '../../core/bus.ts';
 import type {
   ExecutionStrategy,
@@ -44,10 +44,7 @@ export const LLM_UNCERTAIN_THRESHOLD = 0.5;
  *
  * Everything else is a contradiction (A5: rule wins).
  */
-export function isLLMRefinement(
-  rule: ExecutionStrategy,
-  llm: ExecutionStrategy,
-): boolean {
+export function isLLMRefinement(rule: ExecutionStrategy, llm: ExecutionStrategy): boolean {
   if (rule === llm) return true;
   if (rule === 'full-pipeline' && llm === 'agentic-workflow') return true;
   if (rule === 'agentic-workflow' && llm === 'full-pipeline') return true;
@@ -83,11 +80,7 @@ export function mergeDeterministicAndLLM(
 
   // Case 1: LLM low-confidence → uncertain. Keep deterministic strategy.
   if (llmConfidence < LLM_UNCERTAIN_THRESHOLD) {
-    const { request, options } = buildClarificationRequest(
-      input,
-      understanding,
-      det.strategy,
-    );
+    const { request, options } = buildClarificationRequest(input, understanding, det.strategy);
     bus?.emit('intent:uncertain', {
       taskId,
       reason: `LLM confidence ${llmConfidence.toFixed(2)} below threshold ${LLM_UNCERTAIN_THRESHOLD}`,
@@ -111,11 +104,7 @@ export function mergeDeterministicAndLLM(
   // `directToolCall` (hollow rule — just an opinion). A5's tier-0.8 trust
   // applies to deterministic FACTS, not unresolved hunches. Treat LLM
   // disagreement as refinement (LLM fills the gap) instead of contradiction.
-  if (
-    det.strategy === 'direct-tool' &&
-    !det.directToolCall &&
-    llm.strategy !== 'direct-tool'
-  ) {
+  if (det.strategy === 'direct-tool' && !det.directToolCall && llm.strategy !== 'direct-tool') {
     const mergedStrategy = llm.strategy;
     const mergedConfidence = Math.max(det.confidence ?? 0, llmConfidence);
     return {
@@ -143,12 +132,7 @@ export function mergeDeterministicAndLLM(
   // refinement. A5: rule wins (tier 0.8 > tier 0.4). Emit event, surface
   // clarification.
   if (!isLLMRefinement(det.strategy, llm.strategy)) {
-    const { request, options } = buildClarificationRequest(
-      input,
-      understanding,
-      det.strategy,
-      llm.strategy,
-    );
+    const { request, options } = buildClarificationRequest(input, understanding, det.strategy, llm.strategy);
     bus?.emit('intent:contradiction', {
       taskId,
       ruleStrategy: det.strategy,

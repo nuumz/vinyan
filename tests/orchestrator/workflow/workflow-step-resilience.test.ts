@@ -30,13 +30,13 @@ import { describe, expect, test } from 'bun:test';
 import { asPersonaId } from '../../../src/core/agent-vocabulary.ts';
 import { createBus } from '../../../src/core/bus.ts';
 import type { TaskInput } from '../../../src/orchestrator/types.ts';
-import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 import { normalizeWorkflowPlan } from '../../../src/orchestrator/workflow/plan-normalizer.ts';
 import {
   DEFAULT_DELEGATE_RETRY_BUDGET,
   MAX_STEP_RETRY_BUDGET,
   type WorkflowPlan,
 } from '../../../src/orchestrator/workflow/types.ts';
+import { executeWorkflow } from '../../../src/orchestrator/workflow/workflow-executor.ts';
 
 function makeInput(goal: string, overrides: Partial<TaskInput> = {}): TaskInput {
   return {
@@ -209,9 +209,7 @@ describe('Q1 — delegate-sub-agent retry budget', () => {
   test('retry exhausted then fallbackStrategy executes', async () => {
     const bus = createBus();
     const fallbackEvents: Array<{ origin?: string; reason?: string }> = [];
-    bus.on('workflow:step_fallback', (p) =>
-      fallbackEvents.push({ origin: p.fallbackOrigin, reason: p.reason }),
-    );
+    bus.on('workflow:step_fallback', (p) => fallbackEvents.push({ origin: p.fallbackOrigin, reason: p.reason }));
 
     const executeTask = async (subInput: { id: string }) =>
       ({
@@ -551,9 +549,7 @@ describe('Q1+Q2 wiring — fallback events carry origin through executeWorkflow'
   test('fallback fired by retry-exhaustion records auto-normalizer origin in the live event', async () => {
     const bus = createBus();
     const fallbackEvents: Array<{ origin?: string }> = [];
-    bus.on('workflow:step_fallback', (p) =>
-      fallbackEvents.push({ origin: p.fallbackOrigin }),
-    );
+    bus.on('workflow:step_fallback', (p) => fallbackEvents.push({ origin: p.fallbackOrigin }));
 
     const executeTask = async (subInput: { id: string }) =>
       ({

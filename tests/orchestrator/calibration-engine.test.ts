@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { CalibrationEngineImpl } from '../../src/orchestrator/prediction/calibration-engine.ts';
-import type { TestOutcomeDistribution, PredictionDistribution } from '../../src/orchestrator/forward-predictor-types.ts';
+import type {
+  PredictionDistribution,
+  TestOutcomeDistribution,
+} from '../../src/orchestrator/forward-predictor-types.ts';
 import { CAUSAL_EDGE_WEIGHTS } from '../../src/orchestrator/forward-predictor-types.ts';
+import { CalibrationEngineImpl } from '../../src/orchestrator/prediction/calibration-engine.ts';
 
 describe('CalibrationEngine', () => {
   // =========================================================================
@@ -136,10 +139,7 @@ describe('CalibrationEngine', () => {
       // Uncertainty should be non-zero (there IS inherent randomness)
       expect(decomp.uncertainty).toBeGreaterThan(0);
       // Brier decomposition identity: BS = REL - RES + UNC
-      expect(decomp.brierScore).toBeCloseTo(
-        decomp.reliability - decomp.resolution + decomp.uncertainty,
-        3,
-      );
+      expect(decomp.brierScore).toBeCloseTo(decomp.reliability - decomp.resolution + decomp.uncertainty, 3);
     });
 
     test('Brier decomposition identity holds: BS = REL - RES + UNC', () => {
@@ -154,10 +154,7 @@ describe('CalibrationEngine', () => {
       }
 
       const decomp = engine.getBrierDecomposition();
-      expect(decomp.brierScore).toBeCloseTo(
-        decomp.reliability - decomp.resolution + decomp.uncertainty,
-        3,
-      );
+      expect(decomp.brierScore).toBeCloseTo(decomp.reliability - decomp.resolution + decomp.uncertainty, 3);
     });
   });
 

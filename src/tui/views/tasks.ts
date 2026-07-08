@@ -90,7 +90,7 @@ function sortTasks(tasks: TaskDisplayState[], state: TUIState): TaskDisplayState
 
 // ── Memoization Cache ────────────────────────────────────────────────
 
-let _taskCache: {
+let TaskCache: {
   size: number;
   generation: number;
   filterQuery: string;
@@ -105,16 +105,16 @@ function getCachedTasks(state: TUIState): TaskDisplayState[] {
   const dir = sortConfig?.direction ?? 'desc';
 
   if (
-    _taskCache &&
-    _taskCache.size === state.tasks.size &&
-    _taskCache.generation === state.stateGeneration &&
-    _taskCache.filterQuery === state.filterQuery &&
-    _taskCache.sortField === field &&
-    _taskCache.sortDir === dir &&
+    TaskCache &&
+    TaskCache.size === state.tasks.size &&
+    TaskCache.generation === state.stateGeneration &&
+    TaskCache.filterQuery === state.filterQuery &&
+    TaskCache.sortField === field &&
+    TaskCache.sortDir === dir &&
     // Safety: never return empty cache when tasks exist
-    (_taskCache.result.length > 0 || state.tasks.size === 0)
+    (TaskCache.result.length > 0 || state.tasks.size === 0)
   ) {
-    return _taskCache.result;
+    return TaskCache.result;
   }
 
   const allTasks = [...state.tasks.values()];
@@ -128,7 +128,7 @@ function getCachedTasks(state: TUIState): TaskDisplayState[] {
     : allTasks;
   const result = sortTasks(filtered, state);
 
-  _taskCache = {
+  TaskCache = {
     size: state.tasks.size,
     generation: state.stateGeneration,
     filterQuery: state.filterQuery,

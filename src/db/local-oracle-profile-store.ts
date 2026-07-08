@@ -9,10 +9,7 @@
  */
 
 import type { Database } from 'bun:sqlite';
-import type {
-  AgentProfileStatus,
-  ProfileStore,
-} from '../orchestrator/profile/agent-profile.ts';
+import type { AgentProfileStatus, ProfileStore } from '../orchestrator/profile/agent-profile.ts';
 import type { LocalOracleProfile } from '../orchestrator/profile/local-oracle-gates.ts';
 
 interface LocalOracleProfileRow {
@@ -122,9 +119,7 @@ export class LocalOracleProfileStore implements ProfileStore<LocalOracleProfile>
         .run(now, reason ?? null, id);
     } else {
       // probation
-      this.db
-        .prepare(`UPDATE local_oracle_profiles SET status = 'probation' WHERE id = ?`)
-        .run(id);
+      this.db.prepare(`UPDATE local_oracle_profiles SET status = 'probation' WHERE id = ?`).run(id);
     }
   }
 

@@ -1,11 +1,11 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
-  UserPreferenceStore,
   detectAppCategory,
   extractSpecificApp,
   getAppsInCategory,
   isGoalCategoryLevel,
+  UserPreferenceStore,
 } from '../../src/db/user-preference-store.ts';
 
 describe('detectAppCategory', () => {

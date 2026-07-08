@@ -1,10 +1,10 @@
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { verifyContentHashes, applyContentHashVerification } from '../../src/gate/content-hash-verifier.ts';
+import { join } from 'node:path';
 import type { OracleVerdict } from '../../src/core/types.ts';
+import { applyContentHashVerification, verifyContentHashes } from '../../src/gate/content-hash-verifier.ts';
 
 function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');

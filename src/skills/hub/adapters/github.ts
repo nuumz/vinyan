@@ -25,10 +25,10 @@ import { parseSkillMd } from '../../skill-md/index.ts';
 import {
   type FetchImpl,
   type SkillFetchResult,
-  SkillNotFoundError,
-  SkillRegistryError,
   type SkillListingL0,
+  SkillNotFoundError,
   type SkillRegistryAdapter,
+  SkillRegistryError,
 } from '../registry-adapter.ts';
 
 export interface GitHubAdapterOptions {

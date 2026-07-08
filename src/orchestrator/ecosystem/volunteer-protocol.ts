@@ -153,11 +153,7 @@ export class VolunteerRegistry {
    * @param commitmentId  commitment-id that the winner is about to be bound
    *                      to. Accepted offers are linked to this id.
    */
-  finalize(
-    taskId: string,
-    candidates: readonly VolunteerCandidate[],
-    commitmentId: string,
-  ): SelectionVerdict {
+  finalize(taskId: string, candidates: readonly VolunteerCandidate[], commitmentId: string): SelectionVerdict {
     const verdict = selectVolunteer(candidates);
     const at = this.now();
 

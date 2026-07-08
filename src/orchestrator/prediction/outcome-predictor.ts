@@ -43,8 +43,7 @@ export class OutcomePredictorImpl implements OutcomePredictor {
     const prior = this.computePrior(heuristic.expectedTestResults);
 
     // Step 2 & 3: Bayesian blend with file-level evidence (or pure prior if empty)
-    const testOutcome =
-      fileStats.length === 0 ? prior : this.bayesianBlend(prior, fileStats);
+    const testOutcome = fileStats.length === 0 ? prior : this.bayesianBlend(prior, fileStats);
 
     // Step 4: Confidence based on evidence quantity
     const confidence = 0.4 + Math.min(0.3, fileStats.length / 100);
@@ -58,9 +57,7 @@ export class OutcomePredictorImpl implements OutcomePredictor {
   }
 
   /** Step 1: Derive prior probabilities from the heuristic's discrete prediction. */
-  private computePrior(
-    expected: 'pass' | 'fail' | 'partial',
-  ): TestOutcomeDistribution {
+  private computePrior(expected: 'pass' | 'fail' | 'partial'): TestOutcomeDistribution {
     let pPass: number;
     let pPartial: number;
 
@@ -84,17 +81,13 @@ export class OutcomePredictorImpl implements OutcomePredictor {
    * Steps 2-3: Bayesian blend of prior with file-level evidence.
    * α decays exponentially with evidence count — more files → more weight on data.
    */
-  private bayesianBlend(
-    prior: TestOutcomeDistribution,
-    fileStats: FileOutcomeStat[],
-  ): TestOutcomeDistribution {
+  private bayesianBlend(prior: TestOutcomeDistribution, fileStats: FileOutcomeStat[]): TestOutcomeDistribution {
     // Step 2: File-level likelihood — weighted average success rate
     const withSamples = fileStats.filter((f) => f.samples > 0);
     const fileAvgSuccess =
       withSamples.length === 0
         ? prior.pPass
-        : withSamples.reduce((sum, f) => sum + f.successCount / f.samples, 0) /
-          withSamples.length;
+        : withSamples.reduce((sum, f) => sum + f.successCount / f.samples, 0) / withSamples.length;
 
     // Step 3: Blend weight — α ≈ 0.95 at n=3, ≈ 0.5 at n=35
     const alpha = Math.exp(-fileStats.length / 50);
@@ -105,10 +98,7 @@ export class OutcomePredictorImpl implements OutcomePredictor {
       (1 - alpha) *
         (withSamples.length === 0
           ? prior.pPartial
-          : withSamples.reduce(
-              (sum, f) => sum + f.partialCount / f.samples,
-              0,
-            ) / withSamples.length);
+          : withSamples.reduce((sum, f) => sum + f.partialCount / f.samples, 0) / withSamples.length);
     const blendedPFail = 1 - blendedPPass - blendedPPartial;
 
     return this.normalize({ pPass: blendedPPass, pPartial: blendedPPartial, pFail: blendedPFail });

@@ -55,9 +55,7 @@ function insertEvent(db: Database, opts: InsertOpts): void {
 
 function sessionByRowId(db: Database): Map<string, string | null> {
   const rows = db
-    .query<{ id: string; session_id: string | null }, []>(
-      'SELECT id, session_id FROM task_events ORDER BY seq',
-    )
+    .query<{ id: string; session_id: string | null }, []>('SELECT id, session_id FROM task_events ORDER BY seq')
     .all();
   return new Map(rows.map((r) => [r.id, r.session_id]));
 }

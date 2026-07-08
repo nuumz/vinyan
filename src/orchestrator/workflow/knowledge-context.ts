@@ -62,7 +62,8 @@ export async function buildKnowledgeContext(
       const skills = await deps.agentMemory.queryRelatedSkills(opts.taskSignature, { k: maxSkills });
       if (skills.length > 0) {
         const skillLines = skills.map(
-          (s, i) => `  ${i + 1}. ${s.approach} (success: ${Math.round((s.successRate ?? 0) * 100)}%, uses: ${s.usageCount ?? 0})`,
+          (s, i) =>
+            `  ${i + 1}. ${s.approach} (success: ${Math.round((s.successRate ?? 0) * 100)}%, uses: ${s.usageCount ?? 0})`,
         );
         sections.push(`[PROVEN APPROACHES]\n${skillLines.join('\n')}`);
       }
@@ -73,9 +74,7 @@ export async function buildKnowledgeContext(
     try {
       const rejected = await deps.agentMemory.queryFailedApproaches(opts.taskSignature, { limit: maxRejected });
       if (rejected.length > 0) {
-        const rejLines = rejected.map(
-          (r) => `  - AVOID: ${r.approach} (reason: ${r.oracle_verdict})`,
-        );
+        const rejLines = rejected.map((r) => `  - AVOID: ${r.approach} (reason: ${r.oracle_verdict})`);
         sections.push(`[APPROACHES TO AVOID]\n${rejLines.join('\n')}`);
       }
     } catch {

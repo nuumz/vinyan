@@ -21,7 +21,7 @@
  */
 
 import type { ComprehendedTaskMessage } from './types.ts';
-import { tierRank, type ComprehensionTier } from './types.ts';
+import { type ComprehensionTier, tierRank } from './types.ts';
 
 /** Pick the lower-trust tier (more conservative). */
 function lowerTier(a: ComprehensionTier, b: ComprehensionTier): ComprehensionTier {
@@ -62,10 +62,7 @@ export interface MergeResult {
  *   - evidence_chain: s1.evidence_chain ++ s2.evidence_chain (preserve both).
  *   - falsifiable_by: union of both sides (preserve all falsifiers).
  */
-export function mergeComprehensions(
-  s1: ComprehendedTaskMessage,
-  s2: ComprehendedTaskMessage,
-): MergeResult {
+export function mergeComprehensions(s1: ComprehendedTaskMessage, s2: ComprehendedTaskMessage): MergeResult {
   // A4: refuse to merge across different inputs. This shouldn't happen
   // when the pipeline drives both engines with the same ComprehensionInput,
   // but a bug upstream would create ghost mergers — guard explicitly.
@@ -125,9 +122,7 @@ export function mergeComprehensions(
   const mergedTier = lowerTier(s1.params.tier, s2.params.tier);
   const mergedConfidence = Math.min(s1.params.confidence, s2.params.confidence);
   const mergedEvidence = [...s1.params.evidence_chain, ...s2.params.evidence_chain];
-  const mergedFalsifiable = Array.from(
-    new Set([...s1.params.falsifiable_by, ...s2.params.falsifiable_by]),
-  );
+  const mergedFalsifiable = Array.from(new Set([...s1.params.falsifiable_by, ...s2.params.falsifiable_by]));
   // Temporal: keep the earlier `as_of` (the originating moment) and the
   // narrower `valid_until` (whichever expires first).
   const mergedTemporal = {

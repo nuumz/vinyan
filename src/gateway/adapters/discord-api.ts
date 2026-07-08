@@ -119,9 +119,7 @@ export class DiscordApi {
     this.restUrl = opts.restUrl ?? DEFAULT_REST_URL;
     this.gatewayUrl = opts.gatewayUrl ?? DEFAULT_GATEWAY_URL;
     this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.wsImpl =
-      opts.wsImpl ??
-      ((globalThis as unknown as Record<string, unknown>).WebSocket as DiscordWebSocketCtor);
+    this.wsImpl = opts.wsImpl ?? ((globalThis as unknown as Record<string, unknown>).WebSocket as DiscordWebSocketCtor);
   }
 
   /**
@@ -162,11 +160,7 @@ export class DiscordApi {
         fail_if_not_exists: false,
       };
     }
-    const parsed = await this.rest<{ id: string; channel_id: string }>(
-      'POST',
-      `/channels/${channelId}/messages`,
-      body,
-    );
+    const parsed = await this.rest<{ id: string; channel_id: string }>('POST', `/channels/${channelId}/messages`, body);
     if (!parsed.id || !parsed.channel_id) {
       throw new DiscordApiError('createMessage returned no id', 'parse');
     }
@@ -175,11 +169,7 @@ export class DiscordApi {
 
   // ── internal ──────────────────────────────────────────────────────
 
-  private async rest<T>(
-    method: 'GET' | 'POST',
-    path: string,
-    body?: Record<string, unknown>,
-  ): Promise<T> {
+  private async rest<T>(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>): Promise<T> {
     const url = `${this.restUrl}${path}`;
     let resp: Response;
     try {

@@ -61,8 +61,7 @@ export class GatewayRateLimiter {
     if (trustTier === 'admin') return true;
 
     const bucketKind: 'paired' | 'unpaired' = trustTier === 'paired' ? 'paired' : 'unpaired';
-    const bucketCfg =
-      bucketKind === 'paired' ? this.config.pairedBucket : this.config.unpairedBucket;
+    const bucketCfg = bucketKind === 'paired' ? this.config.pairedBucket : this.config.unpairedBucket;
     const key = `${bucketKind}:${platformUserId}`;
 
     const now = this.clock();
@@ -76,10 +75,7 @@ export class GatewayRateLimiter {
 
     // Refill based on elapsed wall-clock time.
     const elapsedSec = Math.max(0, (now - state.lastRefillMs) / 1000);
-    const refilled = Math.min(
-      bucketCfg.capacity,
-      state.tokens + elapsedSec * bucketCfg.refillPerSec,
-    );
+    const refilled = Math.min(bucketCfg.capacity, state.tokens + elapsedSec * bucketCfg.refillPerSec);
     state.lastRefillMs = now;
 
     if (refilled < 1) {

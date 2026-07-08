@@ -45,9 +45,7 @@ export function isSignificant(trace: TraceForSignificance, agentContext: AgentCo
 
   // 3. Novel task type — agent has few prior traces
   if (trace.taskTypeSignature) {
-    const priorEpisodes = agentContext.memory.episodes.filter(
-      (ep) => ep.taskSignature === trace.taskTypeSignature,
-    );
+    const priorEpisodes = agentContext.memory.episodes.filter((ep) => ep.taskSignature === trace.taskTypeSignature);
     if (priorEpisodes.length < NOVEL_TASK_MIN_TRACES) {
       return true;
     }

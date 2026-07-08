@@ -10,14 +10,11 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { newRuleComprehender } from '../../../src/orchestrator/comprehension/rule-comprehender.ts';
-import type {
-  ComprehendedTaskMessage,
-  ComprehensionInput,
-} from '../../../src/orchestrator/comprehension/types.ts';
 import { verifyComprehension } from '../../../src/oracle/comprehension/index.ts';
+import { newRuleComprehender } from '../../../src/orchestrator/comprehension/rule-comprehender.ts';
+import type { ComprehendedTaskMessage, ComprehensionInput } from '../../../src/orchestrator/comprehension/types.ts';
 import { fallbackStrategy } from '../../../src/orchestrator/intent-resolver.ts';
-import type { Turn, TaskInput } from '../../../src/orchestrator/types.ts';
+import type { TaskInput, Turn } from '../../../src/orchestrator/types.ts';
 
 function makeInput(overrides: {
   goal: string;
@@ -60,8 +57,24 @@ describe('Comprehension triad integration', () => {
   test('clarification-answer flow preserves root goal through triad', async () => {
     const engine = newRuleComprehender();
     const history: Turn[] = [
-      { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write me a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-      { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- what genre?\n- how long?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+      {
+        id: 't-0-1',
+        sessionId: 's',
+        seq: 0,
+        role: 'user',
+        blocks: [{ type: 'text', text: 'write me a bedtime story' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 1,
+      },
+      {
+        id: 't-0-2',
+        sessionId: 's',
+        seq: 0,
+        role: 'assistant',
+        blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- what genre?\n- how long?' }],
+        tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        createdAt: 2,
+      },
     ];
     const args = makeInput({
       goal: 'romance, short',
@@ -93,9 +106,7 @@ describe('Comprehension triad integration', () => {
         type: 'comprehension',
         confidence: 1,
         tier: 'deterministic',
-        evidence_chain: [
-          { source: 'rule:clarification-detector', claim: 'answering 2 Qs', confidence: 1 },
-        ],
+        evidence_chain: [{ source: 'rule:clarification-detector', claim: 'answering 2 Qs', confidence: 1 }],
         falsifiable_by: [],
         temporal_context: { as_of: Date.now() },
         inputHash: 'abc',
@@ -136,9 +147,7 @@ describe('Comprehension triad integration', () => {
         type: 'comprehension',
         confidence: 1,
         tier: 'deterministic',
-        evidence_chain: [
-          { source: 'rule:session-history', claim: 'no prior turns', confidence: 1 },
-        ],
+        evidence_chain: [{ source: 'rule:session-history', claim: 'no prior turns', confidence: 1 }],
         falsifiable_by: [],
         temporal_context: { as_of: Date.now() },
         inputHash: 'xyz',
@@ -160,9 +169,7 @@ describe('Comprehension triad integration', () => {
       },
     };
     // General-reasoning inquire stays conversational for fresh Q&A.
-    expect(fallbackStrategy('general-reasoning', 'inquire', 'none', msg)).toBe(
-      'conversational',
-    );
+    expect(fallbackStrategy('general-reasoning', 'inquire', 'none', msg)).toBe('conversational');
   });
 
   test('unknown-type envelope is accepted by oracle (engine was honest)', async () => {
@@ -186,9 +193,7 @@ describe('Comprehension triad integration', () => {
     // under JSON.parse(JSON.stringify(...)) and re-validates with the same
     // Zod schema — so when Phase 5 A2A delegates comprehension to a peer
     // instance, the wire format is already exercised.
-    const { ComprehendedTaskMessageSchema } = await import(
-      '../../../src/orchestrator/comprehension/types.ts'
-    );
+    const { ComprehendedTaskMessageSchema } = await import('../../../src/orchestrator/comprehension/types.ts');
     const engine = newRuleComprehender();
     const original = await engine.comprehend(
       makeInput({
@@ -196,8 +201,24 @@ describe('Comprehension triad integration', () => {
         pendingQuestions: ['genre?', 'length?'],
         rootGoal: 'write a bedtime story',
         history: [
-          { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a bedtime story' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
-          { id: 't-0-2', sessionId: 's', seq: 0, role: 'assistant', blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- genre?\n- length?' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 2 },
+          {
+            id: 't-0-1',
+            sessionId: 's',
+            seq: 0,
+            role: 'user',
+            blocks: [{ type: 'text', text: 'write a bedtime story' }],
+            tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+            createdAt: 1,
+          },
+          {
+            id: 't-0-2',
+            sessionId: 's',
+            seq: 0,
+            role: 'assistant',
+            blocks: [{ type: 'text', text: '[INPUT-REQUIRED]\n- genre?\n- length?' }],
+            tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+            createdAt: 2,
+          },
         ],
       }),
     );
@@ -214,15 +235,21 @@ describe('Comprehension triad integration', () => {
   test('inputHash changes across turns → intent cache (keyed on hash) would invalidate', async () => {
     const engine = newRuleComprehender();
 
-    const turn1 = await engine.comprehend(
-      makeInput({ goal: 'write a poem', history: [] }),
-    );
+    const turn1 = await engine.comprehend(makeInput({ goal: 'write a poem', history: [] }));
 
     const turn2 = await engine.comprehend(
       makeInput({
         goal: 'do it',
         history: [
-          { id: 't-0-1', sessionId: 's', seq: 0, role: 'user', blocks: [{ type: 'text', text: 'write a poem' }], tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, createdAt: 1 },
+          {
+            id: 't-0-1',
+            sessionId: 's',
+            seq: 0,
+            role: 'user',
+            blocks: [{ type: 'text', text: 'write a poem' }],
+            tokenCount: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+            createdAt: 1,
+          },
         ],
       }),
     );

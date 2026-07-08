@@ -10,10 +10,10 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { ForwardPredictorConfig } from '../../src/config/schema.ts';
-import type { PerceptualHierarchy, SelfModelPrediction, TaskInput } from '../../src/orchestrator/types.ts';
+import { PredictionLedger } from '../../src/db/prediction-ledger.ts';
 import type { PredictionOutcome } from '../../src/orchestrator/forward-predictor-types.ts';
 import { ForwardPredictorImpl } from '../../src/orchestrator/prediction/forward-predictor.ts';
-import { PredictionLedger } from '../../src/db/prediction-ledger.ts';
+import type { PerceptualHierarchy, SelfModelPrediction, TaskInput } from '../../src/orchestrator/types.ts';
 
 // ---------------------------------------------------------------------------
 // Fixtures

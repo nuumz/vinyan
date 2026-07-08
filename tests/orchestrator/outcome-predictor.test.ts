@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import type { FileOutcomeStat, PredictionDistribution } from '../../src/orchestrator/forward-predictor-types.ts';
 import { OutcomePredictorImpl } from '../../src/orchestrator/prediction/outcome-predictor.ts';
 import type { SelfModelPrediction } from '../../src/orchestrator/types.ts';
-import type { FileOutcomeStat, PredictionDistribution } from '../../src/orchestrator/forward-predictor-types.ts';
 
 function makeHeuristic(overrides: Partial<SelfModelPrediction> = {}): SelfModelPrediction {
   return {
@@ -54,11 +54,7 @@ describe('OutcomePredictor', () => {
 
     test('n=3 files → mostly prior (alpha ≈ 0.94)', () => {
       // 3 files, all with 100% success
-      const fileStats = [
-        makeFileStat('a.ts', 10, 0),
-        makeFileStat('b.ts', 10, 0),
-        makeFileStat('c.ts', 10, 0),
-      ];
+      const fileStats = [makeFileStat('a.ts', 10, 0), makeFileStat('b.ts', 10, 0), makeFileStat('c.ts', 10, 0)];
 
       const result = predictor.enhance(makeHeuristic(), fileStats, defaultPctile, defaultPctile);
 
@@ -70,9 +66,7 @@ describe('OutcomePredictor', () => {
 
     test('n=35 files → balanced blend (alpha ≈ 0.50)', () => {
       // 35 files, all with 90% success
-      const fileStats = Array.from({ length: 35 }, (_, i) =>
-        makeFileStat(`file-${i}.ts`, 9, 1),
-      );
+      const fileStats = Array.from({ length: 35 }, (_, i) => makeFileStat(`file-${i}.ts`, 9, 1));
 
       const result = predictor.enhance(makeHeuristic(), fileStats, defaultPctile, defaultPctile);
 
@@ -84,9 +78,7 @@ describe('OutcomePredictor', () => {
 
     test('n=100 files → mostly evidence (alpha ≈ 0.14)', () => {
       // 100 files, all with 60% success
-      const fileStats = Array.from({ length: 100 }, (_, i) =>
-        makeFileStat(`file-${i}.ts`, 6, 4),
-      );
+      const fileStats = Array.from({ length: 100 }, (_, i) => makeFileStat(`file-${i}.ts`, 6, 4));
 
       const result = predictor.enhance(makeHeuristic(), fileStats, defaultPctile, defaultPctile);
 
@@ -119,9 +111,7 @@ describe('OutcomePredictor', () => {
 
     test('no negative probabilities even with extreme file stats', () => {
       // Files with 0% success → extreme pull toward fail
-      const fileStats = Array.from({ length: 50 }, (_, i) =>
-        makeFileStat(`file-${i}.ts`, 0, 10),
-      );
+      const fileStats = Array.from({ length: 50 }, (_, i) => makeFileStat(`file-${i}.ts`, 0, 10));
 
       const result = predictor.enhance(makeHeuristic(), fileStats, defaultPctile, defaultPctile);
 
@@ -134,9 +124,7 @@ describe('OutcomePredictor', () => {
     });
 
     test('normalization handles all-pass file evidence', () => {
-      const fileStats = Array.from({ length: 50 }, (_, i) =>
-        makeFileStat(`file-${i}.ts`, 10, 0),
-      );
+      const fileStats = Array.from({ length: 50 }, (_, i) => makeFileStat(`file-${i}.ts`, 10, 0));
 
       const result = predictor.enhance(
         makeHeuristic({ expectedTestResults: 'fail' }),
@@ -232,7 +220,7 @@ describe('OutcomePredictor', () => {
     test('files with 0 samples are filtered out', () => {
       const fileStats = [
         makeFileStat('a.ts', 0, 0, 0), // samples=0
-        makeFileStat('b.ts', 8, 2),     // samples=10
+        makeFileStat('b.ts', 8, 2), // samples=10
       ];
       // Should not NaN or divide by zero
       const result = predictor.enhance(makeHeuristic(), fileStats, defaultPctile, defaultPctile);

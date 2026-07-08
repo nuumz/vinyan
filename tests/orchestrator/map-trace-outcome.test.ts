@@ -6,18 +6,15 @@
  * Any drift between this spec and the implementation is caught via integration tests (A6/C5).
  */
 import { describe, expect, test } from 'bun:test';
-import type { ExecutionTrace } from '../../src/orchestrator/types.ts';
 import type { PredictionOutcome } from '../../src/orchestrator/forward-predictor-types.ts';
+import type { ExecutionTrace } from '../../src/orchestrator/types.ts';
 
 // ---------------------------------------------------------------------------
 // Re-implementation of mapTraceToFPOutcome for unit testing
 // (the real function is module-private in core-loop.ts)
 // ---------------------------------------------------------------------------
 
-function mapTraceToFPOutcome(
-  predictionId: string,
-  trace: ExecutionTrace,
-): PredictionOutcome | undefined {
+function mapTraceToFpOutcome(predictionId: string, trace: ExecutionTrace): PredictionOutcome | undefined {
   let testResult: 'pass' | 'partial' | 'fail';
   switch (trace.outcome) {
     case 'success':
@@ -84,33 +81,48 @@ describe('mapTraceToFPOutcome', () => {
   // =========================================================================
 
   test('success → pass', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({ outcome: 'success' }));
+    const result = mapTraceToFpOutcome('pred-1', makeTrace({ outcome: 'success' }));
     expect(result).toBeDefined();
     expect(result!.actualTestResult).toBe('pass');
     expect(result!.predictionId).toBe('pred-1');
   });
 
   test('success → actualBlastRadius = affected files count', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'success',
-      affectedFiles: ['a.ts', 'b.ts', 'c.ts'],
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'success',
+        affectedFiles: ['a.ts', 'b.ts', 'c.ts'],
+      }),
+    );
     expect(result!.actualBlastRadius).toBe(3);
   });
 
   test('success → actualQuality from qualityScore.composite', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'success',
-      qualityScore: { composite: 0.85, architecturalCompliance: 0.9, efficiency: 0.8, dimensionsAvailable: 2, phase: 'extended' as const },
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'success',
+        qualityScore: {
+          composite: 0.85,
+          architecturalCompliance: 0.9,
+          efficiency: 0.8,
+          dimensionsAvailable: 2,
+          phase: 'extended' as const,
+        },
+      }),
+    );
     expect(result!.actualQuality).toBe(0.85);
   });
 
   test('success with no qualityScore → default 0.5', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'success',
-      qualityScore: undefined,
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'success',
+        qualityScore: undefined,
+      }),
+    );
     expect(result!.actualQuality).toBe(0.5);
   });
 
@@ -119,67 +131,95 @@ describe('mapTraceToFPOutcome', () => {
   // =========================================================================
 
   test('failure with 80%+ oracle fails → fail', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: { lint: false, type: false, test: false, dep: false, ast: true },
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: { lint: false, type: false, test: false, dep: false, ast: true },
+      }),
+    );
     // 4/5 = 80% → 'fail'
     expect(result!.actualTestResult).toBe('fail');
   });
 
   test('failure with 100% oracle fails → fail', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: { lint: false, type: false, test: false },
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: { lint: false, type: false, test: false },
+      }),
+    );
     expect(result!.actualTestResult).toBe('fail');
   });
 
   test('failure with 20-80% oracle fails → partial', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: { lint: false, type: true, test: true, dep: true, ast: true },
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: { lint: false, type: true, test: true, dep: true, ast: true },
+      }),
+    );
     // 1/5 = 20% → 'partial'
     expect(result!.actualTestResult).toBe('partial');
   });
 
   test('failure with 50% oracle fails → partial', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: { lint: false, type: false, test: true, dep: true },
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: { lint: false, type: false, test: true, dep: true },
+      }),
+    );
     // 2/4 = 50% → 'partial'
     expect(result!.actualTestResult).toBe('partial');
   });
 
   test('failure with <20% oracle fails → pass', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: { lint: true, type: true, test: true, dep: true, ast: false },
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: { lint: true, type: true, test: true, dep: true, ast: false },
+      }),
+    );
     // 1/5 = 20% → boundary, still 'partial' (>= 0.2)
     expect(result!.actualTestResult).toBe('partial');
   });
 
   test('failure with 10% oracle fails → pass', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: {
-        lint: true, type: true, test: true, dep: true,
-        ast: true, extra1: true, extra2: true, extra3: true,
-        extra4: true, extra5: false,
-      },
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: {
+          lint: true,
+          type: true,
+          test: true,
+          dep: true,
+          ast: true,
+          extra1: true,
+          extra2: true,
+          extra3: true,
+          extra4: true,
+          extra5: false,
+        },
+      }),
+    );
     // 1/10 = 10% < 20% → 'pass'
     expect(result!.actualTestResult).toBe('pass');
   });
 
   test('failure with empty oracleVerdicts → fail (failRate=1.0)', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'failure',
-      oracleVerdicts: {},
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'failure',
+        oracleVerdicts: {},
+      }),
+    );
     expect(result!.actualTestResult).toBe('fail');
   });
 
@@ -188,7 +228,7 @@ describe('mapTraceToFPOutcome', () => {
   // =========================================================================
 
   test('timeout → undefined (shouldRecord=false)', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({ outcome: 'timeout' }));
+    const result = mapTraceToFpOutcome('pred-1', makeTrace({ outcome: 'timeout' }));
     expect(result).toBeUndefined();
   });
 
@@ -197,26 +237,35 @@ describe('mapTraceToFPOutcome', () => {
   // =========================================================================
 
   test('escalated with shadow validation pass → pass', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'escalated',
-      shadowValidation: { taskId: 'task-1', testsPassed: true, durationMs: 500, timestamp: Date.now() },
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'escalated',
+        shadowValidation: { taskId: 'task-1', testsPassed: true, durationMs: 500, timestamp: Date.now() },
+      }),
+    );
     expect(result!.actualTestResult).toBe('pass');
   });
 
   test('escalated with shadow validation fail → fail', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'escalated',
-      shadowValidation: { taskId: 'task-1', testsPassed: false, durationMs: 500, timestamp: Date.now() },
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'escalated',
+        shadowValidation: { taskId: 'task-1', testsPassed: false, durationMs: 500, timestamp: Date.now() },
+      }),
+    );
     expect(result!.actualTestResult).toBe('fail');
   });
 
   test('escalated without shadow validation → undefined (shouldRecord=false)', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({
-      outcome: 'escalated',
-      shadowValidation: undefined,
-    }));
+    const result = mapTraceToFpOutcome(
+      'pred-1',
+      makeTrace({
+        outcome: 'escalated',
+        shadowValidation: undefined,
+      }),
+    );
     expect(result).toBeUndefined();
   });
 
@@ -225,7 +274,7 @@ describe('mapTraceToFPOutcome', () => {
   // =========================================================================
 
   test('actualDuration is passthrough from trace.durationMs', () => {
-    const result = mapTraceToFPOutcome('pred-1', makeTrace({ durationMs: 3200 }));
+    const result = mapTraceToFpOutcome('pred-1', makeTrace({ durationMs: 3200 }));
     expect(result!.actualDuration).toBe(3200);
   });
 
@@ -237,7 +286,7 @@ describe('mapTraceToFPOutcome', () => {
     const trace = makeTrace();
     // @ts-expect-error — testing missing field
     trace.affectedFiles = undefined;
-    const result = mapTraceToFPOutcome('pred-1', trace);
+    const result = mapTraceToFpOutcome('pred-1', trace);
     expect(result!.actualBlastRadius).toBe(0);
   });
 });

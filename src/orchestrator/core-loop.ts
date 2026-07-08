@@ -3784,15 +3784,22 @@ async function executeTaskCore(
                     });
                 }
               }
+              // A2 honesty: verified work was withheld, so the result is NOT a
+              // plain 'completed' — callers (CLI, API) must be able to tell that
+              // nothing landed on disk. Trace outcome stays 'success' so the
+              // probation worker earns promotion credit for verified work.
               const probationResult: TaskResult = {
                 id: input.id,
-                status: 'completed',
+                status: 'uncertain',
                 mutations: [],
                 trace: { ...finalTrace, outcome: 'success' as const },
                 answer:
                   workerResult.proposedContent ??
                   `The selected worker is in probation, so ${workerResult.mutations.length} candidate change(s) were queued for shadow validation and not committed.`,
-                notes: ['probation-shadow-only: I10 — probation worker result not committed'],
+                notes: [
+                  'probation-shadow-only: I10 — probation worker result not committed',
+                  "To commit immediately, set workerBootstrapPolicy: 'grandfather' (default) or wait for promotion via accumulated traces.",
+                ],
               };
               deps.bus?.emit('task:complete', { result: probationResult });
               return probationResult;

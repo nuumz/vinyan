@@ -175,10 +175,33 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       } satisfies OracleAbstention;
     }
 
-    // Filter diagnostics to target file if specified
-    const targetDiags = target
-      ? diagnostics.filter((d) => d.file.includes(target) || d.file.endsWith(target))
-      : diagnostics;
+    // Changeset-delta mode: when the hypothesis carries a baselineWorkspace
+    // (the live tree, while `workspace` is a staged copy with mutations
+    // applied), the verdict covers NEW diagnostics anywhere in the tree —
+    // this is what catches a mutation that breaks its CALLERS, which the
+    // target-file filter below cannot see. Baseline infra failure falls back
+    // to target-filter semantics rather than blocking.
+    const baselineWorkspace = hypothesis.context?.baselineWorkspace;
+    let targetDiags: TscDiagnostic[];
+    if (typeof baselineWorkspace === 'string' && baselineWorkspace.length > 0) {
+      const baseline = await runTsc(baselineWorkspace);
+      if (!baseline.timedOut) {
+        // tsc emits paths relative to the project root, so signatures are
+        // comparable across the staged and baseline trees. Line numbers are
+        // excluded — an edit shifts lines without changing pre-existing errors.
+        const baselineSignatures = new Set(baseline.diagnostics.map((d) => `${d.file}|${d.code}|${d.message}`));
+        targetDiags = diagnostics.filter((d) => !baselineSignatures.has(`${d.file}|${d.code}|${d.message}`));
+      } else {
+        targetDiags = target
+          ? diagnostics.filter((d) => d.file.includes(target) || d.file.endsWith(target))
+          : diagnostics;
+      }
+    } else {
+      // Filter diagnostics to target file if specified
+      targetDiags = target
+        ? diagnostics.filter((d) => d.file.includes(target) || d.file.endsWith(target))
+        : diagnostics;
+    }
 
     const evidence: Evidence[] = targetDiags.map((d) => ({
       file: d.file,
@@ -201,7 +224,10 @@ export async function verify(hypothesis: HypothesisTuple): Promise<OracleRespons
       confidence: 1.0,
       evidence,
       fileHashes,
-      reason: targetDiags.length > 0 ? `${targetDiags.length} type error(s) found` : undefined,
+      reason:
+        targetDiags.length > 0
+          ? `${targetDiags.length} type error(s) ${typeof baselineWorkspace === 'string' ? 'introduced by changeset' : 'found'}`
+          : undefined,
       errorCode: targetDiags.length > 0 ? 'TYPE_MISMATCH' : undefined,
       durationMs: Math.round(performance.now() - startTime),
       // Opinion is oriented toward the proposition "the change is type-correct":

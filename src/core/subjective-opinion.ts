@@ -254,6 +254,7 @@ export function weightedFusion(a: SubjectiveOpinion, wa: number, b: SubjectiveOp
 
 export interface ConflictReport {
   /** Conflict mass: b1*d2 + d1*b2. K=0 means full agreement, K>0.5 means high conflict. */
+  // biome-ignore lint/style/useNamingConvention: K is the standard Jøsang/Dempster conflict-mass symbol
   K: number;
   /** 'fuse' if K <= 0.5, 'reject' if K > 0.5 (Dempster normalization amplifies >2x). */
   resolution: 'fuse' | 'reject';

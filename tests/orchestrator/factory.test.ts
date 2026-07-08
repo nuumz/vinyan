@@ -161,6 +161,72 @@ describe('autoRegisterWorkers logic', () => {
   });
 });
 
+describe('startup worker promotion sweep', () => {
+  test('probation worker with sufficient successful traces is promoted at createOrchestrator time', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'vinyan-factory-promotion-'));
+    const startSpy = spyOn(FileWatcher.prototype, 'start').mockImplementation(() => {});
+
+    try {
+      // First boot creates the DB with full migrations.
+      const first = createOrchestrator({
+        workspace,
+        registry: new LLMProviderRegistry(),
+        useSubprocess: false,
+        watchWorkspace: false,
+      });
+      await first.close();
+
+      // Seed a probation worker with enough successful trace evidence to pass
+      // the Wilson-LB promotion gate (fresh install: zero active workers →
+      // active median = 0, so any positive success record qualifies).
+      const dbPath = join(workspace, '.vinyan', 'vinyan.db');
+      const seedDb = new Database(dbPath);
+      const seedStore = new WorkerStore(seedDb);
+      seedStore.insert({
+        id: 'worker-claude-probation',
+        config: {
+          modelId: 'claude-test',
+          temperature: 0.7,
+          systemPromptTemplate: 'default',
+          maxContextTokens: 100_000,
+        },
+        status: 'probation',
+        createdAt: Date.now(),
+        demotionCount: 0,
+      });
+      const insertTrace = seedDb.prepare(`
+        INSERT INTO execution_traces
+          (id, task_id, worker_id, timestamp, routing_level, approach, model_used,
+           tokens_consumed, duration_ms, outcome, oracle_verdicts, affected_files)
+        VALUES (?, ?, ?, ?, 1, 'seed', 'claude-test', 100, 50, 'success', '{}', '[]')
+      `);
+      for (let i = 0; i < 35; i++) {
+        insertTrace.run(`trace-promo-${i}`, `task-promo-${i}`, 'worker-claude-probation', Date.now() - i * 1000);
+      }
+      seedDb.close();
+
+      // Second boot must run the startup promotion sweep against persisted evidence.
+      const second = createOrchestrator({
+        workspace,
+        registry: new LLMProviderRegistry(),
+        useSubprocess: false,
+        watchWorkspace: false,
+      });
+      await second.close();
+
+      const checkDb = new Database(dbPath);
+      const row = checkDb.prepare(`SELECT status FROM worker_profiles WHERE id = 'worker-claude-probation'`).get() as {
+        status: string;
+      } | null;
+      checkDb.close();
+      expect(row?.status).toBe('active');
+    } finally {
+      startSpy.mockRestore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('createOrchestrator workspace watching', () => {
   test('skips file watcher startup when watchWorkspace=false', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'vinyan-factory-watch-off-'));

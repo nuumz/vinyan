@@ -132,6 +132,12 @@ export interface GateRequest {
   riskScore?: number;
   /** EO #3: Per-node verification hint — selectively run oracles based on mutation type. */
   verificationHint?: VerificationHint;
+  /**
+   * Changeset-delta verification: the live workspace to diff against when
+   * `params.workspace` is a staged copy with mutations applied. Oracles that
+   * support it (type) report only NEW diagnostics introduced by the changeset.
+   */
+  baselineWorkspace?: string;
   /** Wave C: routing level for SL fusion depth control. */
   routingLevel?: number;
   /**
@@ -363,6 +369,8 @@ export async function runGate(request: GateRequest): Promise<GateVerdict> {
             ...(request.verificationHint?.understanding?.targetSymbol
               ? { symbolName: request.verificationHint.understanding.targetSymbol }
               : {}),
+            // Changeset-delta verification (type oracle): diff staged vs live tree.
+            ...(request.baselineWorkspace ? { baselineWorkspace: request.baselineWorkspace } : {}),
             ...(request.verificationHint?.targetFiles ? { targetFiles: request.verificationHint.targetFiles } : {}),
           },
           workspace: request.params.workspace,

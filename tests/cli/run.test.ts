@@ -48,7 +48,7 @@ describe('CLI run command', () => {
     clearTimeout(killTimer);
 
     // Should output valid JSON (even if task escalates without real LLM)
-    let parsed;
+    let parsed: Record<string, unknown> | null;
     try {
       parsed = JSON.parse(stdout);
     } catch {

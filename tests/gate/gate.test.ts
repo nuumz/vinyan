@@ -89,6 +89,13 @@ describe('Oracle Gate', () => {
       expect(verdict.decision).toBe('block');
       expect(verdict.reasons.length).toBeGreaterThan(0);
       expect(verdict.reasons.some((r) => r.includes('type'))).toBe(true);
+      // SL fusion orientation: a failing deterministic oracle must not raise fused
+      // belief — a mis-oriented opinion (belief=1.0 on failure) previously inverted
+      // fusion and reported aggregateConfidence ≈ 1.0 ('allow'). Full conflict with a
+      // passing informational oracle may legitimately fuse to vacuous (b=0, u=1),
+      // so the invariant is "belief must not dominate", not "disbelief must win".
+      expect(verdict.fusedOpinion).toBeDefined();
+      expect(verdict.fusedOpinion!.belief).toBeLessThanOrEqual(0.5);
     } finally {
       rmSync(filePath, { force: true });
     }

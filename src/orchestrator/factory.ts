@@ -264,10 +264,13 @@ export interface OrchestratorConfig {
    *   'earn'       — register newcomers as `probation`; promote via Wilson LB gate
    *                 from real traces. Existing providers with ≥ probationMinTasks
    *                 historical traces are grandfathered to `active`.
-   *   'grandfather' — register newcomers as `active` (legacy behavior, kept so
-   *                 smoke tests and fixtures that depend on immediate dispatch
-   *                 continue to pass).
-   * Default: 'earn' (A7 compliance — engines must earn trust from evidence).
+   *   'grandfather' — register newcomers as `active`.
+   * Default: 'grandfather'. Under 'earn', a fresh install has only probation
+   * workers, and the I10 gate withholds every verified mutation until promotion —
+   * on a single-provider install there is no alternative worker to validate
+   * against, so tasks can never land changes. The oracle gate (A1/A3) remains the
+   * verification authority either way; opt into 'earn' for multi-provider fleet
+   * installs where cross-worker shadow validation is actually possible.
    */
   workerBootstrapPolicy?: 'earn' | 'grandfather';
   /** Command approval gate — enables interactive approval for unlisted shell commands. */
@@ -650,7 +653,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
       bus,
       config.workerModelAllowlist,
       config.engineRegistry,
-      config.workerBootstrapPolicy ?? 'earn',
+      config.workerBootstrapPolicy ?? 'grandfather',
       30,
     );
   }
@@ -910,7 +913,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
   // through the same path.
   let detachEngineLifecycle: (() => void) | undefined;
   if (workerStore) {
-    const policy = config.workerBootstrapPolicy ?? 'earn';
+    const policy = config.workerBootstrapPolicy ?? 'grandfather';
     const probationMinTasks = fleetConfig?.probation_min_tasks ?? 30;
     const resolveBootstrapStatus = (workerId: string): 'active' | 'probation' => {
       if (policy === 'grandfather') return 'active';
@@ -1156,6 +1159,20 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           }
         : {}),
     });
+
+    // Probation → active promotion must be reachable from one-shot CLI runs, not
+    // only from the in-process sleep cycle (which needs 20 sessions in a single
+    // process — unreachable for `vinyan run`). Evaluate persisted trace evidence
+    // at startup using the same Wilson-LB gate the sleep cycle applies.
+    try {
+      for (const worker of workerStore.findByStatus('probation')) {
+        workerLifecycle.evaluatePromotion(worker.id);
+      }
+    } catch (err) {
+      console.warn(
+        `[vinyan] startup worker promotion sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // Unified profile layer — local oracle lifecycle (A7 loop).
@@ -3248,11 +3265,14 @@ export async function createOrchestratorAsync(
 /**
  * Auto-register existing providers as WorkerProfiles.
  *
- * Policy (A7 compliance — earn trust from evidence):
- *   'earn' (default): newcomers register as `probation`. If the DB already has
+ * Policy:
+ *   'earn':           newcomers register as `probation`. If the DB already has
  *                    ≥ probationMinTasks traces for a provider, that provider
- *                    is grandfathered to `active` (evidence-backed).
- *   'grandfather':    all newcomers register as `active` (legacy behavior).
+ *                    is grandfathered to `active` (evidence-backed). Opt-in for
+ *                    multi-provider fleets (A7 — earn trust from evidence).
+ *   'grandfather' (default): all newcomers register as `active` — required for
+ *                    single-provider installs, where probation + I10 would
+ *                    withhold every verified mutation with no promotion path.
  *
  * Also registers non-LLM engines from engineRegistry so fleet governance
  * (WorkerLifecycle, WorkerSelector, CapabilityModel) can track them.
@@ -3469,7 +3489,7 @@ function autoRegisterWorkers(
   bus: VinyanBus,
   allowlist: string[] = DEFAULT_WORKER_MODEL_ALLOWLIST,
   engineRegistry?: ReasoningEngineRegistry,
-  policy: 'earn' | 'grandfather' = 'earn',
+  policy: 'earn' | 'grandfather' = 'grandfather',
   probationMinTasks = 30,
 ): void {
   const resolveBootstrapStatus = (workerId: string): 'active' | 'probation' => {

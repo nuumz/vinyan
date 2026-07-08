@@ -18,9 +18,13 @@ export type EpistemicGateDecision =
   | 'block'; // Clear failure — reject
 
 export interface ConfidenceThresholds {
+  // biome-ignore lint/style/useNamingConvention: threshold constants use UPPER_SNAKE by convention (mirrors DEFAULT_THRESHOLDS)
   HIGH_CONFIDENCE: number; // 0.85
+  // biome-ignore lint/style/useNamingConvention: threshold constants use UPPER_SNAKE by convention
   ADEQUATE_CONFIDENCE: number; // 0.60
+  // biome-ignore lint/style/useNamingConvention: threshold constants use UPPER_SNAKE by convention
   LOW_CONFIDENCE: number; // 0.40
+  // biome-ignore lint/style/useNamingConvention: threshold constants use UPPER_SNAKE by convention
   UNCERTAIN: number; // 0.25
 }
 

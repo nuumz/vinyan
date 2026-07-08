@@ -10,6 +10,7 @@ import type { GateRequest } from '../gate/gate.ts';
 import { runGate } from '../gate/gate.ts';
 import type { OracleGate } from './core-loop.ts';
 import type { VerificationHint } from './types.ts';
+import { createStagedWorkspace, type StagedWorkspace } from './verification-staging.ts';
 
 export class OracleGateAdapter implements OracleGate {
   private workspace: string;
@@ -47,23 +48,7 @@ export class OracleGateAdapter implements OracleGate {
       block: 3,
     };
 
-    // Run gate verification in parallel for multi-file mutations
-    const results = await Promise.all(
-      mutations.map((mutation) =>
-        runGate({
-          tool: 'write_file',
-          params: {
-            file_path: mutation.file,
-            content: mutation.content,
-            workspace: this.workspace,
-          },
-          verificationHint,
-          routingLevel,
-          // M3.5 — feed self-model signals to commonsense oracle activation gate
-          ...(commonsenseSignals ? { commonsenseSignals } : {}),
-        }).then((gateResult) => ({ mutation, gateResult })),
-      ),
-    );
+    const results = await this.runGates(mutations, verificationHint, routingLevel, commonsenseSignals);
 
     for (const { mutation, gateResult } of results) {
       // Merge oracle results — keyed by oracle:file, fail wins over pass
@@ -81,15 +66,13 @@ export class OracleGateAdapter implements OracleGate {
       }
 
       // Aggregate epistemic fields — keep the worst (most conservative)
-      if (gateResult.epistemicDecision) {
-        if (!worstEpistemic || SEVERITY[gateResult.epistemicDecision] > SEVERITY[worstEpistemic]) {
-          worstEpistemic = gateResult.epistemicDecision;
-        }
+      const decision = gateResult.epistemicDecision;
+      if (decision && (!worstEpistemic || SEVERITY[decision] > SEVERITY[worstEpistemic])) {
+        worstEpistemic = decision;
       }
-      if (gateResult.aggregateConfidence !== undefined) {
-        if (lowestConfidence === undefined || gateResult.aggregateConfidence < lowestConfidence) {
-          lowestConfidence = gateResult.aggregateConfidence;
-        }
+      const confidence = gateResult.aggregateConfidence;
+      if (confidence !== undefined && (lowestConfidence === undefined || confidence < lowestConfidence)) {
+        lowestConfidence = confidence;
       }
       if (gateResult.caveats) {
         allCaveats.push(...gateResult.caveats);
@@ -104,5 +87,55 @@ export class OracleGateAdapter implements OracleGate {
       aggregateConfidence: lowestConfidence,
       caveats: allCaveats.length > 0 ? allCaveats : undefined,
     };
+  }
+
+  /**
+   * A1: oracles must verify the PROPOSED tree, not the pre-mutation disk.
+   * Materialize the full changeset into a staged copy of the workspace so
+   * tsc/ast/lint/test see the change (and its cross-file effects) before
+   * commit. Staging failure falls back to the live workspace rather than
+   * skipping verification (A9: degrade, don't drop the gate).
+   */
+  private async runGates(
+    mutations: Array<{ file: string; content: string }>,
+    verificationHint?: VerificationHint,
+    routingLevel?: number,
+    commonsenseSignals?: GateRequest['commonsenseSignals'],
+  ): Promise<Array<{ mutation: { file: string; content: string }; gateResult: Awaited<ReturnType<typeof runGate>> }>> {
+    let staged: StagedWorkspace | undefined;
+    try {
+      staged = createStagedWorkspace(this.workspace, mutations);
+    } catch (err) {
+      console.warn(
+        `[vinyan] verification staging failed — oracles will see the pre-mutation workspace: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    const gateWorkspace = staged?.path ?? this.workspace;
+
+    try {
+      // Run gate verification in parallel for multi-file mutations
+      return await Promise.all(
+        mutations.map((mutation) =>
+          runGate({
+            tool: 'write_file',
+            params: {
+              file_path: mutation.file,
+              content: mutation.content,
+              workspace: gateWorkspace,
+            },
+            // When staging succeeded, let delta-capable oracles diff staged vs live.
+            ...(staged ? { baselineWorkspace: this.workspace } : {}),
+            verificationHint,
+            routingLevel,
+            // M3.5 — feed self-model signals to commonsense oracle activation gate
+            ...(commonsenseSignals ? { commonsenseSignals } : {}),
+          }).then((gateResult) => ({ mutation, gateResult })),
+        ),
+      );
+    } finally {
+      staged?.cleanup();
+    }
   }
 }

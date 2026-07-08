@@ -122,7 +122,8 @@ describe('Gap #3: I10 Probation No-Commit', () => {
 
     const result = await executeTask(defaultInput, deps);
 
-    expect(result.status).toBe('completed');
+    // A2 honesty: withheld work must not report as a plain 'completed'
+    expect(result.status).toBe('uncertain');
     // Probation worker: mutations should be empty (not committed)
     expect(result.mutations).toHaveLength(0);
     expect(result.notes).toBeDefined();

@@ -295,8 +295,16 @@ const GoalGroundingConfigSchema = z.object({
    * (`re-ground-context`, `re-verify-evidence`, `ask-freshness-question`,
    * `abort-unsafe-drift`). When false, only the legacy three actions are
    * emitted, preserving pre-A10/T6 behavior.
+   *
+   * Defaults to true, matching `goal_grounding.extended_actions_enabled` in
+   * the parameter registry and the runtime default in `goal-grounding.ts`.
+   * It read `false` here, so A10 behaviour depended on whether an operator
+   * happened to write a `goal_grounding:` config section at all: with the
+   * section present the factory passed `false` through, without it the
+   * runtime default `true` applied. Same build, two different governance
+   * paths — which A3 does not allow.
    */
-  extended_actions_enabled: z.boolean().default(false),
+  extended_actions_enabled: z.boolean().default(true),
 });
 
 export type GoalGroundingConfig = z.infer<typeof GoalGroundingConfigSchema>;

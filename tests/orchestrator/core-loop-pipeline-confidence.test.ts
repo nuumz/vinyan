@@ -207,13 +207,33 @@ describe('Pipeline Confidence — L1+ Computation', () => {
     expect(result.trace.confidenceDecision!.action).toBe('allow');
   });
 
-  test('A10 temporal downgrade lowers final trace confidence decision', async () => {
+  test('A10 stale evidence surfaces a freshness question instead of committing', async () => {
+    // Default action vocabulary (`extendedActionsEnabled`, on by default in
+    // the parameter registry): a mild freshness drift asks the user to
+    // confirm the evidence is still current rather than silently proceeding.
     const deps = makeDeps({
       routingLevel: 2,
       verificationPassed: true,
       aggregateConfidence: 0.95,
       worldGraphFacts: [makeFact()],
     });
+    const result = await executeTask(makeInput({ constraints: ['COMPREHENSION_CHECK:off'] }), deps);
+
+    expect(result.status).toBe('input-required');
+    expect(result.trace.approach).toBe('goal-grounding-clarification');
+    expect(result.clarificationNeeded?.join(' ')).toContain('freshness');
+  });
+
+  test('A10 temporal downgrade lowers final trace confidence decision', async () => {
+    // Legacy 3-action vocabulary, reached via the documented kill switch.
+    // Here stale evidence downgrades confidence and the task still completes.
+    const deps = makeDeps({
+      routingLevel: 2,
+      verificationPassed: true,
+      aggregateConfidence: 0.95,
+      worldGraphFacts: [makeFact()],
+    });
+    deps.goalGroundingPolicy = { extendedActionsEnabled: false };
     const result = await executeTask(makeInput({ constraints: ['COMPREHENSION_CHECK:off'] }), deps);
 
     expect(result.status).toBe('completed');

@@ -784,7 +784,14 @@ describe('composeDeterministicCandidate', () => {
     expect(candidate.strategy).toBe('direct-tool');
     expect(candidate.directToolCall).toBeDefined();
     expect(candidate.directToolCall!.tool).toBe('shell_exec');
-    expect(String(candidate.directToolCall!.parameters.command)).toContain('Google Chrome');
+    // The launcher is platform-specific — `open -a "Google Chrome"` on macOS,
+    // the bare `google-chrome` binary on Linux, `start "" chrome` on Windows.
+    // Asserting the macOS spelling pinned this test to one platform; what the
+    // resolver actually owes us here is that the Thai phrase resolved to a
+    // Chrome launcher at all. The exact per-platform spellings are already
+    // pinned in tests/orchestrator/tools/direct-tool-resolver.test.ts, which
+    // passes the platform to `resolveCommand` explicitly.
+    expect(String(candidate.directToolCall!.parameters.command).toLowerCase()).toContain('chrome');
     expect(candidate.reasoningSource).toBe('deterministic');
     expect(candidate.confidence).toBeGreaterThanOrEqual(0.85);
   });

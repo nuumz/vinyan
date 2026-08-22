@@ -78,8 +78,22 @@ export class OracleEMACalibrator {
   >();
   private readonly bus?: VinyanBus;
 
-  constructor(options?: { bus?: VinyanBus }) {
+  /**
+   * Injectable clock for `lastUpdatedAt`.
+   *
+   * The calibration itself is a pure function of the observation sequence —
+   * accuracy and warmth come from counts alone. `lastUpdatedAt` is dashboard
+   * metadata, but reading the wall clock inside `record` still made two
+   * calibrators fed an identical sequence return different snapshots whenever
+   * a millisecond ticked between them. That is exactly what the A3 property
+   * test asserts cannot happen, so the test failed on timing rather than on
+   * behaviour. Callers that need reproducible state pass a fixed clock.
+   */
+  private readonly clock: () => number;
+
+  constructor(options?: { bus?: VinyanBus; clock?: () => number }) {
     this.bus = options?.bus;
+    this.clock = options?.clock ?? Date.now;
   }
 
   /**
@@ -110,7 +124,7 @@ export class OracleEMACalibrator {
       observationCount: existing.observationCount + 1,
       accuracy: newAccuracy,
       agreementCount: existing.agreementCount + (agreed ? 1 : 0),
-      lastUpdatedAt: Date.now(),
+      lastUpdatedAt: this.clock(),
     };
     this.state.set(observation.oracleName, next);
 

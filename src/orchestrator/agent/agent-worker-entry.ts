@@ -159,6 +159,53 @@ export interface WorkerIO {
 // ── Main ───────────────────────────────────────────────────────────
 
 /**
+ * Per-turn usage accounting for the worker.
+ *
+ * Turns carry the DELTA since the previous turn, never the running session
+ * total — see `TurnUsageFields` in protocol.ts. The cumulative figures stay
+ * here because the remaining-budget math needs them.
+ */
+function createUsageReporter() {
+  const totals = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+  let reported = { ...totals };
+  return {
+    add(u: { input: number; output: number; cacheRead?: number; cacheCreation?: number }): void {
+      totals.input += u.input;
+      totals.output += u.output;
+      totals.tokens += u.input + u.output;
+      totals.cacheRead += u.cacheRead ?? 0;
+      totals.cacheCreation += u.cacheCreation ?? 0;
+    },
+    /** Tokens consumed so far this session. */
+    total(): number {
+      return totals.tokens;
+    },
+    /** Usage fields for the next turn: everything consumed since the last one. */
+    delta(): {
+      tokensConsumed: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
+    } {
+      const input = totals.input - reported.input;
+      const output = totals.output - reported.output;
+      const cacheRead = totals.cacheRead - reported.cacheRead;
+      const cacheCreation = totals.cacheCreation - reported.cacheCreation;
+      const tokensConsumed = totals.tokens - reported.tokens;
+      reported = { ...totals };
+      return {
+        tokensConsumed,
+        ...(input > 0 ? { inputTokens: input } : {}),
+        ...(output > 0 ? { outputTokens: output } : {}),
+        ...(cacheRead > 0 ? { cacheReadTokens: cacheRead } : {}),
+        ...(cacheCreation > 0 ? { cacheCreationTokens: cacheCreation } : {}),
+      };
+    },
+  };
+}
+
+/**
  * Core agent loop — testable without subprocess.
  * Takes explicit I/O functions instead of process.stdin/stdout.
  */
@@ -252,9 +299,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
   ];
 
   let compressionAttempts = 0;
-  let totalTokensConsumed = 0;
-  let totalCacheRead = 0;
-  let totalCacheCreation = 0;
+  const usage = createUsageReporter();
   let turnCount = 0;
 
   try {
@@ -273,7 +318,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
         const llmReq = {
           systemPrompt: '', // already in history[0]
           userPrompt: '', // already in history
-          maxTokens: Math.min(init.budget.maxTokens - totalTokensConsumed, 4096),
+          maxTokens: Math.min(init.budget.maxTokens - usage.total(), 4096),
           // Per-turn LLM timeout. Floor at 60s for realistic Sonnet calls, but
           // never exceed the agent's remaining wall-clock budget — otherwise a
           // single turn can overshoot the orchestrator's per-attempt cap and
@@ -334,16 +379,12 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
           turnId: `t${turnCount}`,
           reason: `LLM generation error: ${msg}`,
           uncertainties: [`LLM call failed: ${msg}`],
-          tokensConsumed: totalTokensConsumed,
-          ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
-          ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
+          ...usage.delta(),
         });
         return;
       }
 
-      totalTokensConsumed += response.tokensUsed.input + response.tokensUsed.output;
-      totalCacheRead += response.tokensUsed.cacheRead ?? 0;
-      totalCacheCreation += response.tokensUsed.cacheCreation ?? 0;
+      usage.add(response.tokensUsed);
       turnCount++;
 
       // 4c. Append assistant response to history
@@ -368,9 +409,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
           turnId: `t${turnCount}`,
           reason: 'max_tokens after compression attempts exhausted',
           uncertainties: ['Context window exhausted'],
-          tokensConsumed: totalTokensConsumed,
-          ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
-          ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
+          ...usage.delta(),
         });
         return;
       }
@@ -387,7 +426,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
             turnId: `t${turnCount}`,
             calls: regularCalls,
             rationale: response.content || 'Tool execution',
-            tokensConsumed: totalTokensConsumed,
+            ...usage.delta(),
           });
 
           // Read tool_results from orchestrator
@@ -455,9 +494,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
               turnId: `t${turnCount}`,
               reason: decision.reason ?? 'Worker reported uncertainty',
               uncertainties: decision.uncertainties ?? [],
-              tokensConsumed: totalTokensConsumed,
-              ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
-              ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
+              ...usage.delta(),
               ...(needsUserInput ? { needsUserInput: true } : {}),
               ...(selfAssessment ? { selfAssessment } : {}),
             });
@@ -469,9 +506,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
               type: 'done',
               turnId: `t${turnCount}`,
               proposedContent: decision.proposedContent,
-              tokensConsumed: totalTokensConsumed,
-              ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
-              ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
+              ...usage.delta(),
               ...(selfAssessment ? { selfAssessment } : {}),
             });
           }
@@ -485,9 +520,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
         type: 'done',
         turnId: `t${turnCount}`,
         proposedContent: response.content,
-        tokensConsumed: totalTokensConsumed,
-        ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
-        ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
+        ...usage.delta(),
       });
       return;
     }
@@ -498,9 +531,7 @@ export async function runAgentWorkerLoop(provider: LLMProvider, io: WorkerIO): P
       turnId: `t${turnCount}`,
       reason: 'Max turns exhausted',
       uncertainties: ['Reached maximum turn limit without completing task'],
-      tokensConsumed: totalTokensConsumed,
-      ...(totalCacheRead > 0 ? { cacheReadTokens: totalCacheRead } : {}),
-      ...(totalCacheCreation > 0 ? { cacheCreationTokens: totalCacheCreation } : {}),
+      ...usage.delta(),
     });
   } finally {
     if (watchdog) clearInterval(watchdog);

@@ -121,10 +121,17 @@ export class TraceCollectorImpl implements TraceCollector {
     if (this.costLedger && trace.modelUsed) {
       try {
         const card = resolveRateCard(trace.modelUsed, this.rateCards);
+        // Output tokens bill at up to 5x input, so the split decides the price.
+        // Engines that report it get charged correctly; the rest fall back to
+        // pricing the total as input, which under-reports rather than invents
+        // a split the trace cannot support.
+        const hasSplit = trace.tokensInput !== undefined || trace.tokensOutput !== undefined;
+        const tokensInput = hasSplit ? (trace.tokensInput ?? 0) : trace.tokensConsumed;
+        const tokensOutput = hasSplit ? (trace.tokensOutput ?? 0) : 0;
         const costResult = computeCost(
           {
-            input: trace.tokensConsumed,
-            output: 0, // tokensConsumed is total; split unavailable at trace level
+            input: tokensInput,
+            output: tokensOutput,
             cacheRead: trace.cacheReadTokens,
             cacheCreation: trace.cacheCreationTokens,
           },
@@ -139,8 +146,8 @@ export class TraceCollectorImpl implements TraceCollector {
           workerId: trace.workerId ?? null,
           engineId: trace.modelUsed,
           timestamp: trace.timestamp,
-          tokens_input: trace.tokensConsumed,
-          tokens_output: 0,
+          tokens_input: tokensInput,
+          tokens_output: tokensOutput,
           cache_read_tokens: trace.cacheReadTokens ?? 0,
           cache_creation_tokens: trace.cacheCreationTokens ?? 0,
           duration_ms: trace.durationMs,

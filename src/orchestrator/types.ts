@@ -1383,6 +1383,12 @@ export interface ExecutionTrace {
   workerSelectionAudit?: EngineSelectionResult; // PH4: worker selection audit trail
   correlationId?: string; // WP-5: cross-instance request tracing
   sourceInstanceId?: string; // WP-5: originating instance ID
+  /**
+   * Input/output split of `tokensConsumed`. Absent when the engine did not
+   * report it, in which case cost accounting prices the trace as input-only.
+   */
+  tokensInput?: number;
+  tokensOutput?: number;
   /** Prompt cache metrics for cost analysis. */
   cacheReadTokens?: number;
   cacheCreationTokens?: number;

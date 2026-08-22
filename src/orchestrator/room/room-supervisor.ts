@@ -40,6 +40,8 @@ export interface ParticipantResult {
   mutations: ProposedMutation[];
   uncertainties: string[];
   tokensConsumed: number;
+  tokensInput?: number;
+  tokensOutput?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   /** Agent Conversation: bubble-up signal; when true the room goes awaiting-user. */
@@ -75,6 +77,8 @@ export class RoomSupervisor {
       participants: new Map(),
       stagedMutations: new Map(),
       tokensConsumed: 0,
+      tokensInput: 0,
+      tokensOutput: 0,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
       uncertainties: [],
@@ -111,6 +115,8 @@ export class RoomSupervisor {
   ): void {
     // Token accounting fires for every result, even budget-exhausting ones.
     state.tokensConsumed += result.tokensConsumed;
+    state.tokensInput += result.tokensInput ?? 0;
+    state.tokensOutput += result.tokensOutput ?? 0;
     state.cacheReadTokens += result.cacheReadTokens ?? 0;
     state.cacheCreationTokens += result.cacheCreationTokens ?? 0;
 
@@ -492,6 +498,8 @@ export class RoomSupervisor {
       mutations: Array.from(state.stagedMutations.values()),
       uncertainties: [...state.uncertainties],
       tokensConsumed: state.tokensConsumed,
+      tokensInput: state.tokensInput,
+      tokensOutput: state.tokensOutput,
       cacheReadTokens: state.cacheReadTokens,
       cacheCreationTokens: state.cacheCreationTokens,
       durationMs,

@@ -27,7 +27,7 @@ export interface ScriptedMockResponse {
   content?: string;
   toolCalls?: ToolCall[];
   stopReason: 'end_turn' | 'tool_use' | 'max_tokens';
-  tokensUsed?: { input: number; output: number };
+  tokensUsed?: { input: number; output: number; cacheRead?: number; cacheCreation?: number };
   thinking?: string;
 }
 

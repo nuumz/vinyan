@@ -60,6 +60,13 @@ export interface WorkerLoopResult {
   proposedContent?: string;
   uncertainties: string[];
   tokensConsumed: number;
+  /**
+   * Input/output split of `tokensConsumed`, summed across turns. Present only
+   * when the worker reported it. The cost ledger needs the split: output
+   * tokens bill at up to 5x input, so a total alone cannot be priced.
+   */
+  tokensInput?: number;
+  tokensOutput?: number;
   /** Prompt caching: total cache-read tokens across all turns in this session. */
   cacheReadTokens?: number;
   /** Prompt caching: total cache-creation tokens across all turns in this session. */
@@ -561,8 +568,12 @@ function buildUncertainResult(
   proposedContent?: string,
   nonRetryableError?: string,
   needsUserInput?: boolean,
-  cacheReadTokens?: number,
-  cacheCreationTokens?: number,
+  usage?: {
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    tokensInput?: number;
+    tokensOutput?: number;
+  },
   selfAssessment?: { grade: 'A' | 'B' | 'C'; gaps?: string[] },
 ): WorkerLoopResult {
   return {
@@ -570,8 +581,10 @@ function buildUncertainResult(
     proposedContent,
     uncertainties,
     tokensConsumed,
-    ...(cacheReadTokens ? { cacheReadTokens } : {}),
-    ...(cacheCreationTokens ? { cacheCreationTokens } : {}),
+    ...(usage?.tokensInput ? { tokensInput: usage.tokensInput } : {}),
+    ...(usage?.tokensOutput ? { tokensOutput: usage.tokensOutput } : {}),
+    ...(usage?.cacheReadTokens ? { cacheReadTokens: usage.cacheReadTokens } : {}),
+    ...(usage?.cacheCreationTokens ? { cacheCreationTokens: usage.cacheCreationTokens } : {}),
     durationMs: Math.round(durationMs),
     transcript,
     isUncertain: true,
@@ -974,6 +987,17 @@ export async function runAgentLoop(
   let tokensConsumed = 0;
   let cacheReadTokens = 0;
   let cacheCreationTokens = 0;
+  // Input/output split, summed from the same turns. Stays 0 for workers that
+  // do not report it; result fields are then omitted and pricing falls back.
+  let tokensInput = 0;
+  let tokensOutput = 0;
+  /** Usage accumulated so far, for whichever result the loop returns. */
+  const currentUsage = () => ({
+    ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
+    ...(cacheCreationTokens > 0 ? { cacheCreationTokens } : {}),
+    ...(tokensInput > 0 ? { tokensInput } : {}),
+    ...(tokensOutput > 0 ? { tokensOutput } : {}),
+  });
   let contractViolations = 0;
   let session: IAgentSession | null = null;
   const progress = new SessionProgress();
@@ -1343,6 +1367,8 @@ export async function runAgentLoop(
           transcript,
           undefined,
           detectNonRetryableError([reason]),
+          undefined,
+          currentUsage(),
         );
       }
 
@@ -1388,6 +1414,13 @@ export async function runAgentLoop(
         const turnTokens = turn.tokensConsumed ?? estimateTokens(turn);
         budget.recordTurn(turnTokens);
         tokensConsumed += turnTokens;
+        // Tool-calling turns burn tokens like any other. Leaving them out of
+        // the split and the cache totals would price a session on its final
+        // turn alone.
+        cacheReadTokens += turn.cacheReadTokens ?? 0;
+        cacheCreationTokens += turn.cacheCreationTokens ?? 0;
+        tokensInput += turn.inputTokens ?? 0;
+        tokensOutput += turn.outputTokens ?? 0;
 
         // EO #5: Check if transcript compaction is warranted (lowered from 0.7 — preserves context earlier)
         const snap = budget.toSnapshot();
@@ -1683,6 +1716,8 @@ export async function runAgentLoop(
               transcript,
               undefined,
               `Contract violation: session killed (policy=${contract.onViolation}, violations=${contractViolations}/${contract.violationTolerance})`,
+              undefined,
+              currentUsage(),
             );
           }
         }
@@ -1756,6 +1791,8 @@ export async function runAgentLoop(
         tokensConsumed += turnTokens;
         cacheReadTokens += turn.cacheReadTokens ?? 0;
         cacheCreationTokens += turn.cacheCreationTokens ?? 0;
+        tokensInput += turn.inputTokens ?? 0;
+        tokensOutput += turn.outputTokens ?? 0;
 
         const mutations = overlay.computeDiff();
         await session.drainAndClose(); // fix #1: drainAndClose, not close('completed')
@@ -1786,6 +1823,8 @@ export async function runAgentLoop(
           proposedContent: turn.proposedContent,
           uncertainties: [],
           tokensConsumed,
+          ...(tokensInput > 0 ? { tokensInput } : {}),
+          ...(tokensOutput > 0 ? { tokensOutput } : {}),
           ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
           ...(cacheCreationTokens > 0 ? { cacheCreationTokens } : {}),
           durationMs,
@@ -1800,6 +1839,8 @@ export async function runAgentLoop(
         tokensConsumed += turnTokens;
         cacheReadTokens += turn.cacheReadTokens ?? 0;
         cacheCreationTokens += turn.cacheCreationTokens ?? 0;
+        tokensInput += turn.inputTokens ?? 0;
+        tokensOutput += turn.outputTokens ?? 0;
 
         const mutations = overlay.computeDiff();
         await session.drainAndClose(); // fix #1: drainAndClose for uncertain too
@@ -1847,8 +1888,7 @@ export async function runAgentLoop(
           // as a non-retryable error — it's a collaborative pause, not a hard failure.
           needsUserInput ? undefined : detectNonRetryableError(turn.uncertainties),
           needsUserInput,
-          cacheReadTokens > 0 ? cacheReadTokens : undefined,
-          cacheCreationTokens > 0 ? cacheCreationTokens : undefined,
+          currentUsage(),
           turn.selfAssessment,
         );
       }
@@ -1872,6 +1912,10 @@ export async function runAgentLoop(
       tokensConsumed,
       performance.now() - startTime,
       transcript,
+      undefined,
+      undefined,
+      undefined,
+      currentUsage(),
     );
   } finally {
     // fix #4: always cleanup overlay

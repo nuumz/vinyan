@@ -96,6 +96,11 @@ export function createSimpleSkillRegistry(opts: CreateSimpleSkillRegistryOptions
       workspace: opts.workspace,
       ...(opts.userSkillsDir !== undefined ? { userSkillsDir: opts.userSkillsDir } : {}),
       ...(opts.projectSkillsDir !== undefined ? { projectSkillsDir: opts.projectSkillsDir } : {}),
+      // Per-agent scopes are loaded by `loadSimpleSkills`, so they must be
+      // watched too — otherwise adding a skill under `.vinyan/agents/<id>/skills/`
+      // stayed invisible until the next restart.
+      ...(opts.userAgentsDir !== undefined ? { userAgentsDir: opts.userAgentsDir } : {}),
+      ...(opts.projectAgentsDir !== undefined ? { projectAgentsDir: opts.projectAgentsDir } : {}),
       ...(opts.watcherDebounceMs !== undefined ? { debounceMs: opts.watcherDebounceMs } : {}),
       onChange: refresh,
     };

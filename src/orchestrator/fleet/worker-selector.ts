@@ -200,9 +200,23 @@ export class WorkerSelector {
       // selection scores. Only block/degrade windows apply back-pressure.
       const budgetStatuses = (this.budgetEnforcer?.checkBudget() ?? []).filter((s) => s.enforcement !== 'warn');
       const p95Budget = prediction.p95_usd > 0 ? prediction.p95_usd : 1;
+      // No lower clamp on the per-worker factor. A `Math.max(0.1, …)` floor
+      // saturates for every worker that costs under a tenth of the token
+      // budget — on an L2 budget of 50k tokens, workers averaging 2k and 4k
+      // both land on 0.1 and score byte-identically, which is the exact
+      // "cost drops out of the ranking" failure this branch exists to avoid.
+      // A worker with no recorded token cost yet (0) falls back to 0.5.
+      const perWorkerFactor = Math.min(1.0, workerCostRatio || 0.5);
+      // Derived per-worker estimate, NOT a CostPredictor verdict:
+      // `costAwareScore` reads `predicted_usd` and nothing else, and the
+      // remaining fields are carried only to satisfy the parameter type. The
+      // ceiling stays the unscaled task-type p95 on purpose — it is the shared
+      // reference every worker is measured against (A5: the scaled number must
+      // not be read back as calibrated evidence).
       const perWorkerPrediction = {
         ...prediction,
-        predicted_usd: prediction.predicted_usd * Math.max(0.1, Math.min(1.0, workerCostRatio || 0.5)),
+        predicted_usd: prediction.predicted_usd * perWorkerFactor,
+        p95_usd: p95Budget,
       };
       costEfficiency = costAwareScore(perWorkerPrediction, p95Budget, budgetStatuses);
     }

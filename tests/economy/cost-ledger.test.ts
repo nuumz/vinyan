@@ -165,6 +165,63 @@ describe('CostLedger', () => {
     expect(ledger.queryByTask('cap-task-10049')).toHaveLength(1);
   });
 
+  test('a warm-started cache evicts the OLDEST rows, not the newest', () => {
+    // The cap only behaves correctly if warmCache() pushes oldest-first.
+    // Warming newest-first (ORDER BY timestamp DESC straight into the array)
+    // makes record()'s splice(0, …) drop the most RECENT rows, which empties
+    // the hour window BudgetEnforcer reads — a blown cap silently unblows.
+    const db = new Database(':memory:');
+    migration001.up(db);
+    const now = Date.now();
+    const insert = (id: string, taskId: string, timestamp: number, usd: number) =>
+      db.run(
+        `INSERT INTO cost_ledger (
+          id, task_id, worker_id, engine_id, timestamp,
+          tokens_input, tokens_output, cache_read_tokens, cache_creation_tokens,
+          duration_ms, oracle_invocations, computed_usd, cost_tier,
+          routing_level, task_type_signature
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          taskId,
+          null,
+          'claude-sonnet',
+          timestamp,
+          1000,
+          500,
+          0,
+          0,
+          5000,
+          0,
+          usd,
+          'billing',
+          2,
+          'refactor::ts::single',
+        ],
+      );
+
+    // 9_950 rows two hours old, then 50 expensive rows inside the hour.
+    for (let i = 0; i < 9_950; i++) insert(`old-${i}`, `old-task-${i}`, now - 7_200_000 + i, 0.001);
+    for (let i = 0; i < 50; i++) insert(`recent-${i}`, `recent-task-${i}`, now - 60_000 + i, 1.0);
+
+    const ledger = new CostLedger(db);
+    expect(ledger.count()).toBe(10_000);
+    expect(ledger.getAggregatedCost('hour')).toEqual({ total_usd: 50, count: 50 });
+
+    // Recording pushes the cache over the cap — the two-hour-old rows must go.
+    for (let i = 0; i < 50; i++) {
+      ledger.record(makeEntry({ id: `fresh-${i}`, taskId: `fresh-task-${i}`, timestamp: now, computed_usd: 0.001 }));
+    }
+
+    expect(ledger.count()).toBe(10_000);
+    expect(ledger.queryByTask('old-task-0')).toHaveLength(0);
+    expect(ledger.queryByTask('recent-task-0')).toHaveLength(1);
+    expect(ledger.queryByTask('recent-task-49')).toHaveLength(1);
+    const hour = ledger.getAggregatedCost('hour');
+    expect(hour.count).toBe(100);
+    expect(hour.total_usd).toBeCloseTo(50.05, 6);
+  });
+
   test('queryByTraceId finds only the rows priced from that trace', () => {
     const { ledger } = createLedger();
     ledger.record(makeEntry({ id: 'a:1:1', traceId: 'trace-A', computed_usd: 0.11 }));

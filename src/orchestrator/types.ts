@@ -2465,6 +2465,16 @@ export interface TaskFingerprint {
   blastRadiusBucket: 'single' | 'small' | 'medium' | 'large'; // 1, 2-5, 6-20, 21+
   frameworkMarkers?: string[]; // e.g., ["react", "express", "zod"]
   oracleFailurePattern?: string; // e.g., "type-fails", "test-fails"
+  /**
+   * Number of declared target files. NOT part of the capability key
+   * (`fingerprintKey` ignores it) — it is carried so
+   * `taskSignatureFromFingerprint` can re-derive the task-type signature the
+   * way `computeTaskSignature` writes it. `blastRadiusBucket` buckets the
+   * perception cone's transitive radius on 1/5/20; the signature buckets the
+   * target-file COUNT on 1/3/10, so the fingerprint's own bucket cannot stand
+   * in for it.
+   */
+  targetFileCount?: number;
 }
 
 // ---------------------------------------------------------------------------

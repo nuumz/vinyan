@@ -64,9 +64,17 @@ export class CostLedger {
 
   private warmCache(): void {
     try {
-      const rows = this.db.prepare('SELECT * FROM cost_ledger ORDER BY timestamp DESC LIMIT 10000').all() as Array<
-        Record<string, unknown>
-      >;
+      // Take the NEWEST `MAX_CACHE_ENTRIES` rows (inner DESC), then push them
+      // OLDEST-FIRST (outer ASC). The push order is load-bearing: `record()`
+      // appends to the end and evicts from index 0, so a newest-first cache
+      // would make the cap drop the most recent rows — silently emptying the
+      // hour/day windows `BudgetEnforcer` reads and turning a blown cap into
+      // an unblown one.
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM (SELECT * FROM cost_ledger ORDER BY timestamp DESC LIMIT ${MAX_CACHE_ENTRIES}) ORDER BY timestamp ASC`,
+        )
+        .all() as Array<Record<string, unknown>>;
       for (const row of rows) {
         this.cache.push(this.rowToEntry(row));
       }

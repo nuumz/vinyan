@@ -178,12 +178,18 @@ export class TraceCollectorImpl implements TraceCollector {
     const pricingKey = trace.engineId ?? trace.modelUsed;
     if (!pricingKey || pricingKey === 'none') return;
 
-    const billableTokens =
-      (trace.tokensInput ?? 0) +
-      (trace.tokensOutput ?? 0) +
-      (trace.cacheReadTokens ?? 0) +
-      (trace.cacheCreationTokens ?? 0) +
-      (trace.tokensInput === undefined && trace.tokensOutput === undefined ? trace.tokensConsumed : 0);
+    // A split is only usable when it actually accounts for tokens. Producers
+    // that zero-initialise the fields report `tokensInput: 0, tokensOutput: 0`
+    // as DEFINED values alongside a real `tokensConsumed` — the multi-persona
+    // room path does exactly this (room-supervisor seeds both at 0 and
+    // agent-loop omits a field it never incremented). Treating "defined" as
+    // "usable" would price those at $0 and, worse, drop the row entirely on
+    // the zero-volume gate below, making the whole task invisible to the
+    // ledger, the token percentile and the cost predictor.
+    const reportedSplit = (trace.tokensInput ?? 0) + (trace.tokensOutput ?? 0);
+    const hasSplit = reportedSplit > 0;
+    const cacheTokens = (trace.cacheReadTokens ?? 0) + (trace.cacheCreationTokens ?? 0);
+    const billableTokens = (hasSplit ? reportedSplit : trace.tokensConsumed) + cacheTokens;
     if (billableTokens <= 0) return;
 
     try {
@@ -192,7 +198,6 @@ export class TraceCollectorImpl implements TraceCollector {
       // Engines that report it get charged correctly; the rest fall back to
       // pricing the total as input, which under-reports rather than invents
       // a split the trace cannot support.
-      const hasSplit = trace.tokensInput !== undefined || trace.tokensOutput !== undefined;
       const tokensInput = hasSplit ? (trace.tokensInput ?? 0) : trace.tokensConsumed;
       const tokensOutput = hasSplit ? (trace.tokensOutput ?? 0) : 0;
       if (!hasSplit) {

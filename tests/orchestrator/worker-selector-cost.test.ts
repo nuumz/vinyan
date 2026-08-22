@@ -26,7 +26,8 @@ import type { DataGateStats, DataGateThresholds } from '../../src/orchestrator/d
 import { CapabilityModel } from '../../src/orchestrator/fleet/capability-model.ts';
 import { WorkerSelector } from '../../src/orchestrator/fleet/worker-selector.ts';
 import { computeTaskSignature, taskSignatureFromFingerprint } from '../../src/orchestrator/prediction/self-model.ts';
-import type { EngineProfile, TaskFingerprint, TaskInput } from '../../src/orchestrator/types.ts';
+import { computeFingerprint } from '../../src/orchestrator/task-fingerprint.ts';
+import type { EngineProfile, PerceptualHierarchy, TaskFingerprint, TaskInput } from '../../src/orchestrator/types.ts';
 
 const FP: TaskFingerprint = { actionVerb: 'refactor', fileExtensions: ['.ts'], blastRadiusBucket: 'single' };
 const BUDGET = { maxTokens: 10_000, timeoutMs: 60_000 };
@@ -121,27 +122,59 @@ function seededLedger(): CostLedger {
   return ledger;
 }
 
+function makeInput(targetFiles: string[]): TaskInput {
+  return {
+    id: 't1',
+    source: 'cli',
+    goal: 'refactor the parser',
+    taskType: 'code',
+    targetFiles,
+    budget: { maxTokens: 1, maxDurationMs: 1, maxRetries: 0 },
+  } as unknown as TaskInput;
+}
+
+function makePerception(transitiveBlastRadius: number): PerceptualHierarchy {
+  return {
+    dependencyCone: { transitiveBlastRadius, directDependents: [], transitiveDependents: [] },
+  } as unknown as PerceptualHierarchy;
+}
+
 describe('signature agreement between producers', () => {
-  test('a fingerprint and its task produce the same signature string', () => {
-    const input = {
-      id: 't1',
-      source: 'cli',
-      goal: 'refactor the parser',
-      taskType: 'code',
-      targetFiles: ['src/parser.ts'],
-      budget: { maxTokens: 1, maxDurationMs: 1, maxRetries: 0 },
-    } as unknown as TaskInput;
+  test('a real fingerprint and its task produce the same signature string', () => {
+    // The repro: one target file (writer bucket 'single' on the 1/3/10 file
+    // count) with a transitive blast radius of 8 (fingerprint bucket 'medium'
+    // on the 1/5/20 radius scale). Going through computeFingerprint is the
+    // whole point — hand-writing blastRadiusBucket hides the divergence.
+    const input = makeInput(['src/parser.ts']);
+    const fingerprint = computeFingerprint(input, makePerception(8));
+    expect(fingerprint.blastRadiusBucket).toBe('medium');
 
     const fromInput = computeTaskSignature(input);
-    const fromFingerprint = taskSignatureFromFingerprint({
-      actionVerb: 'refactor',
-      fileExtensions: ['.ts'],
-      blastRadiusBucket: 'single',
-    });
-
-    expect(fromFingerprint).toBe(fromInput);
+    expect(taskSignatureFromFingerprint(fingerprint)).toBe(fromInput);
     // Double colon — a single-colon variant keys a bucket nobody writes to.
     expect(fromInput).toBe('refactor::ts::single');
+  });
+
+  test('agreement holds across the buckets where the two scales disagree', () => {
+    // 4 files → writer 'medium' (>3); radius 4 → fingerprint 'small' (<=5).
+    const fourFiles = makeInput(['a.ts', 'b.ts', 'c.ts', 'd.ts']);
+    const fp4 = computeFingerprint(fourFiles, makePerception(4));
+    expect(fp4.blastRadiusBucket).toBe('small');
+    expect(taskSignatureFromFingerprint(fp4)).toBe(computeTaskSignature(fourFiles));
+    expect(taskSignatureFromFingerprint(fp4)).toBe('refactor::ts::medium');
+
+    // 12 files → writer 'large' (>10); radius 12 → fingerprint 'medium'.
+    const manyFiles = makeInput(Array.from({ length: 12 }, (_, i) => `f${i}.ts`));
+    const fp12 = computeFingerprint(manyFiles, makePerception(12));
+    expect(fp12.blastRadiusBucket).toBe('medium');
+    expect(taskSignatureFromFingerprint(fp12)).toBe(computeTaskSignature(manyFiles));
+    expect(taskSignatureFromFingerprint(fp12)).toBe('refactor::ts::large');
+  });
+
+  test('a hand-built fingerprint without a file count falls back to its own bucket', () => {
+    expect(
+      taskSignatureFromFingerprint({ actionVerb: 'refactor', fileExtensions: ['.ts'], blastRadiusBucket: 'small' }),
+    ).toBe('refactor::ts::small');
   });
 });
 
@@ -191,6 +224,24 @@ describe('WorkerSelector cost term with the economy layer on', () => {
     const alt = selected.alternatives.find((a) => a.workerId === 'pricey');
     expect(alt).toBeDefined();
     expect(cheapScore).toBeGreaterThan(alt!.score);
+  });
+
+  test('workers well under the budget are still scored apart, not clamped together', () => {
+    // Both workers cost under 10% of the budget (2k and 4k of 50k). A lower
+    // clamp on the per-worker cost factor collapses both to the same
+    // predicted cost, so the cheaper one stops winning on cost at all.
+    store.insert(makeProfile('cheap'));
+    store.insert(makeProfile('pricey'));
+    insertTraces(db, 'cheap', 10, 2_000);
+    insertTraces(db, 'pricey', 10, 4_000);
+
+    const bigBudget = { maxTokens: 50_000, timeoutMs: 60_000 };
+    const selected = build(new CostPredictor(seededLedger())).selectWorker(FP, 2, bigBudget);
+
+    expect(selected.selectedWorkerId).toBe('cheap');
+    const alt = selected.alternatives.find((a) => a.workerId === 'pricey');
+    expect(alt).toBeDefined();
+    expect(selected.score).toBeGreaterThan(alt!.score);
   });
 
   test('scores match the no-economy path when the only budget is warn-mode', () => {

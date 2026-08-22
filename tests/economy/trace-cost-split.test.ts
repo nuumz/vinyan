@@ -105,6 +105,34 @@ describe('trace cost accounting — input/output split', () => {
     expect(row.computed_usd).toBeCloseTo(2_000 * SONNET_OUT_PER_TOK, 8);
   });
 
+  test('a zero-initialised split falls back to the total instead of dropping the row', async () => {
+    // The multi-persona room path emits `tokensInput: 0, tokensOutput: 0` as
+    // DEFINED fields next to a real `tokensConsumed`. Treating that as a
+    // reported split priced it at $0 and dropped the row on the zero-volume
+    // gate — the whole task became invisible to the ledger.
+    const ledger = createLedger();
+    const collector = new TraceCollectorImpl();
+    collector.setEconomyDeps(ledger);
+
+    await collector.record(makeTrace({ taskId: 'room-task', tokensConsumed: 30_000, tokensInput: 0, tokensOutput: 0 }));
+
+    const rows = ledger.queryByTask('room-task');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.tokens_input).toBe(30_000);
+    expect(rows[0]!.tokens_output).toBe(0);
+    expect(rows[0]!.computed_usd).toBeCloseTo(30_000 * SONNET_IN_PER_TOK, 8);
+  });
+
+  test('a genuinely token-free trace is still skipped', async () => {
+    const ledger = createLedger();
+    const collector = new TraceCollectorImpl();
+    collector.setEconomyDeps(ledger);
+
+    await collector.record(makeTrace({ taskId: 'no-tokens', tokensConsumed: 0, tokensInput: 0, tokensOutput: 0 }));
+
+    expect(ledger.queryByTask('no-tokens')).toHaveLength(0);
+  });
+
   test('cache tokens are priced alongside the split', async () => {
     const ledger = createLedger();
     const collector = new TraceCollectorImpl();

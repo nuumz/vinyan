@@ -430,10 +430,14 @@ log('Single writer executing the hardened plan')
 const implementation = await agent(
   `${HOUSE_RULES}\n\n${brief}\n\n${requirementsBlock}\n\n${planBlock}\n\n${hardeningBlock}\n\n` +
     'Execute the plan, with every mitigation applied. You are the only writer — no other agent is touching these ' +
-    'files. Rules: make the change, run the scoped checks as you go, and fix what you break. Do not commit and do ' +
-    'not push; leave the work in the working tree. If a step turns out to be wrong, deviate and record it in ' +
-    '`deviations` with the reason — silent deviation is the one unacceptable outcome. In `selfCheck`, paste the ' +
-    'ACTUAL output lines of the commands you ran; a claim without output is treated as not run.',
+    'files. Rules: make the change, run the scoped checks as you go, and fix what you break. ' +
+    'YOUR OUTPUT IS THE WORKING TREE. Do not run any git command that moves HEAD, rewrites history, or touches a ' +
+    'remote: no commit, reset, checkout, switch, stash, rebase, cherry-pick, or push. Read-only git (status, diff, ' +
+    'log, show, blame) is fine and encouraged. If you find a commit on HEAD you did not expect — someone else may ' +
+    'be driving this repo — leave it exactly where it is and note it in `deviations`. Undoing it destroys work ' +
+    'that is not yours. If a step turns out to be wrong, deviate and record it in `deviations` with the reason; ' +
+    'silent deviation is the one unacceptable outcome. In `selfCheck`, paste the ACTUAL output lines of the ' +
+    'commands you ran — a claim without output is treated as not run.',
   { label: 'implement', phase: 'Implement', schema: IMPLEMENTATION_SCHEMA },
 )
 
@@ -449,8 +453,12 @@ phase('Review')
 log('Three lenses over the diff, then adjudication')
 
 const diffContext =
-  'Review the CURRENT WORKING TREE DIFF. Get it yourself with `git diff` and `git status --short` (untracked ' +
-  'files are part of the change — read them too). Do not review the plan; review what was actually written.'
+  'Review the CHANGE AS A WHOLE, and establish its extent yourself — do not assume it is all uncommitted. ' +
+  'Part of it may already be committed (another process may be driving this repo), in which case a bare ' +
+  '`git diff` shows you only the tail and you would review a fraction of the work while believing you saw it ' +
+  'all. Find the branch point — `git merge-base HEAD origin/main` — then read `git diff <base>` together with ' +
+  '`git status --short`, opening every untracked file, since those are part of the change and appear in no diff. ' +
+  'Review what was actually written, not the plan.'
 
 const reviews = await parallel([
   () =>
@@ -506,8 +514,9 @@ if (blocking.length > 0) {
   fixSummary = await agent(
     `${HOUSE_RULES}\n\n${brief}\n\n${planBlock}\n\n` +
       `CONFIRMED REVIEW FINDINGS TO FIX:\n${JSON.stringify(blocking, null, 2)}\n\n` +
-      'Fix exactly these, in the working tree. Do not widen the change, do not refactor around them, do not ' +
-      'commit. Re-run the scoped checks for what you touched. Paste real output in `selfCheck`.',
+      'Fix exactly these, in the working tree. Do not widen the change and do not refactor around them. The same ' +
+      'git rule as the implement stage applies: nothing that moves HEAD, rewrites history, or touches a remote. ' +
+      'Re-run the scoped checks for what you touched. Paste real output in `selfCheck`.',
     { label: 'implement:fix', phase: 'Review', schema: IMPLEMENTATION_SCHEMA },
   )
   log(`Applied fixes for ${blocking.length} confirmed findings`)

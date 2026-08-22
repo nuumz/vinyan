@@ -325,7 +325,12 @@ describe('agent-worker-entry', () => {
       expect(outputs).toHaveLength(0);
     });
 
-    test('tokens are accumulated across turns', async () => {
+    test('each turn reports the tokens spent since the previous turn', async () => {
+      // Turns carry DELTAS, not the running session total. The orchestrator
+      // sums what it receives (agent-loop.ts), so reporting a cumulative total
+      // on every turn would count early turns once per later turn and inflate
+      // the session figure by roughly turns/2 — dragging budget pressure,
+      // transcript compaction, and cost accounting along with it.
       const provider = createScriptedMockProvider([
         {
           stopReason: 'tool_use',
@@ -343,8 +348,71 @@ describe('agent-worker-entry', () => {
       await runAgentWorkerLoop(provider, io);
       const turns = parseOutputs(outputs);
       expect(turns).toHaveLength(2);
-      expect(turns[0]!.tokensConsumed).toBe(300);
-      expect(turns[1]!.tokensConsumed).toBe(750);
+      expect(turns[0]!.tokensConsumed).toBe(300); // 200 + 100
+      expect(turns[1]!.tokensConsumed).toBe(450); // 300 + 150, NOT the 750 running total
+      // Summing the wire values reproduces the true session total.
+      const summed = turns.reduce((acc, t) => acc + (t.tokensConsumed ?? 0), 0);
+      expect(summed).toBe(750);
+    });
+
+    test('each turn reports its input/output split', async () => {
+      // Output tokens bill at up to 5x input, so the ledger cannot price a
+      // session from the total alone.
+      const provider = createScriptedMockProvider([
+        {
+          stopReason: 'tool_use',
+          content: 'Step 1',
+          toolCalls: [{ id: 'tc1', tool: 'file_read', parameters: { path: 'a.ts' } }],
+          tokensUsed: { input: 200, output: 100 },
+        },
+        { stopReason: 'end_turn', content: 'Done', toolCalls: [], tokensUsed: { input: 300, output: 150 } },
+      ]);
+      const { io, outputs } = createTestIo([
+        makeInitTurn(),
+        makeToolResults('t1', [{ callId: 'tc1', tool: 'file_read', output: 'content' }]),
+      ]);
+
+      await runAgentWorkerLoop(provider, io);
+      const turns = parseOutputs(outputs);
+      expect(turns[0]!.inputTokens).toBe(200);
+      expect(turns[0]!.outputTokens).toBe(100);
+      expect(turns[1]!.inputTokens).toBe(300);
+      expect(turns[1]!.outputTokens).toBe(150);
+      // The split adds up to the reported total on every turn.
+      for (const turn of turns) {
+        expect((turn.inputTokens ?? 0) + (turn.outputTokens ?? 0)).toBe(turn.tokensConsumed ?? 0);
+      }
+    });
+
+    test('cache tokens are reported per turn, not only on the terminal turn', async () => {
+      // Pre-delta, cache totals rode along on the terminal turn only. With
+      // deltas each turn must carry its own or the earlier ones vanish.
+      const provider = createScriptedMockProvider([
+        {
+          stopReason: 'tool_use',
+          content: 'Step 1',
+          toolCalls: [{ id: 'tc1', tool: 'file_read', parameters: { path: 'a.ts' } }],
+          tokensUsed: { input: 200, output: 100, cacheRead: 900, cacheCreation: 40 },
+        },
+        {
+          stopReason: 'end_turn',
+          content: 'Done',
+          toolCalls: [],
+          tokensUsed: { input: 300, output: 150, cacheRead: 1100, cacheCreation: 0 },
+        },
+      ]);
+      const { io, outputs } = createTestIo([
+        makeInitTurn(),
+        makeToolResults('t1', [{ callId: 'tc1', tool: 'file_read', output: 'content' }]),
+      ]);
+
+      await runAgentWorkerLoop(provider, io);
+      const turns = parseOutputs(outputs);
+      expect(turns[0]!.cacheReadTokens).toBe(900);
+      expect(turns[0]!.cacheCreationTokens).toBe(40);
+      expect(turns[1]!.cacheReadTokens).toBe(1100);
+      // Nothing was created on the second call, so the field is omitted.
+      expect(turns[1]!.cacheCreationTokens).toBeUndefined();
     });
   });
 

@@ -120,7 +120,13 @@ export interface RoomDispatchOutcome {
   /** Flattened mutations in file order — fed into WorkerResult.mutations. */
   mutations: ProposedMutation[];
   /** Parent-scoped aggregate tokens for budget accumulation at phase-generate. */
+  /**
+   * Input/output split of `tokensConsumed`. Present only when the engine
+   * reported it; pricing falls back to input-only when absent.
+   */
   tokensConsumed: number;
+  tokensInput: number;
+  tokensOutput: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
   /** Combined uncertainties surfaced to the parent's working memory. */
@@ -438,6 +444,8 @@ export class RoomDispatcher {
       result,
       mutations: result.mutations,
       tokensConsumed: result.tokensConsumed,
+      tokensInput: result.tokensInput,
+      tokensOutput: result.tokensOutput,
       cacheReadTokens: result.cacheReadTokens,
       cacheCreationTokens: result.cacheCreationTokens,
       uncertainties: result.uncertainties,
@@ -771,6 +779,8 @@ export class RoomDispatcher {
       mutations: result.mutations.filter((m) => m.content !== null),
       uncertainties: [...result.uncertainties],
       tokensConsumed: result.tokensConsumed,
+      tokensInput: result.tokensInput,
+      tokensOutput: result.tokensOutput,
       cacheReadTokens: result.cacheReadTokens,
       cacheCreationTokens: result.cacheCreationTokens,
       needsUserInput: result.needsUserInput === true,

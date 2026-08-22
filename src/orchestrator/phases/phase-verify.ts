@@ -580,6 +580,8 @@ export async function executeVerifyPhase(
     oracleVerdicts: Object.fromEntries(Object.entries(verification.verdicts).map(([k, v]) => [k, v.verified])),
     modelUsed: routing.model ?? 'none',
     tokensConsumed: workerResult.tokensConsumed,
+    tokensInput: workerResult.tokensInput,
+    tokensOutput: workerResult.tokensOutput,
     cacheReadTokens: workerResult.cacheReadTokens,
     cacheCreationTokens: workerResult.cacheCreationTokens,
     durationMs: workerResult.durationMs,

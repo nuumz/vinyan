@@ -182,6 +182,13 @@ export interface WorkerResult {
   proposedToolCalls: ToolCall[];
   uncertainties?: string[];
   tokensConsumed: number;
+  /**
+   * Input/output split of `tokensConsumed`. Present only when the engine
+   * reported it; the cost ledger prices output tokens separately because they
+   * bill at up to 5x input.
+   */
+  tokensInput?: number;
+  tokensOutput?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   thinkingTokensUsed?: number;

@@ -246,6 +246,8 @@ export interface RoomState {
   /** Latest staged mutation per file (last-writer-wins). */
   stagedMutations: Map<string, ProposedMutation>;
   tokensConsumed: number;
+  tokensInput: number;
+  tokensOutput: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
   uncertainties: string[];
@@ -265,6 +267,8 @@ export interface RoomResult {
   mutations: ProposedMutation[];
   uncertainties: string[];
   tokensConsumed: number;
+  tokensInput: number;
+  tokensOutput: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
   durationMs: number;

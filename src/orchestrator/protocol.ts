@@ -704,21 +704,43 @@ const SelfAssessmentSchema = z.object({
   gaps: z.array(z.string()).optional(),
 });
 
+/**
+ * Token usage a worker reports on a turn.
+ *
+ * Every field is the DELTA since the worker's previous turn, never a running
+ * session total. The orchestrator sums what it receives (`agent-loop.ts`), and
+ * its fallback for a turn that omits `tokensConsumed` is a per-turn estimate —
+ * so a cumulative total would be counted once per turn and inflate the session
+ * figure by roughly turns/2, dragging budget pressure, transcript compaction,
+ * and cost accounting along with it.
+ *
+ * `inputTokens` + `outputTokens` split `tokensConsumed`. The split is what the
+ * cost ledger needs: output tokens bill at up to 5x input on every major
+ * provider, so a total alone cannot be priced. Both are optional — a worker
+ * that cannot report the split just omits them and pricing falls back to
+ * treating the turn as input-only.
+ */
+const TurnUsageFields = {
+  tokensConsumed: z.number().optional(),
+  inputTokens: z.number().optional(),
+  outputTokens: z.number().optional(),
+  cacheReadTokens: z.number().optional(),
+  cacheCreationTokens: z.number().optional(),
+} as const;
+
 export const WorkerTurnSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('tool_calls'),
     turnId: z.string(),
     calls: z.array(ToolCallSchema),
     rationale: z.string(),
-    tokensConsumed: z.number().optional(),
+    ...TurnUsageFields,
   }),
   z.object({
     type: z.literal('done'),
     turnId: z.string(),
     proposedContent: z.string().optional(),
-    tokensConsumed: z.number().optional(),
-    cacheReadTokens: z.number().optional(),
-    cacheCreationTokens: z.number().optional(),
+    ...TurnUsageFields,
     selfAssessment: SelfAssessmentSchema.optional(),
   }),
   z.object({
@@ -727,9 +749,7 @@ export const WorkerTurnSchema = z.discriminatedUnion('type', [
     reason: z.string(),
     uncertainties: z.array(z.string()),
     suggestedNextStep: z.string().optional(),
-    tokensConsumed: z.number().optional(),
-    cacheReadTokens: z.number().optional(),
-    cacheCreationTokens: z.number().optional(),
+    ...TurnUsageFields,
     /**
      * Agent Conversation: when true, the `uncertainties` are questions to the
      * user (not code-fact uncertainties). Orchestrator surfaces them as a

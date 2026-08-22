@@ -122,6 +122,12 @@ function buildDeps(rules: EvolutionaryRule[]): {
       retire: () => {},
       updateEffectiveness: () => {},
     } as any,
+    // Epsilon-greedy exploration swaps the model at random (core-loop.ts:1395,
+    // 5% by default). These tests assert what the RULES did to the routing
+    // decision, so an unrelated exploratory model swap made the file fail
+    // roughly one run in six — enough to make the `bun test tests/orchestrator`
+    // DoD gate untrustworthy, not enough to look like a real bug.
+    explorationEpsilon: 0,
   };
 
   return { deps, capturedRouting: () => captured };

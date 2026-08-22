@@ -121,8 +121,14 @@ describe('A3 — Deterministic governance', () => {
           maxLength: 50,
         }),
         (observations) => {
-          const calA = new OracleEMACalibrator();
-          const calB = new OracleEMACalibrator();
+          // Fixed clock: `lastUpdatedAt` is wall-clock metadata, and letting
+          // it float made this property fail whenever a millisecond ticked
+          // between the two otherwise-identical runs. The claim under test is
+          // that the calibration state is reproducible from the observation
+          // sequence, not that two runs execute within the same millisecond.
+          const clock = () => 1_700_000_000_000;
+          const calA = new OracleEMACalibrator({ clock });
+          const calB = new OracleEMACalibrator({ clock });
           for (const [name, verified, succeeded] of observations) {
             calA.record({ oracleName: name, verified, taskSucceeded: succeeded });
             calB.record({ oracleName: name, verified, taskSucceeded: succeeded });

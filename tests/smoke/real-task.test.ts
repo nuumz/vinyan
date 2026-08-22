@@ -12,9 +12,13 @@
  * 2. Core loop executes all phases (perceive → verify)
  * 3. LLM generates a meaningful response (not empty/error)
  * 4. For code tasks: mutations are produced with valid diffs
+ * 5. Economy E1: a real task writes a priced cost row to `cost_ledger` using
+ *    real provider token counts and the built-in rate cards — mock-provider
+ *    tests cannot prove the DEFAULT_RATE_CARDS globs match live model ids.
  *
  * RUN: bun run test:smoke
  */
+import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -136,6 +140,53 @@ describe('Smoke: Real LLM', () => {
       `[smoke] code: status=${result.status} mutations=${result.mutations.length} duration=${result.trace.durationMs}ms`,
     );
   }, 120_000);
+
+  test('a real task writes a priced cost row to the ledger', async () => {
+    skipWithoutKey();
+    if (!HAS_LLM_KEY) return;
+
+    const bus = createBus();
+    const orchestrator = createOrchestrator({ workspace: tempDir, bus });
+    // Economy E1 is Active by default — this test writes NO economy config.
+    expect(orchestrator.costLedger).toBeDefined();
+    expect(orchestrator.costPredictor).toBeDefined();
+    expect(orchestrator.dynamicBudgetAllocator).toBeDefined();
+
+    const input: TaskInput = {
+      id: `smoke-cost-${Date.now()}`,
+      source: 'cli',
+      goal: 'Name one benefit of unit tests. One sentence.',
+      taskType: 'reasoning',
+      budget: { maxTokens: 5000, maxDurationMs: 30_000, maxRetries: 1 },
+    };
+
+    try {
+      await orchestrator.executeTask(input);
+    } finally {
+      orchestrator.close();
+    }
+
+    // Read the durable record, not the in-memory cache.
+    const db = new Database(join(tempDir, '.vinyan', 'vinyan.db'), { readonly: true });
+    let rows: Array<Record<string, unknown>>;
+    try {
+      rows = db.prepare('SELECT * FROM cost_ledger WHERE computed_usd > 0').all() as Array<Record<string, unknown>>;
+    } finally {
+      db.close();
+    }
+
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    const row = rows[0]!;
+    // Real provider token counts priced against a real rate card.
+    expect(Number(row.tokens_input) + Number(row.tokens_output)).toBeGreaterThan(0);
+    expect(Number(row.computed_usd)).toBeGreaterThan(0);
+    expect(row.cost_tier).toBe('billing');
+    expect(String(row.engine_id).length).toBeGreaterThan(0);
+
+    console.log(
+      `[smoke] cost: rows=${rows.length} engine=${row.engine_id} tier=${row.cost_tier} usd=${row.computed_usd}`,
+    );
+  }, 60_000);
 
   test('factory creates orchestrator with real providers', () => {
     // This test runs WITHOUT API key check — validates factory doesn't throw

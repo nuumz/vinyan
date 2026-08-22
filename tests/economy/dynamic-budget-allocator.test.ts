@@ -100,6 +100,72 @@ describe('DynamicBudgetAllocator', () => {
     expect(alloc.maxTokens).toBeLessThanOrEqual(100_000);
   });
 
+  test('never shrinks a budget below the caller fallback on zero-token history', () => {
+    const { ledger, allocator } = createEnv();
+
+    // The shape a no-LLM phase used to write: a ledger row with zero tokens.
+    for (let i = 0; i < 8; i++) {
+      ledger.record(
+        makeEntry({
+          id: `zero-${i}:1`,
+          tokens_input: 0,
+          tokens_output: 0,
+          task_type_signature: 'zero:ts:task',
+          routing_level: 2,
+        }),
+      );
+    }
+
+    const alloc = allocator.allocate('zero:ts:task', 2, 50_000);
+    expect(alloc.maxTokens).toBe(50_000);
+    // Zero-token rows are not evidence, so they never reach the percentile.
+    expect(alloc.source).toBe('default');
+  });
+
+  test('never shrinks a budget below the caller fallback on small-but-real history', () => {
+    const { ledger, allocator } = createEnv();
+
+    // Real but cheap tasks: 8K tokens each. p75*1.25 = 10K, far below the
+    // 50K L2 fallback — the old 50% floor handed the next task 25K.
+    for (let i = 0; i < 8; i++) {
+      ledger.record(
+        makeEntry({
+          id: `small-${i}:1`,
+          tokens_input: 6_000,
+          tokens_output: 2_000,
+          task_type_signature: 'small:ts:task',
+          routing_level: 2,
+        }),
+      );
+    }
+
+    const alloc = allocator.allocate('small:ts:task', 2, 50_000);
+    expect(alloc.maxTokens).toBeGreaterThanOrEqual(50_000);
+  });
+
+  test('still grows the budget when history exceeds the fallback', () => {
+    const { ledger, allocator } = createEnv();
+
+    // 60K tokens per task → p75*1.25 = 75K, above the 50K fallback and below
+    // the 100K ceiling. The no-shrink floor must not disable growth.
+    for (let i = 0; i < 8; i++) {
+      ledger.record(
+        makeEntry({
+          id: `grow-${i}:1`,
+          tokens_input: 40_000,
+          tokens_output: 20_000,
+          task_type_signature: 'grow:ts:task',
+          routing_level: 2,
+        }),
+      );
+    }
+
+    const alloc = allocator.allocate('grow:ts:task', 2, 50_000);
+    expect(alloc.maxTokens).toBeGreaterThan(50_000);
+    expect(alloc.maxTokens).toBeLessThanOrEqual(100_000);
+    expect(alloc.source).not.toBe('default');
+  });
+
   test('accepts custom default budget override', () => {
     const { allocator } = createEnv();
     const alloc = allocator.allocate(null, 2, 75_000);

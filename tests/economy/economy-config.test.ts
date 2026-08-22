@@ -2,13 +2,31 @@ import { describe, expect, test } from 'bun:test';
 import { EconomyConfigSchema } from '../../src/economy/economy-config.ts';
 
 describe('EconomyConfigSchema', () => {
-  test('defaults to disabled', () => {
+  test('defaults to enabled with the least intrusive enforcement', () => {
     const config = EconomyConfigSchema.parse({});
-    expect(config.enabled).toBe(false);
+    // E1/E2 are Active by default: accounting, prediction, dynamic budgets.
+    expect(config.enabled).toBe(true);
     expect(config.rate_cards).toEqual({});
+    // Least intrusive: warn mode AND no dollar caps, so BudgetEnforcer's
+    // window loop `continue`s on every window and canProceed() is
+    // structurally incapable of refusing a task.
     expect(config.budgets.enforcement).toBe('warn');
+    expect(config.budgets.hourly_usd).toBeUndefined();
+    expect(config.budgets.daily_usd).toBeUndefined();
+    expect(config.budgets.monthly_usd).toBeUndefined();
+  });
+
+  test('keeps market, federation and cost-rule generation opt-in by default', () => {
+    const config = EconomyConfigSchema.parse({});
     expect(config.market.enabled).toBe(false);
     expect(config.federation.cost_sharing_enabled).toBe(false);
+    expect(config.federation.peer_pricing_enabled).toBe(false);
+    expect(config.patterns.generate_rules).toBe(false);
+  });
+
+  test('operator off-switch survives the default flip', () => {
+    const config = EconomyConfigSchema.parse({ enabled: false });
+    expect(config.enabled).toBe(false);
   });
 
   test('parses full config', () => {

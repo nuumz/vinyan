@@ -14,6 +14,7 @@ import { computeCost } from '../economy/cost-computer.ts';
 import type { CostLedger } from '../economy/cost-ledger.ts';
 import type { RateCardEntry } from '../economy/economy-config.ts';
 import { resolveRateCard } from '../economy/rate-card.ts';
+import { LEVEL_CONFIG } from '../gate/risk-router.ts';
 import type { WorldGraph } from '../world-graph/world-graph.ts';
 import type { TraceCollector } from './core-loop.ts';
 import type { ExecutionTrace } from './types.ts';
@@ -118,55 +119,7 @@ export class TraceCollectorImpl implements TraceCollector {
     }
 
     // Economy: record cost entry from trace
-    if (this.costLedger && trace.modelUsed) {
-      try {
-        const card = resolveRateCard(trace.modelUsed, this.rateCards);
-        // Output tokens bill at up to 5x input, so the split decides the price.
-        // Engines that report it get charged correctly; the rest fall back to
-        // pricing the total as input, which under-reports rather than invents
-        // a split the trace cannot support.
-        const hasSplit = trace.tokensInput !== undefined || trace.tokensOutput !== undefined;
-        const tokensInput = hasSplit ? (trace.tokensInput ?? 0) : trace.tokensConsumed;
-        const tokensOutput = hasSplit ? (trace.tokensOutput ?? 0) : 0;
-        const costResult = computeCost(
-          {
-            input: tokensInput,
-            output: tokensOutput,
-            cacheRead: trace.cacheReadTokens,
-            cacheCreation: trace.cacheCreationTokens,
-          },
-          card,
-        );
-        if (!card) {
-          this.bus?.emit('economy:rate_card_miss', { engineId: trace.modelUsed, fallback: 'estimated' });
-        }
-        this.costLedger.record({
-          id: `${trace.taskId}:${trace.timestamp}`,
-          taskId: trace.taskId,
-          workerId: trace.workerId ?? null,
-          engineId: trace.modelUsed,
-          timestamp: trace.timestamp,
-          tokens_input: tokensInput,
-          tokens_output: tokensOutput,
-          cache_read_tokens: trace.cacheReadTokens ?? 0,
-          cache_creation_tokens: trace.cacheCreationTokens ?? 0,
-          duration_ms: trace.durationMs,
-          oracle_invocations: Object.keys(trace.oracleVerdicts ?? {}).length,
-          computed_usd: costResult.computed_usd,
-          cost_tier: costResult.cost_tier,
-          routing_level: trace.routingLevel,
-          task_type_signature: trace.taskTypeSignature ?? null,
-        });
-        this.bus?.emit('economy:cost_recorded', {
-          taskId: trace.taskId,
-          engineId: trace.modelUsed,
-          computed_usd: costResult.computed_usd,
-          cost_tier: costResult.cost_tier,
-        });
-      } catch {
-        // Economy recording is best-effort
-      }
-    }
+    this.recordCost(trace);
 
     // On success, invalidate World Graph facts for affected files
     // so stale verified facts don't persist after mutations
@@ -200,6 +153,109 @@ export class TraceCollectorImpl implements TraceCollector {
     return this.traces.length;
   }
 
+  /**
+   * Price one trace into the cost ledger.
+   *
+   * Two gates keep the ledger honest now that cost accounting runs by
+   * default on every task rather than behind an opt-in flag:
+   *
+   *  1. Traces that never touched a model are skipped entirely. Eleven call
+   *     sites record `modelUsed: 'none'` (conversational turns, no-LLM
+   *     phases, budget-blocked stubs); pricing those produced a $0 row plus
+   *     an `economy:rate_card_miss` for an engine literally named "none",
+   *     which would have been the bulk of the table and would have dragged
+   *     every token percentile toward zero.
+   *  2. Traces with zero billable token volume are skipped for the same
+   *     reason — e.g. the comprehension trace, which carries a real engine
+   *     id but `tokensConsumed: 0`. Left in, it also pinned the cost
+   *     predictor's EMA to $0.00.
+   */
+  private recordCost(trace: ExecutionTrace): void {
+    if (!this.costLedger) return;
+
+    // Prefer the RE-agnostic engine id; `modelUsed` may still hold a routing
+    // tier-label hint rather than a real provider id (see LEVEL_CONFIG).
+    const pricingKey = trace.engineId ?? trace.modelUsed;
+    if (!pricingKey || pricingKey === 'none') return;
+
+    const billableTokens =
+      (trace.tokensInput ?? 0) +
+      (trace.tokensOutput ?? 0) +
+      (trace.cacheReadTokens ?? 0) +
+      (trace.cacheCreationTokens ?? 0) +
+      (trace.tokensInput === undefined && trace.tokensOutput === undefined ? trace.tokensConsumed : 0);
+    if (billableTokens <= 0) return;
+
+    try {
+      const card = resolveRateCard(pricingKey, this.rateCards);
+      // Output tokens bill at up to 5x input, so the split decides the price.
+      // Engines that report it get charged correctly; the rest fall back to
+      // pricing the total as input, which under-reports rather than invents
+      // a split the trace cannot support.
+      const hasSplit = trace.tokensInput !== undefined || trace.tokensOutput !== undefined;
+      const tokensInput = hasSplit ? (trace.tokensInput ?? 0) : trace.tokensConsumed;
+      const tokensOutput = hasSplit ? (trace.tokensOutput ?? 0) : 0;
+      if (!hasSplit) {
+        // Make the under-reporting path countable instead of invisible.
+        this.bus?.emit('economy:cost_estimated_no_split', {
+          taskId: trace.taskId,
+          engineId: pricingKey,
+          tokensConsumed: trace.tokensConsumed,
+        });
+      }
+      const costResult = computeCost(
+        {
+          input: tokensInput,
+          output: tokensOutput,
+          cacheRead: trace.cacheReadTokens,
+          cacheCreation: trace.cacheCreationTokens,
+        },
+        card,
+      );
+      if (!card) {
+        this.bus?.emit('economy:rate_card_miss', { engineId: pricingKey, fallback: 'estimated' });
+      }
+      // A5: `billing` asserts deterministic pricing authority. A routing
+      // tier label ('claude-sonnet' at L2) is a human-readable HINT, not the
+      // engine that served the request — phase-predict normally rewrites it
+      // to the real provider id, and when it hasn't the glob still matches
+      // and would stamp a guess as billing-grade. Downgrade those to
+      // `estimated` so the tier is honest about what it knows.
+      const costTier = card && isRoutingTierLabel(pricingKey) ? 'estimated' : costResult.cost_tier;
+      this.costLedger.record({
+        // cost_ledger.id is a TEXT PRIMARY KEY and the table has no natural
+        // key: one task records several traces, and some trace ids are
+        // deterministic per task (comprehension, escalated, contradiction),
+        // so neither `taskId:timestamp` nor `trace.id` alone is unique. The
+        // monotonic sequence makes collisions structurally impossible.
+        id: `${trace.id}:${trace.timestamp}:${nextLedgerSeq()}`,
+        traceId: trace.id,
+        taskId: trace.taskId,
+        workerId: trace.workerId ?? null,
+        engineId: pricingKey,
+        timestamp: trace.timestamp,
+        tokens_input: tokensInput,
+        tokens_output: tokensOutput,
+        cache_read_tokens: trace.cacheReadTokens ?? 0,
+        cache_creation_tokens: trace.cacheCreationTokens ?? 0,
+        duration_ms: trace.durationMs,
+        oracle_invocations: Object.keys(trace.oracleVerdicts ?? {}).length,
+        computed_usd: costResult.computed_usd,
+        cost_tier: costTier,
+        routing_level: trace.routingLevel,
+        task_type_signature: trace.taskTypeSignature ?? null,
+      });
+      this.bus?.emit('economy:cost_recorded', {
+        taskId: trace.taskId,
+        engineId: pricingKey,
+        computed_usd: costResult.computed_usd,
+        cost_tier: costTier,
+      });
+    } catch {
+      // Economy recording is best-effort
+    }
+  }
+
   private persistTrace(trace: ExecutionTrace): void {
     if (!this.traceStore) return;
     try {
@@ -216,6 +272,31 @@ export class TraceCollectorImpl implements TraceCollector {
       }
     }
   }
+}
+
+/**
+ * Monotonic sequence for cost-ledger row ids. Module-level so every
+ * TraceCollector in a process shares it.
+ */
+let ledgerSeq = 0;
+function nextLedgerSeq(): number {
+  ledgerSeq += 1;
+  return ledgerSeq;
+}
+
+/**
+ * The tier-label hints `risk-router` seeds `routing.model` with
+ * ('claude-haiku' / 'claude-sonnet' / 'claude-opus'). Derived from
+ * LEVEL_CONFIG so the set cannot drift from the router.
+ */
+const ROUTING_TIER_LABELS: ReadonlySet<string> = new Set(
+  Object.values(LEVEL_CONFIG)
+    .map((cfg) => cfg.model)
+    .filter((m): m is string => m !== null),
+);
+
+function isRoutingTierLabel(pricingKey: string): boolean {
+  return ROUTING_TIER_LABELS.has(pricingKey);
 }
 
 function requiresDurablePersistence(trace: ExecutionTrace): boolean {

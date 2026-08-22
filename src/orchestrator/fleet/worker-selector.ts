@@ -16,6 +16,7 @@ import type { BudgetEnforcer } from '../../economy/budget-enforcer.ts';
 import { costAwareScore } from '../../economy/cost-aware-scorer.ts';
 import type { CostPredictor } from '../../economy/cost-predictor.ts';
 import { checkDataGate, type DataGateStats, type DataGateThresholds } from '../data-gate.ts';
+import { taskSignatureFromFingerprint } from '../prediction/self-model.ts';
 import type { EngineProfile, EngineSelectionResult, RoutingLevel, TaskFingerprint } from '../types.ts';
 import type { CapabilityModel } from './capability-model.ts';
 
@@ -181,17 +182,29 @@ export class WorkerSelector {
     // Quality track record
     const quality = stats.avgQualityScore || 0.5;
 
-    // Cost efficiency: economy-aware when available, naive fallback otherwise
-    let costEfficiency: number;
+    // Cost efficiency: economy-aware when available, naive fallback otherwise.
+    //
+    // The economy path MUST stay per-worker. `CostPredictor.predict` is keyed
+    // by task type, never by worker, so feeding its own `p95_usd` back in as
+    // the budget ceiling makes `predicted/p95` a constant (1/3 at cold-start,
+    // 1/2 once calibrated) — identical for every worker in the loop, which
+    // deletes the cost term from the ranking entirely. We scale the task-type
+    // prediction by this worker's own token cost so workers stay
+    // distinguishable, and keep the prediction for the budget-pressure term.
+    const workerCostRatio = budget.maxTokens > 0 ? stats.avgTokenCost / budget.maxTokens : 0;
+    let costEfficiency = Math.max(0.1, Math.min(1.0, 1 - workerCostRatio));
     if (this.costPredictor) {
-      const taskSig = `${fingerprint.actionVerb}:${fingerprint.fileExtensions.join(',')}:${fingerprint.blastRadiusBucket}`;
+      const taskSig = taskSignatureFromFingerprint(fingerprint);
       const prediction = this.costPredictor.predict(taskSig, 2); // L2 as reference level
-      const budgetStatuses = this.budgetEnforcer?.checkBudget() ?? [];
+      // `warn` means warn: a warn-mode budget must not silently squeeze
+      // selection scores. Only block/degrade windows apply back-pressure.
+      const budgetStatuses = (this.budgetEnforcer?.checkBudget() ?? []).filter((s) => s.enforcement !== 'warn');
       const p95Budget = prediction.p95_usd > 0 ? prediction.p95_usd : 1;
-      costEfficiency = costAwareScore(prediction, p95Budget, budgetStatuses);
-    } else {
-      const costRatio = budget.maxTokens > 0 ? stats.avgTokenCost / budget.maxTokens : 0;
-      costEfficiency = Math.max(0.1, Math.min(1.0, 1 - costRatio));
+      const perWorkerPrediction = {
+        ...prediction,
+        predicted_usd: prediction.predicted_usd * Math.max(0.1, Math.min(1.0, workerCostRatio || 0.5)),
+      };
+      costEfficiency = costAwareScore(perWorkerPrediction, p95Budget, budgetStatuses);
     }
 
     // Layer C: Staleness penalty — 0.9× per cycle without new traces

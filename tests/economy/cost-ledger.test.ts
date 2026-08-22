@@ -121,4 +121,58 @@ describe('CostLedger', () => {
     expect(p75).not.toBeNull();
     expect(p75!).toBeGreaterThan(0);
   });
+
+  test('getTokenPercentile ignores zero-token rows', () => {
+    const { ledger } = createLedger();
+    // Six rows that consumed nothing — not evidence about token need.
+    for (let i = 0; i < 6; i++) {
+      ledger.record(
+        makeEntry({
+          id: `z-${i}:1`,
+          tokens_input: 0,
+          tokens_output: 0,
+          task_type_signature: 'zero:ts:small',
+          routing_level: 2,
+        }),
+      );
+    }
+    // Below the 5-sample minimum once the zero rows are excluded.
+    expect(ledger.getTokenPercentile('zero:ts:small', 2, 0.75)).toBeNull();
+
+    for (let i = 0; i < 5; i++) {
+      ledger.record(
+        makeEntry({
+          id: `nz-${i}:1`,
+          tokens_input: 4_000,
+          tokens_output: 1_000,
+          task_type_signature: 'zero:ts:small',
+          routing_level: 2,
+        }),
+      );
+    }
+    // The zero rows must not drag the percentile down.
+    expect(ledger.getTokenPercentile('zero:ts:small', 2, 0.75)).toBe(5_000);
+  });
+
+  test('the in-memory cache is capped so a long-lived process cannot grow unbounded', () => {
+    const { ledger } = createLedger();
+    for (let i = 0; i < 10_050; i++) {
+      ledger.record(makeEntry({ id: `cap-${i}:1`, taskId: `cap-task-${i}` }));
+    }
+    expect(ledger.count()).toBe(10_000);
+    // Oldest dropped first: the earliest task is gone, the newest is retained.
+    expect(ledger.queryByTask('cap-task-0')).toHaveLength(0);
+    expect(ledger.queryByTask('cap-task-10049')).toHaveLength(1);
+  });
+
+  test('queryByTraceId finds only the rows priced from that trace', () => {
+    const { ledger } = createLedger();
+    ledger.record(makeEntry({ id: 'a:1:1', traceId: 'trace-A', computed_usd: 0.11 }));
+    ledger.record(makeEntry({ id: 'b:1:2', traceId: 'trace-B', computed_usd: 0.22 }));
+
+    const rows = ledger.queryByTraceId('trace-B');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.computed_usd).toBe(0.22);
+    expect(ledger.queryByTraceId('trace-missing')).toHaveLength(0);
+  });
 });

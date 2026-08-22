@@ -397,7 +397,9 @@ The Economy Operating System provides cost awareness, budget enforcement, market
 | **E3: Market Mechanism** | Vickrey auction, settlement engine, bid accuracy tracking, anti-gaming (collusion detection) | `economy/market/auction-engine.ts`, `economy/market/settlement-engine.ts`, `economy/market/market-scheduler.ts` | ✅ Implemented, activates when data sufficient |
 | **E4: Federation Economy** | Cross-instance cost relay, shared budget pool, peer pricing, economic consensus | `economy/federation-cost-relay.ts`, `economy/federation-budget-pool.ts`, `economy/peer-pricing.ts` | ✅ Wired via bus events |
 
-**Activation:** E1-E2 are active when `economy.enabled = true` in config. E3 market activates automatically when cost data ≥ 200 records and ≥ 2 bidders. E4 federation activates when `economy.federation.cost_sharing_enabled = true`.
+**Activation:** E1-E2 (cost accounting, cost prediction, dynamic budget allocation) run by DEFAULT — `economy.enabled` defaults to `true` and no config is required. They need SQLite: with the in-memory DB fallback the components are not constructed and the layer degrades to inert (A9). Budget enforcement defaults to `warn` with no dollar caps, so `BudgetEnforcer.canProceed()` cannot refuse a task until an operator sets one. Operators disable the whole layer with `economy.enabled: false`. E3 market stays opt-in behind `economy.market.enabled` (and then auto-activates at ≥ 200 cost records and ≥ 2 bidders). E4 federation stays opt-in behind `economy.federation.cost_sharing_enabled`. Promoting mined cost patterns into evolution rules is separately opt-in via `economy.patterns.generate_rules`.
+
+**Known limitations of the default-on layer:** `CostPredictor` keeps its EMA in memory, so calibration resets on restart and predictions cold-start until 5 observations per (task type, routing level). Traces that report a token total without an input/output split are priced as all-input and under-report; those emit `economy:cost_estimated_no_split`. Rows priced off a routing tier label rather than a resolved provider id are recorded as `cost_tier: 'estimated'`, never `'billing'`.
 
 ---
 

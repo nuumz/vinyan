@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import type { VinyanConfig } from '../config/schema.ts';
+import type { VinyanConfig, VinyanConfigInput } from '../config/schema.ts';
 import { ensureSystemSkillPack, locateBundledSkillsDir } from './skills-simple.ts';
 
 interface ProjectInfo {
@@ -35,7 +35,9 @@ function detectProject(workspacePath: string): ProjectInfo {
 }
 
 /** Build a vinyan.json config based on detected project type. Phase 0 only. */
-function buildConfig(project: ProjectInfo): VinyanConfig {
+// Returns the WRITTEN shape (pre-defaults). `vinyan init` deliberately emits
+// no `economy` block — cost accounting is on by default and needs no config.
+function buildConfig(project: ProjectInfo): VinyanConfigInput {
   const languages: string[] = [];
   if (project.hasTypeScript) languages.push('typescript');
   if (project.hasPython) languages.push('python');

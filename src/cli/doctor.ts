@@ -146,14 +146,31 @@ export async function runDoctorChecks(workspace: string, options: DoctorOptions 
             : 'No oracles enabled — verification will be limited',
       });
 
-      // 2b. Economy
+      // 2b. Economy — E1/E2 (accounting, prediction, dynamic budgets) are on
+      // by default. Report what is actually true rather than advising a flag
+      // that is already set.
       const econ = loadedConfig.economy;
+      const budgets = econ?.budgets;
+      const caps = [
+        budgets?.hourly_usd !== undefined ? `hourly=$${budgets.hourly_usd}` : null,
+        budgets?.daily_usd !== undefined ? `daily=$${budgets.daily_usd}` : null,
+        budgets?.monthly_usd !== undefined ? `monthly=$${budgets.monthly_usd}` : null,
+      ].filter((c): c is string => c !== null);
+      const optIns = [
+        econ?.market?.enabled ? 'market' : null,
+        econ?.federation?.cost_sharing_enabled ? 'federation cost-sharing' : null,
+      ].filter((o): o is string => o !== null);
       checks.push({
         name: 'Economy',
         status: econ?.enabled ? 'ok' : 'warn',
         detail: econ?.enabled
-          ? `Enabled${econ.budgets ? ` — budgets: hourly=$${econ.budgets.hourly_usd}, daily=$${econ.budgets.daily_usd}` : ' — no budget limits'}`
-          : 'Disabled — set economy.enabled: true in vinyan.json',
+          ? [
+              'Active — cost accounting, prediction, dynamic budgets (requires SQLite)',
+              `enforcement: ${budgets?.enforcement ?? 'warn'}`,
+              caps.length > 0 ? `caps: ${caps.join(', ')}` : 'no budget caps set',
+              optIns.length > 0 ? `opt-ins on: ${optIns.join(', ')}` : 'market + federation off',
+            ].join('; ')
+          : 'Turned off by config (economy.enabled: false) — no cost rows are recorded',
       });
 
       // 2c. Network/API

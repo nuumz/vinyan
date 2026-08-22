@@ -124,6 +124,13 @@ export class SleepCycleRunner {
   >;
   private knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
   private costLedger?: CostLedger;
+  /**
+   * E2.4 gate: promote mined cost patterns into evolution rules. Default
+   * false — cost accounting runs by default, and mining must stay
+   * observational unless an operator opts in via
+   * `economy.patterns.generate_rules`.
+   */
+  private costRuleGeneration: boolean;
   private marketScheduler?: MarketScheduler;
   private agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
   private agentRegistry?: Pick<AgentRegistry, 'getAgent' | 'mergeCapabilityClaims'>;
@@ -248,6 +255,8 @@ export class SleepCycleRunner {
     >;
     knowledgeExchange?: import('../a2a/knowledge-exchange.ts').KnowledgeExchangeManager;
     costLedger?: CostLedger;
+    /** `economy.patterns.generate_rules` — default false. */
+    costRuleGeneration?: boolean;
     marketScheduler?: MarketScheduler;
     /** Agent Context Layer: periodic agent identity refinement during sleep cycle. */
     agentEvolution?: import('../orchestrator/agent-context/agent-evolution.ts').AgentEvolution;
@@ -306,6 +315,7 @@ export class SleepCycleRunner {
     this.localOracleLifecycle = options.localOracleLifecycle;
     this.knowledgeExchange = options.knowledgeExchange;
     this.costLedger = options.costLedger;
+    this.costRuleGeneration = options.costRuleGeneration ?? false;
     this.marketScheduler = options.marketScheduler;
     this.agentEvolution = options.agentEvolution;
     this.agentRegistry = options.agentRegistry;
@@ -936,8 +946,8 @@ export class SleepCycleRunner {
         if (extracted.confidence >= MIN_PATTERN_CONFIDENCE) {
           this.patternStore.insert(extracted);
 
-          // Generate prefer-model rules from cost patterns
-          if (this.ruleStore) {
+          // Generate prefer-model rules from cost patterns — opt-in only.
+          if (this.costRuleGeneration && this.ruleStore) {
             const rule = generateRule(extracted);
             if (rule) {
               this.ruleStore.insert(rule);

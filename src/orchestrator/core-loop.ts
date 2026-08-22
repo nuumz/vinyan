@@ -1457,7 +1457,7 @@ async function prepareExecution(
 
   // Economy L2: Dynamic budget allocation
   if (deps.dynamicBudgetAllocator) {
-    const taskSig = (understanding.taskTypeSignature as string | undefined) ?? null;
+    const taskSig = understanding.taskTypeSignature ?? null;
     const allocation = deps.dynamicBudgetAllocator.allocate(taskSig, routing.level, routing.budgetTokens);
     if (allocation.source !== 'default') {
       routing = { ...routing, budgetTokens: allocation.maxTokens };
@@ -1483,7 +1483,7 @@ async function prepareExecution(
           taskId: input.id,
           timestamp: Date.now(),
           routingLevel: routing.level,
-          taskTypeSignature: understanding.taskTypeSignature as string | undefined,
+          taskTypeSignature: understanding.taskTypeSignature,
           approach: 'budget-blocked',
           oracleVerdicts: {},
           modelUsed: routing.model ?? 'none',

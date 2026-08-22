@@ -502,6 +502,16 @@ export interface SemanticTaskUnderstanding extends TaskUnderstanding {
   /** SHA-256 fingerprint = hash(goal + sorted(resolvedPaths) + taskSignature). */
   understandingFingerprint: string;
 
+  /**
+   * Grouping key produced by `computeTaskSignature(input)` — the same string
+   * `phase-verify` stamps onto `ExecutionTrace.taskTypeSignature`. Economy
+   * consumers (dynamic budget allocation, cost prediction) key off this, so
+   * it must be the identical value or their read side never matches the
+   * write side. Optional because callers may construct a bare understanding
+   * in tests; `enrichUnderstanding` always populates it.
+   */
+  taskTypeSignature?: string;
+
   // ── Agentic SDLC enrichments (optional, populated by phase-spec / phase-brainstorm) ──
   /** Frozen, human-approved specification produced by phase-spec. When present,
    *  GoalEvaluator anchors C5 coverage to this artifact rather than the raw goal. */

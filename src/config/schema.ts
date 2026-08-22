@@ -840,8 +840,18 @@ export const VinyanConfigSchema = z.object({
   fleet: FleetConfigSchema.optional(),
   /** Network — multi-instance coordination, A2A, trust, knowledge sharing. */
   network: NetworkConfigSchema.optional(),
-  /** Economy Operating System — cost tracking, budgets, market, federation. */
-  economy: EconomyConfigSchema.optional(),
+  /**
+   * Economy Operating System — cost tracking, budgets, market, federation.
+   *
+   * `.prefault({})` (not `.optional()` and not `.default({})`): an absent
+   * `economy` key must still run EconomyConfigSchema's own defaults, which is
+   * what makes `enabled: true` actually take effect. `.default({})` would
+   * short-circuit to a bare `{}`, leaving `config.economy.enabled` undefined
+   * while the inferred type claimed a full EconomyConfig. An explicit
+   * `{"economy": {"enabled": false}}` still parses to false, so the operator
+   * off-switch is preserved.
+   */
+  economy: EconomyConfigSchema.prefault({}),
   /** Hallucination Mitigation System — claim grounding, overconfidence, cross-validation. */
   hms: HMSConfigSchema.optional(),
   /** Non-LLM reasoning engines — Z3 constraint solver, human-in-the-loop bridge. */
@@ -1179,4 +1189,12 @@ export const VinyanConfigSchema = z.object({
 });
 
 export type VinyanConfig = z.infer<typeof VinyanConfigSchema>;
+
+/**
+ * The shape callers WRITE (vinyan.json), before defaults are applied.
+ * Distinct from `VinyanConfig`, which is the shape after parsing — e.g.
+ * `economy` is required in the output (it is prefaulted) but must stay
+ * omittable in a hand-written config file.
+ */
+export type VinyanConfigInput = z.input<typeof VinyanConfigSchema>;
 export type OracleConfig = z.infer<typeof OracleConfigSchema>;

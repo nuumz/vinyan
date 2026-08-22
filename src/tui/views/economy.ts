@@ -44,7 +44,7 @@ export function renderEconomy(state: TUIState): string {
     const panelHeight = termHeight - 4;
     const left = panel(
       'Budget',
-      dim('Economy OS not enabled. Set economy.enabled = true in vinyan.json.'),
+      dim('No cost data yet. Rows appear once a task consumes model tokens.'),
       leftWidth,
       panelHeight,
     );

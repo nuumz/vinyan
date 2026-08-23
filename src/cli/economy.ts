@@ -86,12 +86,20 @@ function printSummary(workspace: string, ledger: CostLedger, raw: import('bun:sq
   // Budget
   try {
     const config = loadConfig(workspace);
-    if (config.economy?.budgets) {
-      console.log('\nBudget:');
-      const budgets = config.economy.budgets;
+    const budgets = config.economy?.budgets;
+    // `economy.budgets` is always present now (schema default), so presence is
+    // no longer a signal that the operator configured caps — check the caps.
+    const hasCaps =
+      budgets !== undefined &&
+      (budgets.hourly_usd !== undefined || budgets.daily_usd !== undefined || budgets.monthly_usd !== undefined);
+    console.log('\nBudget:');
+    if (hasCaps) {
       if (budgets.hourly_usd) console.log(`  Hourly:  $${budgets.hourly_usd}`);
       if (budgets.daily_usd) console.log(`  Daily:   $${budgets.daily_usd}`);
       if (budgets.monthly_usd) console.log(`  Monthly: $${budgets.monthly_usd}`);
+      console.log(`  Enforcement: ${budgets.enforcement}`);
+    } else {
+      console.log('  No caps set — nothing is refused or degraded on cost.');
     }
   } catch {
     /* config not available */
@@ -137,8 +145,11 @@ function printBudget(workspace: string, ledger: CostLedger): void {
   try {
     const config = loadConfig(workspace);
     const budgets = config.economy?.budgets;
-    if (!budgets) {
-      console.log('No budget configured.');
+    const hasCaps =
+      budgets !== undefined &&
+      (budgets.hourly_usd !== undefined || budgets.daily_usd !== undefined || budgets.monthly_usd !== undefined);
+    if (!budgets || !hasCaps) {
+      console.log('No budget caps configured — cost is recorded but never enforced.');
       return;
     }
 

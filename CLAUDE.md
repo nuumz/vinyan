@@ -111,7 +111,8 @@ Legend: **✅ Active** = wired in default `vinyan run` | **🔧 Built** = code+t
 | 4 | Fleet Governance | 🔧 Built | DB + multiple LLM providers |
 | 5 | ENS (API, TUI, A2A) | 🔧 Built | `vinyan serve` / `network.instances.enabled` |
 | K2 | Trust-Weighted Dispatch | 🔧 Built | Provider trust data |
-| E1-E4 | Economy OS | 🔧 Built | `economy.enabled: true` |
+| E1-E2 | Economy: cost accounting, prediction, dynamic budgets | ✅ Active | Always (needs SQLite; opt out via `economy.enabled: false`) |
+| E3-E4 | Economy: market (Vickrey) + federation cost-sharing | 🔧 Built | `economy.market.enabled` / `economy.federation.cost_sharing_enabled` |
 | O1-O5 | Agent Ecosystem | 🔧 Built | `ecosystem.enabled: true` — see `docs/design/vinyan-os-ecosystem-plan.md` §10 |
 
 ## Core Loop (high level)

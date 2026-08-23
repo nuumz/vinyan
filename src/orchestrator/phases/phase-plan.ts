@@ -210,7 +210,7 @@ export async function executePlanPhase(
 
   // Economy L2: Predict cost before dispatch (informational + feeds calibration)
   if (deps.costPredictor) {
-    const taskSig = (understanding.taskTypeSignature as string | undefined) ?? 'unknown';
+    const taskSig = understanding.taskTypeSignature ?? 'unknown';
     const costPrediction = deps.costPredictor.predict(taskSig, routing.level);
     deps.bus?.emit('economy:cost_predicted', {
       taskId: input.id,

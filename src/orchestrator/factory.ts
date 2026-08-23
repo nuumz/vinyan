@@ -378,6 +378,10 @@ export interface Orchestrator {
   // Economy stores (exposed for API/TUI)
   costLedger?: import('../economy/cost-ledger.ts').CostLedger;
   budgetEnforcer?: import('../economy/budget-enforcer.ts').BudgetEnforcer;
+  /** Economy E2 — cost prediction. Present whenever `economy.enabled` and SQLite are. */
+  costPredictor?: import('../economy/cost-predictor.ts').CostPredictor;
+  /** Economy E2 — dynamic per-task token budgets. Present alongside costPredictor. */
+  dynamicBudgetAllocator?: import('../economy/dynamic-budget-allocator.ts').DynamicBudgetAllocator;
   /**
    * W2 Plugin Registry — populated when `config.plugins.enabled` is true.
    * `undefined` otherwise. Tests/consumers should `await pluginsReady` before
@@ -860,7 +864,9 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           }),
         );
       }
-      console.log('[vinyan] Economy OS: cost tracking + prediction enabled');
+      // Accounting/prediction/allocation are on by default; the market and
+      // federation halves stay opt-in and are reported separately.
+      console.log('[vinyan] Economy: cost accounting + prediction + dynamic budgets active');
     }
   } catch {
     /* economy wiring is best-effort */
@@ -1228,6 +1234,7 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
           localOracleLifecycle,
           agentProposalStore,
           costLedger,
+          costRuleGeneration: economyConfig?.patterns?.generate_rules ?? false,
           marketScheduler,
           // Phase C2: rebuild `<workspace>/.vinyan/knowledge-index.md` at the
           // end of every cycle so the catalog stays current with code drift.
@@ -2948,6 +2955,8 @@ export function createOrchestrator(config: OrchestratorConfig): Orchestrator {
     approvalLedgerStore,
     costLedger,
     budgetEnforcer,
+    costPredictor,
+    dynamicBudgetAllocator,
     // External Coding CLI surface — exposed for the API server (mounts
     // /api/v1/coding-cli/*) and for tests to drive directly without
     // bouncing through the orchestrator's executeTask path.

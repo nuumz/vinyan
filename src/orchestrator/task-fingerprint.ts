@@ -86,6 +86,9 @@ export function computeFingerprint(
     actionVerb,
     fileExtensions,
     blastRadiusBucket,
+    // Same expression `computeTaskSignature` uses, so a fingerprint can
+    // reproduce the signature bucket its writer used.
+    targetFileCount: input.targetFiles?.length ?? 1,
     frameworkMarkers: frameworkMarkers?.length ? frameworkMarkers : undefined,
     oracleFailurePattern,
   };

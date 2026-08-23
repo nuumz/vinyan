@@ -65,4 +65,9 @@ tmp/
 .vinyan/
 
 # Claude Code / Agent SDK internal state (worktrees, session caches)
-.claude/
+# `.claude/*` rather than `.claude/`: git cannot re-include anything inside an
+# excluded DIRECTORY, so excluding the contents instead leaves room for the
+# exception below. The rule targets session state and local settings, not
+# checked-in process definitions.
+.claude/*
+!.claude/workflows/

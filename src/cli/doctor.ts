@@ -146,14 +146,65 @@ export async function runDoctorChecks(workspace: string, options: DoctorOptions 
             : 'No oracles enabled — verification will be limited',
       });
 
-      // 2b. Economy
+      // 2b. Economy — E1/E2 (accounting, prediction, dynamic budgets) are on
+      // by default. Report what is actually true rather than advising a flag
+      // that is already set.
       const econ = loadedConfig.economy;
+      const budgets = econ?.budgets;
+      const caps = [
+        budgets?.hourly_usd !== undefined ? `hourly=$${budgets.hourly_usd}` : null,
+        budgets?.daily_usd !== undefined ? `daily=$${budgets.daily_usd}` : null,
+        budgets?.monthly_usd !== undefined ? `monthly=$${budgets.monthly_usd}` : null,
+      ].filter((c): c is string => c !== null);
+      const optIns = [
+        econ?.market?.enabled ? 'market' : null,
+        econ?.federation?.cost_sharing_enabled ? 'federation cost-sharing' : null,
+      ].filter((o): o is string => o !== null);
+      // Config alone cannot tell us the ledger exists: the factory gate is
+      // `economyConfig?.enabled && db`, and `db` is left undefined whenever
+      // opening SQLite throws (the factory swallows that and falls back to
+      // in-memory). So probe the runtime rather than reporting `enabled: true`
+      // as if it were `Active` — A2 / the honest-status rule.
+      let ledgerBlocker: string | null = null;
+      if (econ?.enabled) {
+        const economyDbPath = join(workspace, '.vinyan', 'vinyan.db');
+        try {
+          const { Database } = await import('bun:sqlite');
+          if (existsSync(economyDbPath)) {
+            const probe = new Database(economyDbPath, { readonly: true });
+            try {
+              const found = probe
+                .query("SELECT name FROM sqlite_master WHERE type='table' AND name='cost_ledger'")
+                .all() as Array<{ name: string }>;
+              if (found.length === 0) {
+                ledgerBlocker = 'cost_ledger table missing — migrations have not run, so no cost rows are recorded';
+              }
+            } finally {
+              probe.close();
+            }
+          } else {
+            // Nothing has run here yet. SQLite itself still has to work, or
+            // the ledger will never be constructed on the first run either.
+            new Database(':memory:').close();
+            ledgerBlocker = 'no vinyan.db yet — cost recording starts on the first `vinyan run`';
+          }
+        } catch (err) {
+          ledgerBlocker = `SQLite unavailable (${err instanceof Error ? err.message : String(err)}) — the cost ledger is not constructed and no cost rows are recorded`;
+        }
+      }
       checks.push({
         name: 'Economy',
-        status: econ?.enabled ? 'ok' : 'warn',
-        detail: econ?.enabled
-          ? `Enabled${econ.budgets ? ` — budgets: hourly=$${econ.budgets.hourly_usd}, daily=$${econ.budgets.daily_usd}` : ' — no budget limits'}`
-          : 'Disabled — set economy.enabled: true in vinyan.json',
+        status: !econ?.enabled ? 'ok' : ledgerBlocker ? 'warn' : 'ok',
+        detail: !econ?.enabled
+          ? 'Turned off by config (economy.enabled: false) — no cost rows are recorded'
+          : ledgerBlocker
+            ? `Enabled in config but inert: ${ledgerBlocker}`
+            : [
+                'Active — cost accounting, prediction, dynamic budgets',
+                `enforcement: ${budgets?.enforcement ?? 'warn'}`,
+                caps.length > 0 ? `caps: ${caps.join(', ')}` : 'no budget caps set',
+                optIns.length > 0 ? `opt-ins on: ${optIns.join(', ')}` : 'market + federation off',
+              ].join('; '),
       });
 
       // 2c. Network/API

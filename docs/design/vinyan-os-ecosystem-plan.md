@@ -33,7 +33,7 @@ FSM), organizational locality (departments, teams), and explicit accountability
 |---|---|---|---|
 | Role-based collab (drafter / critic / integrator) | ✅ shipped (`src/orchestrator/room/`) | — | — |
 | Career FSM (probation / active / demoted / retired) | ✅ shipped (`src/orchestrator/fleet/worker-lifecycle.ts`) | — | — |
-| Sealed-bid Vickrey auction + trust weighting | 🔧 built, needs `economy.enabled` (`src/economy/market/auction-engine.ts`) | — | — |
+| Sealed-bid Vickrey auction + trust weighting | 🔧 built, needs `economy.market.enabled` (`src/economy/market/auction-engine.ts`) | — | — |
 | Bid accuracy / anti-gaming / settlement | 🔧 built (`src/economy/market/`) | — | — |
 | Peer discovery / gossip / negotiation / commitment | 🔧 built (`src/a2a/`) | — | — |
 | Cross-instance room | 📋 designed (`src/a2a/room.ts`) | depends on A2A R3 | — |

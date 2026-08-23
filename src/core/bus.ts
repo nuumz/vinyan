@@ -1544,6 +1544,13 @@ export interface VinyanBusEvents {
   };
   'economy:budget_degraded': { taskId: string; fromLevel: number; toLevel: number; reason: string };
   'economy:rate_card_miss': { engineId: string; fallback: string };
+  /**
+   * Emitted when a trace reported a token total but no input/output split,
+   * so cost accounting priced the whole total as input. Output tokens bill
+   * at up to 5x input, so these rows under-report; the event makes that
+   * countable instead of invisible.
+   */
+  'economy:cost_estimated_no_split': { taskId: string; engineId: string; tokensConsumed: number };
 
   // Economy Layer 2 events
   'economy:cost_predicted': { taskId: string; predicted_usd: number; confidence: number; basis: string };

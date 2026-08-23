@@ -2,7 +2,15 @@
  * Economy Config — Zod schemas for cost tracking, budgets, market, federation.
  *
  * All fields optional with sensible defaults.
- * economy.enabled = false (default) means all economy code is inert.
+ *
+ * `economy.enabled` defaults to TRUE: cost accounting, cost prediction and
+ * dynamic budget allocation (E1/E2) run in a default `vinyan run` with no
+ * config. Budget enforcement defaults to `warn` with NO dollar caps, so
+ * `BudgetEnforcer.canProceed()` is structurally incapable of refusing a task
+ * until an operator sets a cap. The market mechanism (`market.enabled`) and
+ * federation cost sharing (`federation.*`) remain opt-in and default to
+ * false. Operators turn the whole subsystem off with
+ * `{"economy": {"enabled": false}}`.
  *
  * Source of truth: Economy OS plan §E1.1
  */
@@ -84,8 +92,22 @@ export type FederationEconomyConfig = z.infer<typeof FederationEconomyConfigSche
 
 // ── Top-Level Economy Schema ────────────────────────────────────────
 
+/** Cost-pattern mining config (E2.4 → Sleep Cycle). */
+export const EconomyPatternsConfigSchema = z.object({
+  /**
+   * When true, cost patterns mined by the sleep cycle are promoted into
+   * Phase 2 evolution rules (prefer-model rules) as well as persisted as
+   * patterns. Default false: mining is observational. Cost accounting being
+   * on by default must not silently start writing routing rules into the
+   * evolution rule store on every deployment.
+   */
+  generate_rules: z.boolean().default(false),
+});
+
+export type EconomyPatternsConfig = z.infer<typeof EconomyPatternsConfigSchema>;
+
 export const EconomyConfigSchema = z.object({
-  enabled: z.boolean().default(false),
+  enabled: z.boolean().default(true),
   /** Provider rate cards: model pattern → pricing. */
   rate_cards: z.record(z.string(), RateCardEntrySchema).default({}),
   /** Global budget caps. */
@@ -98,6 +120,8 @@ export const EconomyConfigSchema = z.object({
     min_bidders: 2,
     weights: { cost: 0.3, quality: 0.4, duration: 0.1, accuracy: 0.2 },
   }),
+  /** Cost-pattern mining (observational unless generate_rules is set). */
+  patterns: EconomyPatternsConfigSchema.default({ generate_rules: false }),
   /** Federation economy config. */
   federation: FederationEconomyConfigSchema.default({
     cost_sharing_enabled: false,

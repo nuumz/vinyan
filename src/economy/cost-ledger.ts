@@ -28,12 +28,28 @@ export interface CostLedgerEntry {
   cost_tier: 'billing' | 'estimated';
   routing_level: number;
   task_type_signature: string | null;
+  /**
+   * ExecutionTrace this row was priced from. Process-local: the `cost_ledger`
+   * table has no column for it (no new migration), so rows warmed from SQLite
+   * carry `undefined`. Callers that need to find the row they just wrote —
+   * phase-learn's cost calibration — use `queryByTraceId` within the same
+   * process; anything durable must key off `taskId`.
+   */
+  traceId?: string;
 }
 
 interface AggregatedCost {
   total_usd: number;
   count: number;
 }
+
+/**
+ * Cap on the in-memory cache. Matches the `warmCache` boot LIMIT so a
+ * long-lived `vinyan serve` cannot grow the array without bound now that
+ * cost accounting is on by default. Oldest entries are dropped first; the
+ * SQLite table remains the complete record.
+ */
+const MAX_CACHE_ENTRIES = 10_000;
 
 export class CostLedger {
   private db: Database;
@@ -48,9 +64,17 @@ export class CostLedger {
 
   private warmCache(): void {
     try {
-      const rows = this.db.prepare('SELECT * FROM cost_ledger ORDER BY timestamp DESC LIMIT 10000').all() as Array<
-        Record<string, unknown>
-      >;
+      // Take the NEWEST `MAX_CACHE_ENTRIES` rows (inner DESC), then push them
+      // OLDEST-FIRST (outer ASC). The push order is load-bearing: `record()`
+      // appends to the end and evicts from index 0, so a newest-first cache
+      // would make the cap drop the most recent rows — silently emptying the
+      // hour/day windows `BudgetEnforcer` reads and turning a blown cap into
+      // an unblown one.
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM (SELECT * FROM cost_ledger ORDER BY timestamp DESC LIMIT ${MAX_CACHE_ENTRIES}) ORDER BY timestamp ASC`,
+        )
+        .all() as Array<Record<string, unknown>>;
       for (const row of rows) {
         this.cache.push(this.rowToEntry(row));
       }
@@ -81,7 +105,13 @@ export class CostLedger {
 
   /** Record a cost entry. */
   record(entry: CostLedgerEntry): void {
+    // Cache-first is deliberate and documented below: the in-memory cache is
+    // authoritative and a DB write failure must not lose the row (A9
+    // fail-open). The cap keeps that bounded.
     this.cache.push(entry);
+    if (this.cache.length > MAX_CACHE_ENTRIES) {
+      this.cache.splice(0, this.cache.length - MAX_CACHE_ENTRIES);
+    }
 
     // Best-effort SQLite write
     try {
@@ -132,6 +162,17 @@ export class CostLedger {
     return this.cache.filter((e) => e.taskId === taskId);
   }
 
+  /**
+   * Query the entries priced from one ExecutionTrace. Process-local — see
+   * `CostLedgerEntry.traceId`. Used by phase-learn so cost calibration
+   * consumes THIS trace's cost rather than whatever row happened to be last
+   * for the task (an earlier phase's row would pin the EMA to the wrong
+   * number).
+   */
+  queryByTraceId(traceId: string): CostLedgerEntry[] {
+    return this.cache.filter((e) => e.traceId === traceId);
+  }
+
   /** Query entries for a specific engine. */
   queryByEngine(engineId: string, since?: number): CostLedgerEntry[] {
     return this.cache.filter((e) => e.engineId === engineId && (!since || e.timestamp >= since));
@@ -180,8 +221,16 @@ export class CostLedger {
 
   /** Get percentile token count for a task type at a routing level. */
   getTokenPercentile(taskTypeSignature: string, routingLevel: number, percentile: number): number | null {
+    // Zero-token rows (phases that recorded a trace without consuming any
+    // model tokens) are not evidence about how many tokens this task type
+    // needs. Including them drags the percentile toward zero, which — once
+    // fed to DynamicBudgetAllocator — would shrink every subsequent task's
+    // budget. Filter them out of the sample rather than at each call site.
     const entries = this.cache.filter(
-      (e) => e.task_type_signature === taskTypeSignature && e.routing_level === routingLevel,
+      (e) =>
+        e.task_type_signature === taskTypeSignature &&
+        e.routing_level === routingLevel &&
+        e.tokens_input + e.tokens_output > 0,
     );
     if (entries.length < 5) return null;
 

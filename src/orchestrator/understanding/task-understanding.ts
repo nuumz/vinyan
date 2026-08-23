@@ -760,6 +760,11 @@ export function enrichUnderstanding(
     understandingDepth: 1,
     verifiedClaims: [],
     understandingFingerprint,
+    // Surface the signature we just computed instead of discarding it after
+    // the fingerprint hash. Economy's dynamic budget allocator and cost
+    // predictor read `understanding.taskTypeSignature`; without this the
+    // field was permanently `undefined` and both silently no-op'd.
+    taskTypeSignature: signature,
   };
 }
 

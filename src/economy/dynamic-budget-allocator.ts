@@ -49,18 +49,32 @@ export class DynamicBudgetAllocator {
     const p75 = this.ledger.getTokenPercentile(taskTypeSignature, routingLevel, 0.75);
     if (p75 !== null) {
       const withHeadroom = Math.ceil(p75 * 1.25);
-      // Don't allocate less than 50% or more than 200% of the default
-      const clamped = Math.max(Math.floor(fallback * 0.5), Math.min(withHeadroom, fallback * 2));
+      const clamped = this.clamp(withHeadroom, fallback);
       return { maxTokens: clamped, source: 'historical-p75' };
     }
 
     // Try p95 (conservative ceiling) — needs fewer observations (5 vs implicit 20 from p75)
     const p95 = this.ledger.getTokenPercentile(taskTypeSignature, routingLevel, 0.95);
     if (p95 !== null) {
-      const clamped = Math.max(Math.floor(fallback * 0.5), Math.min(p95, fallback * 2));
+      const clamped = this.clamp(p95, fallback);
       return { maxTokens: clamped, source: 'historical-p95' };
     }
 
     return { maxTokens: fallback, source: 'default' };
+  }
+
+  /**
+   * Clamp a historical estimate into the allowed band.
+   *
+   * The floor is the caller's own fallback, NOT half of it. Allocation may
+   * grow toward the 2x ceiling when history says a task type needs more, but
+   * it must never hand a task less budget than the routing level asked for.
+   * A silent shrink is invisible at the call site — it surfaces to a user as
+   * "the model got worse", announced only by an `economy:budget_allocated`
+   * event nobody reads — and this component now runs on every task by
+   * default. Growth-only keeps the adaptive value without that failure mode.
+   */
+  private clamp(estimate: number, fallback: number): number {
+    return Math.max(fallback, Math.min(estimate, fallback * 2));
   }
 }

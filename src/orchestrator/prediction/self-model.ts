@@ -74,12 +74,57 @@ function ema(current: number, observed: number, alpha: number): number {
   return alpha * observed + (1 - alpha) * current;
 }
 
+/**
+ * Sole producer of the task-type signature string. Every consumer MUST go
+ * through this (or `taskSignatureFromFingerprint`) rather than hand-rolling
+ * a template literal — the separator is a DOUBLE colon and a single-colon
+ * variant silently keys a different bucket that no writer ever populates.
+ */
+export function buildTaskSignature(actionVerb: string, extsKey: string, blastBucket: string): string {
+  return `${actionVerb}::${extsKey}::${blastBucket}`;
+}
+
+/** Normalize a `TaskFingerprint.fileExtensions` array ('.ts') to the signature's key form ('ts'). */
+export function normalizeExtensionsKey(fileExtensions: readonly string[]): string {
+  const exts = new Set(fileExtensions.map((e) => (e.startsWith('.') ? e.slice(1) : e)));
+  return [...exts].sort().join(',') || 'none';
+}
+
+/**
+ * Signature for a `TaskFingerprint` — the shape fleet/worker-selector holds.
+ *
+ * Reproduces the string `computeTaskSignature` writes for the same task, so
+ * predictor writes (keyed off traces) and reads (keyed off fingerprints) land
+ * in the same bucket. That requires re-deriving the blast bucket from
+ * `targetFileCount`: `TaskFingerprint.blastRadiusBucket` is a DIFFERENT
+ * measurement on DIFFERENT thresholds (perception's transitive blast radius on
+ * 1/5/20, versus the signature's target-file count on 1/3/10), so using it
+ * directly keys a bucket no writer ever populates and pins every read at
+ * `basis: 'cold-start'`.
+ *
+ * A fingerprint without `targetFileCount` (hand-built, not from
+ * `computeFingerprint`) falls back to its own bucket — the count cannot be
+ * inferred and A2 forbids inventing one.
+ */
+export function taskSignatureFromFingerprint(fingerprint: {
+  actionVerb: string;
+  fileExtensions: readonly string[];
+  blastRadiusBucket: string;
+  targetFileCount?: number;
+}): string {
+  const blastBucket =
+    fingerprint.targetFileCount !== undefined
+      ? blastRadiusBucket(fingerprint.targetFileCount)
+      : fingerprint.blastRadiusBucket;
+  return buildTaskSignature(fingerprint.actionVerb, normalizeExtensionsKey(fingerprint.fileExtensions), blastBucket);
+}
+
 /** Compute task type signature — shared between SelfModel and RiskRouterAdapter. */
 export function computeTaskSignature(input: TaskInput): string {
   const actionVerb = extractActionVerb(input.goal);
   const exts = extractFileExtensions(input.targetFiles ?? []);
   const blastBucket = blastRadiusBucket(input.targetFiles?.length ?? 1);
-  return `${actionVerb}::${exts}::${blastBucket}`;
+  return buildTaskSignature(actionVerb, exts, blastBucket);
 }
 
 /** Gap 5B: Use shared extractActionVerb from task-fingerprint.ts (16 verbs, includes()-based). */

@@ -238,19 +238,6 @@ export async function executeLearnPhase(ctx: PhaseContext, li: LearnInput): Prom
     }
   }
 
-  // ── Economy L2: Calibrate cost predictor ──
-  if (deps.costPredictor && trace.taskTypeSignature) {
-    try {
-      const costEntries = deps.costLedger?.queryByTask(input.id) ?? [];
-      const latestCost = costEntries[costEntries.length - 1];
-      if (latestCost) {
-        deps.costPredictor.calibrate(trace.taskTypeSignature, routing.level, latestCost.computed_usd);
-      }
-    } catch {
-      /* Cost calibration failure — non-critical */
-    }
-  }
-
   // ── PH6: Compress transcript into trace ──
   if (isAgenticResult && lastAgentResult?.transcript?.length) {
     try {
@@ -317,6 +304,26 @@ export async function executeLearnPhase(ctx: PhaseContext, li: LearnInput): Prom
   }
 
   await deps.traceCollector.record(trace);
+
+  // ── Economy L2: Calibrate cost predictor ──
+  //
+  // MUST run AFTER `traceCollector.record` — the ledger row for this trace is
+  // written by that call. Reading the ledger before it (as this block used to)
+  // found either nothing, leaving the EMA pinned at `basis: 'cold-start'`
+  // forever, or an earlier phase's row, pinning it to the wrong cost. Keyed by
+  // `trace.id` rather than "last row for the task" for the same reason.
+  if (deps.costPredictor && trace.taskTypeSignature) {
+    try {
+      const costEntries = deps.costLedger?.queryByTraceId(trace.id) ?? [];
+      const thisTraceCost = costEntries[costEntries.length - 1];
+      if (thisTraceCost) {
+        deps.costPredictor.calibrate(trace.taskTypeSignature, routing.level, thisTraceCost.computed_usd);
+      }
+    } catch {
+      /* Cost calibration failure — non-critical */
+    }
+  }
+
   deps.bus?.emit('trace:record', { trace });
 
   return { trace };

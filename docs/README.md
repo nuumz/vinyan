@@ -50,7 +50,8 @@ defined, partial / stub implementation.
 | 4 | Fleet Governance (worker profiles, capability routing) | 🔧 Built | DB + multiple LLM providers |
 | 5 | ENS (API, TUI, A2A coordination, cross-language oracles) | 🔧 Built | API via `vinyan serve`; A2A needs `network.instances.enabled` |
 | K2 | Trust-Weighted Multi-Agent Dispatch (engine selector, MCP) | 🔧 Built | Provider trust data |
-| E1–E4 | Economy OS (cost accounting, budget, market, federation) | 🔧 Built | `economy.enabled: true` |
+| E1–E2 | Economy: cost accounting, cost prediction, dynamic budgets | ✅ Active | Always (needs SQLite; opt out via `economy.enabled: false`) |
+| E3–E4 | Economy: market (Vickrey auction) + federation cost-sharing | 🔧 Built | `economy.market.enabled` / `economy.federation.cost_sharing_enabled` |
 | O1–O5 | Agent Ecosystem (runtime FSM, commitments, dept/team, volunteer, coordinator) | 🔧 Built | `ecosystem.enabled: true` |
 | Agentic SDLC | Brainstorm + Spec phases, ship-it tools (`git_commit`/`git_push`/`git_pr`) | 🔧 Built | `BRAINSTORM_PHASE:on` / `SPEC_PHASE:on` |
 
